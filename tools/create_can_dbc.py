@@ -1,9 +1,46 @@
 from cantools.database import *
+import cantools.database.can as can
+from cantools.database.conversion import IdentityConversion, LinearConversion, LinearIntegerConversion, NamedSignalConversion
+from collections import OrderedDict
+import inspect
 from odrive.enums import *
 
 msgList = []
 nodes = [can.Node('Master')]
 buses = [can.Bus('ODrive', None, 100000)]
+
+if 'choices' not in inspect.signature(can.Signal.__init__).parameters:
+    _CanSignal = can.Signal
+
+    def _compat_signal(name, start, length, byte_order='little_endian',
+                       is_signed=False, scale=1, offset=0, minimum=None,
+                       maximum=None, unit=None, receivers=None, choices=None,
+                       is_float=False, **kwargs):
+        if choices is not None:
+            conversion = NamedSignalConversion(scale, offset, OrderedDict(choices), is_float)
+        elif is_float:
+            conversion = IdentityConversion(is_float=True)
+        elif scale != 1 or offset != 0:
+            if isinstance(scale, int) and isinstance(offset, int):
+                conversion = LinearIntegerConversion(scale, offset)
+            else:
+                conversion = LinearConversion(scale, offset, is_float=False)
+        else:
+            conversion = IdentityConversion(is_float=False)
+
+        return _CanSignal(
+            name, start, length,
+            byte_order=byte_order,
+            is_signed=is_signed,
+            conversion=conversion,
+            minimum=minimum,
+            maximum=maximum,
+            unit=unit,
+            receivers=receivers,
+            **kwargs
+        )
+
+    can.Signal = _compat_signal
 
 for axisID in range(0, 8):
     newNode = can.Node(f"ODrive_Axis{axisID}")
@@ -177,6 +214,20 @@ for axisID in range(0, 8):
         0x01D, "Get_Controller_Error", 8, [controllerError], senders=[newNode.name]
     )
 
+    # 0x01E - Extended Command (ODrive vendor extension)
+    # Bidirectional: Master sends request, Axis sends response on same CAN ID.
+    # Signals defined for the response format (Axis -> Master).
+    subCmd = can.Signal("Sub_Cmd", 0, 8, receivers=['Master'])
+    item = can.Signal("Ext_Item", 8, 8, receivers=['Master'])
+    status = can.Signal("Ext_Status", 16, 8, receivers=['Master'])
+    typeOrAux = can.Signal("Ext_Type", 24, 8, receivers=['Master'])
+    value32 = can.Signal("Ext_Value", 32, 32, receivers=['Master'])
+    extendedCmdMsg = can.Message(
+        0x01E, "Extended_Command", 8,
+        [subCmd, item, status, typeOrAux, value32],
+        senders=[newNode.name]
+    )
+
     axisMsgs = [
         heartbeatMsg,
         motorErrorMsg,
@@ -205,6 +256,7 @@ for axisID in range(0, 8):
         setVelGainsMsg,
         getADCVoltageMsg,
         controllerErrorMsg,
+        extendedCmdMsg,
     ]
 
     masterMsgs = [

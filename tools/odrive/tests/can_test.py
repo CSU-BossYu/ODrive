@@ -242,7 +242,403 @@ class TestSimpleCAN():
         time.sleep(2.0)
         odrive.prepare(logger)
 
-tests = [TestSimpleCAN()]
+# Extended Command helpers (CMD 0x1E)
+EXTENDED_CMD_ID = 0x01E
+
+def extended_command(bus, node_id, extended_id, sub_cmd, flags=0, value=0, param2=0, param3=0, value_float=None):
+    """
+    Send an extended command (CMD 0x1E) to the ODrive.
+    Payload: byte0=sub_cmd, byte1=item/param, byte2=type for SET_BASIC_CONFIG,
+    byte3=reserved, byte4-7=value (uint32 LE or float32 LE)
+    If value_float is not None, it overrides value with a float32 encoding.
+    """
+    if value_float is not None:
+        data = struct.pack('<BBBBf', sub_cmd, flags, param2, param3, value_float)
+    else:
+        data = struct.pack('<BBBBi', sub_cmd, flags, param2, param3, value)
+    msg = can.Message(arbitration_id=((node_id << 5) | EXTENDED_CMD_ID), extended_id=extended_id, data=data)
+    bus.send(msg)
+
+async def extended_request(bus, node_id, extended_id, sub_cmd, flags=0, value=0, param2=0, param3=0, timeout=1.0, value_float=None):
+    """
+    Send an extended command and wait for the response on the same CAN ID.
+    Returns dict with keys: sub_cmd, item, status, type, value, value_float.
+    Raw response bytes 1..3 are also available as byte1, byte2, byte3.
+    """
+    reader = can.AsyncBufferedReader()
+    notifier = can.Notifier(bus, [reader], timeout=timeout, loop=asyncio.get_event_loop())
+
+    try:
+        extended_command(bus, node_id, extended_id, sub_cmd, flags, value, param2, param3, value_float)
+
+        start = time.monotonic()
+        while True:
+            msg = await reader.get_message()
+            expected_id = ((node_id << 5) | EXTENDED_CMD_ID)
+            if (msg.arbitration_id == expected_id and msg.is_extended_id == extended_id and not msg.is_remote_frame):
+                sub_cmd_r, byte1_r, byte2_r, byte3_r, value_r = struct.unpack('<BBBBi', msg.data[:8])
+                if sub_cmd_r == sub_cmd:  # match sub_cmd
+                    return {
+                        'sub_cmd': sub_cmd_r,
+                        'byte1': byte1_r,
+                        'byte2': byte2_r,
+                        'byte3': byte3_r,
+                        'item': byte1_r,
+                        'status': byte2_r,
+                        'type': byte3_r,
+                        'param2': byte2_r,  # compatibility alias
+                        'param3': byte3_r,  # compatibility alias
+                        'value': value_r,
+                        'value_float': struct.unpack('<f', msg.data[4:8])[0],
+                    }
+            if (time.monotonic() - start) > timeout:
+                raise TimeoutError(f"extended_request sub_cmd=0x{sub_cmd:02X} timed out")
+    finally:
+        notifier.stop()
+
+
+class TestExtendedCAN():
+    """Tests for Extended CAN Command (CMD 0x1E)"""
+
+    def get_test_cases(self, testrig: TestRig):
+        for odrive in testrig.get_components(ODriveComponent):
+            can_interfaces = list(testrig.get_connected_components(odrive.can, CanInterfaceComponent))
+            yield AnyTestCase(*[(odrive, intf, 0, False, tf) for intf, tf in can_interfaces])
+            yield AnyTestCase(*[(odrive, intf, 0xfedcba, True, tf) for intf, tf in can_interfaces])
+
+    def run_test(self, odrive: ODriveComponent, canbus: CanInterfaceComponent, node_id: int, extended_id: bool, logger: Logger):
+        odrive.disable_mappings()
+        if odrive.yaml['board-version'].startswith("v3."):
+            odrive.handle.config.gpio15_mode = GPIO_MODE_CAN_A
+            odrive.handle.config.gpio16_mode = GPIO_MODE_CAN_A
+        elif odrive.yaml['board-version'].startswith("v4."):
+            pass
+        else:
+            raise Exception("unknown board version {}".format(odrive.yaml['board-version']))
+        odrive.handle.config.enable_can_a = True
+        odrive.save_config_and_reboot()
+
+        axis = odrive.handle.axis0
+        axis.config.enable_watchdog = False
+        odrive.handle.clear_errors()
+        axis.config.can.node_id = node_id
+        axis.config.can.is_extended = extended_id
+        time.sleep(0.1)
+
+        def ext_cmd(sub_cmd, flags=0, value=0, param2=0, param3=0):
+            extended_command(canbus.handle, node_id, extended_id, sub_cmd, flags, value, param2, param3)
+
+        def ext_req(sub_cmd, flags=0, value=0, param2=0, param3=0, value_float=None, **kwargs):
+            return asyncio.run(extended_request(canbus.handle, node_id, extended_id, sub_cmd, flags, value, param2, param3,
+                                                value_float=value_float, **kwargs))
+
+        # -----------------------------------------------------------
+        # Test 1: GET_AXIS_STATUS_EX (sub_cmd 0x01)
+        # -----------------------------------------------------------
+        logger.debug('Testing GET_AXIS_STATUS_EX...')
+        status_ex = ext_req(0x01, timeout=2.0)
+        test_assert_eq(status_ex['sub_cmd'], 0x01)
+        test_assert_eq(status_ex['byte1'], 0x00)  # OK
+
+        # Verify axis.current_state
+        test_assert_eq(status_ex['byte2'], axis.current_state)
+
+        # Verify flags
+        flags = status_ex['byte3']
+        test_assert_eq(bool(flags & 0x01), axis.motor.is_calibrated)
+        test_assert_eq(bool(flags & 0x02), axis.encoder.is_ready)
+        test_assert_eq(bool(flags & 0x04), axis.motor.error != 0)
+        test_assert_eq(bool(flags & 0x08), axis.encoder.error != 0)
+        test_assert_eq(bool(flags & 0x10), axis.controller.error != 0)
+
+        # Verify axis.error
+        test_assert_eq(status_ex['value'], axis.error)
+
+        # -----------------------------------------------------------
+        # Test 2: SET_PRECALIBRATED (sub_cmd 0x02)
+        # -----------------------------------------------------------
+        logger.debug('Testing SET_PRECALIBRATED...')
+
+        # Save original values to restore later
+        orig_motor_pre_cal = axis.motor.config.pre_calibrated
+        orig_encoder_pre_cal = axis.encoder.config.pre_calibrated
+
+        try:
+            # Test clear both
+            resp = ext_req(0x02, flags=0x30)  # bit4=clear motor, bit5=clear encoder
+            test_assert_eq(resp['status'], 0x00)
+            time.sleep(0.05)
+            test_assert_eq(axis.motor.config.pre_calibrated, False)
+            test_assert_eq(axis.motor.is_calibrated, False)
+            test_assert_eq(axis.encoder.config.pre_calibrated, False)
+            test_assert_eq(axis.encoder.is_ready, False)
+
+            # Test set both
+            resp = ext_req(0x02, flags=0x03)  # bit0=set motor, bit1=set encoder
+            test_assert_eq(resp['status'], 0x00)
+            time.sleep(0.05)
+            test_assert_eq(axis.motor.config.pre_calibrated, True)
+            test_assert_eq(axis.motor.is_calibrated, True)
+            test_assert_eq(axis.encoder.config.pre_calibrated, True)
+            test_assert_eq(axis.encoder.is_ready, True)
+
+            # Test invalid flags (conflicting set+clear)
+            resp = ext_req(0x02, flags=0x11)  # bit0=set motor, bit4=clear motor (conflict)
+            test_assert_eq(resp['status'], 0x01)  # invalid_flags
+            test_assert_eq(axis.motor.config.pre_calibrated, True)
+            test_assert_eq(axis.motor.is_calibrated, True)
+
+            # Test empty flags
+            resp = ext_req(0x02, flags=0x00)
+            test_assert_eq(resp['status'], 0x01)  # invalid_flags
+            test_assert_eq(axis.motor.config.pre_calibrated, True)
+            test_assert_eq(axis.encoder.config.pre_calibrated, True)
+
+        finally:
+            # Restore original state
+            restore_flags = 0
+            restore_flags |= 0x01 if orig_motor_pre_cal else 0x10
+            restore_flags |= 0x02 if orig_encoder_pre_cal else 0x20
+            ext_req(0x02, flags=restore_flags)
+
+        # -----------------------------------------------------------
+        # Test 3: GET_CALIB_RESULT (sub_cmd 0x04)
+        # -----------------------------------------------------------
+        logger.debug('Testing GET_CALIB_RESULT...')
+
+        # Save originals and set known values for testing
+        orig_phase_resistance = axis.motor.config.phase_resistance
+        orig_phase_inductance = axis.motor.config.phase_inductance
+        orig_phase_offset = axis.encoder.config.phase_offset
+        orig_direction = axis.encoder.config.direction
+
+        axis.motor.config.phase_resistance = 1.234
+        axis.motor.config.phase_inductance = 5.678e-5
+        axis.encoder.config.phase_offset = 12345
+        axis.encoder.config.direction = -1
+        time.sleep(0.05)
+
+        # Test phase_resistance (item_id=0x01, float32)
+        resp = ext_req(0x04, flags=0x01)
+        test_assert_eq(resp['status'], 0x00)
+        test_assert_eq(resp['type'], 1)  # type = float32
+        test_assert_eq(resp['value_float'], 1.234, accuracy=0.001)
+
+        # Test phase_inductance (item_id=0x02, float32)
+        resp = ext_req(0x04, flags=0x02)
+        test_assert_eq(resp['status'], 0x00)
+        test_assert_eq(resp['type'], 1)  # type = float32
+        test_assert_eq(resp['value_float'], 5.678e-5, accuracy=1e-7)
+
+        # Test phase_offset (item_id=0x03, int32)
+        resp = ext_req(0x04, flags=0x03)
+        test_assert_eq(resp['status'], 0x00)
+        test_assert_eq(resp['type'], 2)  # type = int32
+        test_assert_eq(resp['value'], 12345)
+
+        # Test direction (item_id=0x04, int32)
+        resp = ext_req(0x04, flags=0x04)
+        test_assert_eq(resp['status'], 0x00)
+        test_assert_eq(resp['type'], 2)  # type = int32
+        test_assert_eq(resp['value'], -1)
+
+        # Test unknown item
+        resp = ext_req(0x04, flags=0xFF)
+        test_assert_eq(resp['status'], 0x01)  # unknown_item
+
+        # Restore original values
+        axis.motor.config.phase_resistance = orig_phase_resistance
+        axis.motor.config.phase_inductance = orig_phase_inductance
+        axis.encoder.config.phase_offset = orig_phase_offset
+        axis.encoder.config.direction = orig_direction
+
+        # -----------------------------------------------------------
+        # Test 4: SAVE_CONFIGURATION (sub_cmd 0x03)
+        # -----------------------------------------------------------
+        logger.debug('Testing SAVE_CONFIGURATION...')
+
+        # Set a known pre_calibrated value
+        axis.motor.config.pre_calibrated = True
+        axis.encoder.config.pre_calibrated = True
+        time.sleep(0.05)
+
+        # Send save command (device will reboot)
+        try:
+            resp = ext_req(0x03, timeout=2.0)
+            # The ACK should be received before reboot, but if the device reboots
+            # fast enough, we might not get it. Either way is acceptable.
+            if resp is not None:
+                test_assert_eq(resp['sub_cmd'], 0x03)
+                test_assert_eq(resp['status'], 0x00)
+        except TimeoutError:
+            logger.debug('SAVE_CONFIGURATION: ACK not received (device rebooted before TX) - this is expected')
+
+        # Wait for reboot
+        time.sleep(3.0)
+        odrive.handle = None
+        time.sleep(2.0)
+        odrive.prepare(logger)
+        axis = odrive.handle.axis0
+
+        # Verify pre_calibrated was persisted
+        test_assert_eq(axis.motor.config.pre_calibrated, True)
+        test_assert_eq(axis.encoder.config.pre_calibrated, True)
+
+        # Restore persisted pre_calibrated values so this test doesn't leave
+        # the device with a different saved configuration.
+        if (orig_motor_pre_cal != True) or (orig_encoder_pre_cal != True):
+            axis.motor.config.pre_calibrated = orig_motor_pre_cal
+            axis.encoder.config.pre_calibrated = orig_encoder_pre_cal
+            odrive.save_config_and_reboot()
+            axis = odrive.handle.axis0
+
+        # Re-configure CAN
+        axis.config.can.node_id = node_id
+        axis.config.can.is_extended = extended_id
+        axis.config.enable_watchdog = False
+        time.sleep(0.1)
+
+        # -----------------------------------------------------------
+        # Test 5: Compatibility regression
+        # -----------------------------------------------------------
+        logger.debug('Testing compatibility: existing CAN commands...')
+
+        def my_cmd(cmd_name, **kwargs):
+            command(canbus.handle, node_id, extended_id, cmd_name, **kwargs)
+
+        def my_req(cmd_name, **kwargs):
+            return asyncio.run(request(canbus.handle, node_id, extended_id, cmd_name, **kwargs))
+
+        # Heartbeat
+        heartbeats = asyncio.run(get_all(record_messages(canbus.handle, node_id, extended_id, 'heartbeat', timeout=2.0)))
+        test_assert_eq(len(heartbeats), 2.0 / 0.1, accuracy=0.5)
+        logger.debug(f'  Got {len(heartbeats)} heartbeats')
+
+        # Set requested state
+        my_cmd('set_requested_state', requested_state=AXIS_STATE_IDLE)
+        time.sleep(0.1)
+        test_assert_eq(axis.current_state, AXIS_STATE_IDLE)
+
+        # Get encoder estimates
+        resp = my_req('get_encoder_estimates')
+        logger.debug(f'  Encoder estimates: pos={resp["encoder_pos_estimate"]:.4f}, vel={resp["encoder_vel_estimate"]:.4f}')
+
+        # Clear errors
+        my_cmd('clear_errors')
+        time.sleep(0.05)
+
+        # -----------------------------------------------------------
+        # Test 6: GET_DEVICE_INFO (sub_cmd 0x05)
+        # -----------------------------------------------------------
+        logger.debug('Testing GET_DEVICE_INFO...')
+
+        # Protocol version
+        resp = ext_req(0x05, flags=0x01)
+        test_assert_eq(resp['status'], 0x00)
+        test_assert_eq(resp['type'], 3)  # type = uint32
+        test_assert_eq(resp['value'], 0x00000100)  # v1.0
+
+        # FW version
+        resp = ext_req(0x05, flags=0x02)
+        test_assert_eq(resp['status'], 0x00)
+        fw = resp['value']
+        logger.debug(f'  FW version: {(fw>>24)&0xFF}.{(fw>>16)&0xFF}.{(fw>>8)&0xFF}.{fw&0xFF}')
+
+        # HW version
+        resp = ext_req(0x05, flags=0x03)
+        test_assert_eq(resp['status'], 0x00)
+        hw = resp['value']
+        logger.debug(f'  HW version: {(hw>>16)&0xFF}.{(hw>>8)&0xFF}.{hw&0xFF}')
+
+        # Serial number
+        resp_lo = ext_req(0x05, flags=0x04)
+        resp_hi = ext_req(0x05, flags=0x05)
+        test_assert_eq(resp_lo['status'], 0x00)
+        test_assert_eq(resp_hi['status'], 0x00)
+        serial = (resp_hi['value'] << 32) | resp_lo['value']
+        logger.debug(f'  Serial: {serial:#018x}')
+
+        # Unknown item
+        resp = ext_req(0x05, flags=0xFF)
+        test_assert_eq(resp['status'], 0x01)  # unknown
+
+        # -----------------------------------------------------------
+        # Test 7: SET_BASIC_CONFIG / GET_BASIC_CONFIG (sub_cmd 0x06/0x07)
+        # -----------------------------------------------------------
+        logger.debug('Testing SET_BASIC_CONFIG / GET_BASIC_CONFIG...')
+
+        # Save originals
+        orig_motor_type = axis.motor.config.motor_type
+        orig_pole_pairs = axis.motor.config.pole_pairs
+        orig_calib_current = axis.motor.config.calibration_current
+        orig_current_lim = axis.motor.config.current_lim
+        orig_encoder_mode = axis.encoder.config.mode
+        orig_encoder_cpr = axis.encoder.config.cpr
+
+        try:
+            # --- SET motor_type (uint32) ---
+            resp = ext_req(0x07, flags=0x10, param2=3, value=0)  # type=uint32, value=HIGH_CURRENT
+            test_assert_eq(resp['status'], 0x00)
+            time.sleep(0.05)
+            resp = ext_req(0x06, flags=0x10)
+            test_assert_eq(resp['status'], 0x00)
+            test_assert_eq(resp['type'], 3)  # type=uint32
+            test_assert_eq(resp['value'], 0)  # HIGH_CURRENT
+
+            # --- SET pole_pairs (int32) ---
+            resp = ext_req(0x07, flags=0x11, param2=2, value=21)  # type=int32
+            test_assert_eq(resp['status'], 0x00)
+            time.sleep(0.05)
+            test_assert_eq(axis.motor.config.pole_pairs, 21)
+
+            # --- SET calibration_current (float32) ---
+            resp = ext_req(0x07, flags=0x12, param2=1, value_float=5.0)  # type=float32
+            test_assert_eq(resp['status'], 0x00)
+            time.sleep(0.05)
+            test_assert_eq(axis.motor.config.calibration_current, 5.0, accuracy=0.01)
+
+            # --- SET current_lim (float32) ---
+            resp = ext_req(0x07, flags=0x14, param2=1, value_float=15.0)  # type=float32
+            test_assert_eq(resp['status'], 0x00)
+            time.sleep(0.05)
+            test_assert_eq(axis.motor.config.current_lim, 15.0, accuracy=0.01)
+
+            # --- SET encoder cpr (int32) ---
+            resp = ext_req(0x07, flags=0x21, param2=2, value=8192)  # type=int32
+            test_assert_eq(resp['status'], 0x00)
+            time.sleep(0.05)
+            test_assert_eq(axis.encoder.config.cpr, 8192)
+
+            # --- GET readback ---
+            resp = ext_req(0x06, flags=0x15)  # torque_constant (float32)
+            test_assert_eq(resp['status'], 0x00)
+            test_assert_eq(resp['type'], 1)  # type=float32
+
+            # --- invalid type ---
+            resp = ext_req(0x07, flags=0x11, param2=1, value_float=0.0)  # pole_pairs expects int32, sending float32
+            test_assert_eq(resp['status'], 0x03)  # invalid_type
+
+            # --- invalid value ---
+            resp = ext_req(0x07, flags=0x11, param2=2, value=0)  # pole_pairs must be > 0
+            test_assert_eq(resp['status'], 0x04)  # invalid_value
+
+            # --- unknown param ---
+            resp = ext_req(0x07, flags=0xFF, param2=3, value=0)
+            test_assert_eq(resp['status'], 0x01)  # unknown_param
+
+        finally:
+            # Restore originals
+            axis.motor.config.motor_type = orig_motor_type
+            axis.motor.config.pole_pairs = orig_pole_pairs
+            axis.motor.config.calibration_current = orig_calib_current
+            axis.motor.config.current_lim = orig_current_lim
+            axis.encoder.config.mode = orig_encoder_mode
+            axis.encoder.config.cpr = orig_encoder_cpr
+
+        logger.debug('All extended CAN tests passed!')
+
+
+tests = [TestSimpleCAN(), TestExtendedCAN()]
 
 if __name__ == '__main__':
     test_runner.run(tests)

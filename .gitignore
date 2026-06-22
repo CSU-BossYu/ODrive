@@ -66,3 +66,9 @@ GUI/build
 
 docs/reStructuredText/_build/
 tools/odrive-cansimple.ini
+
+# Claude Code local config
+.claude/
+
+# Stray duplicate of tools/odrive-cansimple.dbc
+/odrive-cansimple.dbc

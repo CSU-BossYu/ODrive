@@ -2,6 +2,9 @@
 #include "can_simple.hpp"
 
 #include <odrive_main.h>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <functional>
 
 bool CANSimple::init() {
@@ -157,6 +160,9 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
             break;
         case MSG_GET_CONTROLLER_ERROR:
             get_controller_error_callback(axis);
+            break;
+        case MSG_EXTENDED_COMMAND:
+            extended_command_callback(axis, msg);
             break;
         default:
             break;
@@ -463,5 +469,346 @@ bool CANSimple::send_heartbeat(const Axis& axis) {
     can_setSignal(txmsg, encoderFlags, 48, 8, true);
     can_setSignal(txmsg, controllerFlags, 56, 8, true);
 
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// Extended command (CMD 0x1E) - protocol version 1.0
+//
+// Request:  byte0=sub_cmd  byte1=param    byte2-3=reserved  byte4-7=value
+// Response: byte0=sub_cmd  byte1=param    byte2=status      byte3=type/aux byte4-7=value
+// Note: GET_AXIS_STATUS_EX uses byte1=status, byte2=current_state, byte3=flags.
+// =====================================================================
+
+// ---- file-scope constants -------------------------------------------
+static constexpr uint8_t  EXT_TYPE_FLOAT32       = 1;
+static constexpr uint8_t  EXT_TYPE_INT32         = 2;
+static constexpr uint8_t  EXT_TYPE_UINT32        = 3;
+
+static constexpr uint8_t  EXT_STATUS_OK          = 0;
+static constexpr uint8_t  EXT_STATUS_UNKNOWN     = 1;
+static constexpr uint8_t  EXT_STATUS_READONLY    = 2;
+static constexpr uint8_t  EXT_STATUS_INVALID_TYPE = 3;
+static constexpr uint8_t  EXT_STATUS_INVALID_VALUE = 4;
+static constexpr uint8_t  EXT_STATUS_BUSY_ARMED  = 5;
+
+static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000100;  // v1.0
+
+// ---- utility --------------------------------------------------------
+static bool any_axis_armed() {
+    return std::any_of(axes.begin(), axes.end(),
+        [](auto& a) { return a.motor_.is_armed_; });
+}
+
+static bool is_valid_motor_type(uint32_t value) {
+    return value == Motor::MOTOR_TYPE_HIGH_CURRENT
+        || value == Motor::MOTOR_TYPE_GIMBAL
+        || value == Motor::MOTOR_TYPE_ACIM;
+}
+
+static bool is_valid_encoder_mode(uint32_t value) {
+    switch (value) {
+        case Encoder::MODE_INCREMENTAL:
+        case Encoder::MODE_HALL:
+        case Encoder::MODE_SINCOS:
+        case Encoder::MODE_SPI_ABS_CUI:
+        case Encoder::MODE_SPI_ABS_AMS:
+        case Encoder::MODE_SPI_ABS_AEAT:
+        case Encoder::MODE_SPI_ABS_RLS:
+        case Encoder::MODE_SPI_ABS_MA732:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool is_positive_finite(float value) {
+    return std::isfinite(value) && value > 0.0f;
+}
+
+// ---- dispatcher -----------------------------------------------------
+bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) {
+    const uint8_t sub_cmd = msg.buf[0];
+    can_Message_t txmsg;
+    txmsg.id = axis.config_.can.node_id << NUM_CMD_ID_BITS;
+    txmsg.id += MSG_EXTENDED_COMMAND;
+    txmsg.isExt = axis.config_.can.is_extended;
+    txmsg.len = 8;
+    memset(txmsg.buf, 0, 8);
+
+    switch (sub_cmd) {
+        case 0x01: return handle_get_axis_status_ex(axis, txmsg);
+        case 0x02: return handle_set_precalibrated(axis, msg, txmsg);
+        case 0x03: return handle_save_configuration(txmsg);
+        case 0x04: return handle_get_calib_result(axis, msg, txmsg);
+        case 0x05: return handle_get_device_info(msg, txmsg);
+        case 0x06: return handle_get_basic_config(axis, msg, txmsg);
+        case 0x07: return handle_set_basic_config(axis, msg, txmsg);
+        default:   return false;
+    }
+}
+
+// =====================================================================
+// 0x01: GET_AXIS_STATUS_EX
+// =====================================================================
+bool CANSimple::handle_get_axis_status_ex(Axis& axis, can_Message_t& txmsg) {
+    uint8_t flags = 0;
+    if (axis.motor_.is_calibrated_)          flags |= (1 << 0);
+    if (axis.encoder_.is_ready_)             flags |= (1 << 1);
+    if (axis.motor_.error_ != 0)             flags |= (1 << 2);
+    if (axis.encoder_.error_ != 0)           flags |= (1 << 3);
+    if (axis.controller_.error_ != 0)        flags |= (1 << 4);
+    if (axis.controller_.trajectory_done_)   flags |= (1 << 5);
+
+    txmsg.buf[0] = 0x01;
+    txmsg.buf[1] = 0x00;
+    txmsg.buf[2] = static_cast<uint8_t>(axis.current_state_);
+    txmsg.buf[3] = flags;
+    can_setSignal<uint32_t>(txmsg, axis.error_, 32, 32, true);
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x02: SET_PRECALIBRATED
+// =====================================================================
+bool CANSimple::handle_set_precalibrated(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t flags = msg.buf[1];
+    uint8_t status = EXT_STATUS_OK;
+
+    if ((flags & (1 << 0)) && (flags & (1 << 4))) status = EXT_STATUS_UNKNOWN;
+    if ((flags & (1 << 1)) && (flags & (1 << 5))) status = EXT_STATUS_UNKNOWN;
+    if (!(flags & 0x33))                           status = EXT_STATUS_UNKNOWN;
+    if (flags & ~0x33)                             status = EXT_STATUS_UNKNOWN;
+
+    if (status == EXT_STATUS_OK) {
+        if (flags & (1 << 0)) { axis.motor_.config_.pre_calibrated = true;  axis.motor_.is_calibrated_ = true; }
+        if (flags & (1 << 1)) { axis.encoder_.config_.pre_calibrated = true; axis.encoder_.is_ready_ = true; }
+        if (flags & (1 << 4)) { axis.motor_.config_.pre_calibrated = false; axis.motor_.is_calibrated_ = false; }
+        if (flags & (1 << 5)) { axis.encoder_.config_.pre_calibrated = false; axis.encoder_.is_ready_ = false; }
+    }
+
+    txmsg.buf[0] = 0x02;
+    txmsg.buf[1] = 0x00;
+    txmsg.buf[2] = status;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x03: SAVE_CONFIGURATION
+// =====================================================================
+bool CANSimple::handle_save_configuration(can_Message_t& txmsg) {
+    txmsg.buf[0] = 0x03;
+    txmsg.buf[1] = 0x00;
+
+    if (any_axis_armed()) {
+        txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
+        return canbus_->send_message(txmsg);
+    }
+
+    txmsg.buf[2] = EXT_STATUS_OK;
+    canbus_->send_message(txmsg);
+
+    // save_configuration() calls NVIC_SystemReset() after writing.
+    // The ACK above should have been transmitted by now.
+    odrv.save_configuration();
+    return true;
+}
+
+// =====================================================================
+// 0x04: GET_CALIB_RESULT
+// =====================================================================
+bool CANSimple::handle_get_calib_result(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type   = EXT_TYPE_UINT32;
+
+    txmsg.buf[0] = 0x04;
+    txmsg.buf[1] = item_id;
+
+    switch (item_id) {
+        case 0x01: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.motor_.config_.phase_resistance, 32, 32, true); break;
+        case 0x02: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.motor_.config_.phase_inductance, 32, 32, true); break;
+        case 0x03: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg, axis.encoder_.config_.phase_offset, 32, 32, true); break;
+        case 0x04: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg, axis.encoder_.config_.direction, 32, 32, true); break;
+        default:   status = EXT_STATUS_UNKNOWN; can_setSignal<uint32_t>(txmsg, 0, 32, 32, true); break;
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x05: GET_DEVICE_INFO
+// =====================================================================
+bool CANSimple::handle_get_device_info(const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    uint8_t  status = EXT_STATUS_OK;
+    uint8_t  type   = EXT_TYPE_UINT32;
+    uint32_t value  = 0;
+
+    switch (item_id) {
+        case 0x01:  // protocol_version
+            value = EXT_PROTOCOL_VERSION;
+            break;
+        case 0x02:  // fw_version  (major<<24 | minor<<16 | revision<<8 | unreleased)
+            value = (static_cast<uint32_t>(odrv.fw_version_major_)  << 24)
+                  | (static_cast<uint32_t>(odrv.fw_version_minor_)  << 16)
+                  | (static_cast<uint32_t>(odrv.fw_version_revision_) << 8)
+                  | (static_cast<uint32_t>(odrv.fw_version_unreleased_));
+            break;
+        case 0x03:  // hw_version  (major<<16 | minor<<8 | variant)
+            value = (static_cast<uint32_t>(odrv.hw_version_major_)  << 16)
+                  | (static_cast<uint32_t>(odrv.hw_version_minor_)  << 8)
+                  | (static_cast<uint32_t>(odrv.hw_version_variant_));
+            break;
+        case 0x04:  // serial_number low 32 bits
+            value = static_cast<uint32_t>(odrv.serial_number_ & 0xFFFFFFFFULL);
+            break;
+        case 0x05:  // serial_number high 32 bits
+            value = static_cast<uint32_t>((odrv.serial_number_ >> 32) & 0xFFFFFFFFULL);
+            break;
+        default:
+            status = EXT_STATUS_UNKNOWN;
+            break;
+    }
+
+    txmsg.buf[0] = 0x05;
+    txmsg.buf[1] = item_id;
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
+    can_setSignal<uint32_t>(txmsg, value, 32, 32, true);
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x06: GET_BASIC_CONFIG
+// =====================================================================
+bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t param_id = msg.buf[1];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type   = EXT_TYPE_UINT32;
+
+    txmsg.buf[0] = 0x06;
+    txmsg.buf[1] = param_id;
+
+    switch (param_id) {
+        // --- motor ---
+        case 0x10: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(axis.motor_.config_.motor_type), 32, 32, true); break;
+        case 0x11: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.motor_.config_.pole_pairs, 32, 32, true); break;
+        case 0x12: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.calibration_current, 32, 32, true); break;
+        case 0x13: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.resistance_calib_max_voltage, 32, 32, true); break;
+        case 0x14: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.current_lim, 32, 32, true); break;
+        case 0x15: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.torque_constant, 32, 32, true); break;
+        // --- encoder ---
+        case 0x20: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(axis.encoder_.config_.mode), 32, 32, true); break;
+        case 0x21: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.encoder_.config_.cpr, 32, 32, true); break;
+        case 0x22: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.abs_spi_cs_gpio_pin, 32, 32, true); break;
+        case 0x23: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.bandwidth, 32, 32, true); break;
+        default:   status = EXT_STATUS_UNKNOWN; can_setSignal<uint32_t>(txmsg, 0, 32, 32, true); break;
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x07: SET_BASIC_CONFIG
+// =====================================================================
+bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t  param_id = msg.buf[1];
+    const uint8_t  req_type = msg.buf[2];
+    uint8_t status = EXT_STATUS_OK;
+
+    txmsg.buf[0] = 0x07;
+    txmsg.buf[1] = param_id;
+    txmsg.buf[3] = req_type;
+
+    // Refuse writes while any motor is armed
+    if (any_axis_armed()) {
+        txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
+        return canbus_->send_message(txmsg);
+    }
+
+    switch (param_id) {
+        // --- motor ---
+        case 0x10: {  // motor_type (uint32)
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (!is_valid_motor_type(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.motor_.config_.motor_type = static_cast<Motor::MotorType>(value);
+            break;
+        }
+        case 0x11: {  // pole_pairs (int32)
+            if (req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            int32_t value = can_getSignal<int32_t>(msg, 32, 32, true);
+            if (value <= 0) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.motor_.config_.pole_pairs = value;
+            break;
+        }
+        case 0x12: {  // calibration_current (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.motor_.config_.calibration_current = value;
+            break;
+        }
+        case 0x13: {  // resistance_calib_max_voltage (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.motor_.config_.resistance_calib_max_voltage = value;
+            break;
+        }
+        case 0x14: {  // current_lim (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.motor_.config_.current_lim = value;
+            break;
+        }
+        case 0x15: {  // torque_constant (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.motor_.config_.torque_constant = value;
+            break;
+        }
+        // --- encoder ---
+        case 0x20: {  // encoder mode (uint32)
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (!is_valid_encoder_mode(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.mode = static_cast<Encoder::Mode>(value);
+            break;
+        }
+        case 0x21: {  // cpr (int32)
+            if (req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            int32_t value = can_getSignal<int32_t>(msg, 32, 32, true);
+            if (value <= 0) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.cpr = value;
+            break;
+        }
+        case 0x22: {  // abs_spi_cs_gpio_pin (uint32, stored as uint16)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (value >= GPIO_COUNT) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_abs_spi_cs_gpio_pin(static_cast<uint16_t>(value));
+            break;
+        }
+        case 0x23: {  // encoder bandwidth (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_bandwidth(value);
+            break;
+        }
+        default:
+            status = EXT_STATUS_UNKNOWN;
+            break;
+    }
+
+    txmsg.buf[2] = status;
     return canbus_->send_message(txmsg);
 }

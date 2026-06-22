@@ -28,7 +28,7 @@ endif
 $(info board version: $(CONFIG_BOARD_VERSION))
 
 all:
-	@mkdir -p autogen
+	@$(PY_CMD) -c "import os; os.makedirs('autogen', exist_ok=True)"
 	@$(PY_CMD) ../tools/odrive/version.py --output autogen/version.c
 	@tup --quiet -no-environ-check
 	@$(PY_CMD) interface_generator_stub.py --definitions odrive-interface.yaml --template ../tools/enums_template.j2 --output ../tools/odrive/enums.py
@@ -36,11 +36,7 @@ all:
 	@cd ../tools/ && $(PY_CMD) create_can_dbc.py
 
 # Copy libfibre files to odrivetool if they were built
-	@ ! test -f "fibre-cpp/build/libfibre-linux-amd64.so" || cp fibre-cpp/build/libfibre-linux-amd64.so ../tools/odrive/pyfibre/fibre/
-	@ ! test -f "fibre-cpp/build/libfibre-linux-armhf.so" || cp fibre-cpp/build/libfibre-linux-armhf.so ../tools/odrive/pyfibre/fibre/
-	@ ! test -f "fibre-cpp/build/libfibre-linux-aarch64.so" || cp fibre-cpp/build/libfibre-linux-aarch64.so ../tools/odrive/pyfibre/fibre/
-	@ ! test -f "fibre-cpp/build/libfibre-macos-x86.dylib" || cp fibre-cpp/build/libfibre-macos-x86.dylib ../tools/odrive/pyfibre/fibre/
-	@ ! test -f "fibre-cpp/build/libfibre-windows-amd64.dll" || cp fibre-cpp/build/libfibre-windows-amd64.dll ../tools/odrive/pyfibre/fibre/
+	@$(PY_CMD) -c "import os, shutil; dst='../tools/odrive/pyfibre/fibre'; os.makedirs(dst, exist_ok=True); [shutil.copy2(src, dst) for src in ('fibre-cpp/build/libfibre-linux-amd64.so', 'fibre-cpp/build/libfibre-linux-armhf.so', 'fibre-cpp/build/libfibre-linux-aarch64.so', 'fibre-cpp/build/libfibre-macos-x86.dylib', 'fibre-cpp/build/libfibre-windows-amd64.dll') if os.path.isfile(src)]"
 
 libfibre-linux-armhf:
 	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/fibre-linux-armhf-build:/build/build -w /build fibre-compiler configs/linux-armhf.config

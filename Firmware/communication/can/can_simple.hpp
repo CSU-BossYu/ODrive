@@ -37,6 +37,7 @@ class CANSimple {
         MSG_SET_VEL_GAINS,
         MSG_GET_ADC_VOLTAGE,
         MSG_GET_CONTROLLER_ERROR,
+        MSG_EXTENDED_COMMAND = 0x01E,  // ODrive vendor extension
         MSG_CO_HEARTBEAT_CMD = 0x700,  // CANOpen NMT Heartbeat  SEND
     };
 
@@ -82,6 +83,17 @@ class CANSimple {
     static void set_linear_count_callback(Axis& axis, const can_Message_t& msg);
     static void set_pos_gain_callback(Axis& axis, const can_Message_t& msg);
     static void set_vel_gains_callback(Axis& axis, const can_Message_t& msg);
+
+    // Extended command (CMD 0x1E) dispatcher + sub-handlers
+    bool extended_command_callback(Axis& axis, const can_Message_t& msg);
+
+    bool handle_get_axis_status_ex(Axis& axis, can_Message_t& txmsg);
+    bool handle_set_precalibrated(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_save_configuration(can_Message_t& txmsg);
+    bool handle_get_calib_result(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_get_device_info(const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_get_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_set_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
 
     // Other functions
     static void nmt_callback(const Axis& axis, const can_Message_t& msg);

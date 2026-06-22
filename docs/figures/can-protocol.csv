@@ -130,4 +130,5 @@ IEEE 754 Float","32
 0"
 0x01C,Get ADC Voltage****,Master***,ADC Voltage,0,IEEE 754 Float,32,1,0
 0x01D,Get Controller Error*,Axis,Controller Error,0,Unsigned Int,32,1,0
+0x01E,Extended Command,Master,"Sub-cmds: 0x01=GET_AXIS_STATUS_EX, 0x02=SET_PRECALIBRATED, 0x03=SAVE_CONFIGURATION, 0x04=GET_CALIB_RESULT, 0x05=GET_DEVICE_INFO, 0x06=GET_BASIC_CONFIG, 0x07=SET_BASIC_CONFIG. ODrive vendor extension - protocol v1.0. Request: byte0=sub_cmd byte1=item/param byte2=type for SET_BASIC_CONFIG byte3=reserved byte4-7=value(LE). Response: byte0=sub_cmd byte1=item/param byte2=status byte3=type/aux byte4-7=value(LE). GET_AXIS_STATUS_EX response exception: byte1=status byte2=current_state byte3=flags.",-,-,-,-,-
 0x700,CANOpen Heartbeat Message**,Slave,-,-,-,-,-,-
