@@ -1,6 +1,7 @@
 
 #include "odrive_main.h"
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 
 bool Controller::apply_config() {
@@ -110,6 +111,20 @@ void Controller::set_input_pos_and_steps(float const pos) {
     } else {
         axis_->steps_ = (int64_t)(pos * config_.steps_per_circular_range);
     }
+}
+
+void Controller::set_mit_input(float pos_rad, float vel_rad_per_s, float kp, float kd, float torque_ff) {
+    // Reject non-finite frames rather than poisoning the control loop.
+    if (!std::isfinite(pos_rad) || !std::isfinite(vel_rad_per_s) ||
+        !std::isfinite(kp) || !std::isfinite(kd) || !std::isfinite(torque_ff)) {
+        return;
+    }
+    // kp / kd are gains and must not be negative.
+    mit_pos_rad_ = pos_rad;
+    mit_vel_rad_per_s_ = vel_rad_per_s;
+    mit_kp_ = std::max(kp, 0.0f);
+    mit_kd_ = std::max(kd, 0.0f);
+    mit_torque_ff_ = torque_ff;
 }
 
 bool Controller::control_mode_updated() {
@@ -274,6 +289,39 @@ bool Controller::update() {
             pos_setpoint_ = input_pos_ + autotuning_.pos_amplitude * s; // + pos_amp_c * c
             vel_setpoint_ = input_vel_ + autotuning_.vel_amplitude * c;
             torque_setpoint_ = input_torque_ + autotuning_.torque_amplitude * -s;
+        } break;
+        case INPUT_MODE_MIT: {
+            // MIT-style packed control: compute torque directly from the
+            // per-frame kp/kd/t_ff against the current encoder estimates.
+            // MIT semantics expect the computed torque to reach the motor
+            // unmodified, so require torque control mode. In any other mode the
+            // velocity PI / position loop would re-process torque_setpoint_ and
+            // the result would no longer match the MIT command.
+            if (config_.control_mode != CONTROL_MODE_TORQUE_CONTROL) {
+                set_error(ERROR_INVALID_INPUT_MODE);
+                return false;
+            }
+            if (!pos_estimate_linear.has_value() || !vel_estimate.has_value()) {
+                set_error(ERROR_INVALID_ESTIMATE);
+                return false;
+            }
+
+            float pos_estimate_rad = *pos_estimate_linear * 2.0f * M_PI;
+            float vel_estimate_rad = *vel_estimate * 2.0f * M_PI;
+
+            float pos_err = mit_pos_rad_ - pos_estimate_rad;
+            float vel_err = mit_vel_rad_per_s_ - vel_estimate_rad;
+
+            torque_setpoint_ =
+                mit_kp_ * pos_err +
+                mit_kd_ * vel_err +
+                mit_torque_ff_;
+
+            // Mirror the command into the setpoints (in turns) for telemetry /
+            // downstream code that inspects them. They are not re-processed
+            // when control_mode == CONTROL_MODE_TORQUE_CONTROL.
+            pos_setpoint_ = mit_pos_rad_ / (2.0f * M_PI);
+            vel_setpoint_ = mit_vel_rad_per_s_ / (2.0f * M_PI);
         } break;
         default: {
             set_error(ERROR_INVALID_INPUT_MODE);

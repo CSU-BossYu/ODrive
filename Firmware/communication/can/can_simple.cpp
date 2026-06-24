@@ -164,6 +164,9 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
         case MSG_EXTENDED_COMMAND:
             extended_command_callback(axis, msg);
             break;
+        case MSG_SET_MIT_CONTROL:
+            set_mit_control_callback(axis, msg);
+            break;
         default:
             break;
     }
@@ -333,6 +336,62 @@ void CANSimple::set_pos_gain_callback(Axis& axis, const can_Message_t& msg) {
 void CANSimple::set_vel_gains_callback(Axis& axis, const can_Message_t& msg) {
     axis.controller_.config_.vel_gain = can_getSignal<float>(msg, 0, 32, true);
     axis.controller_.config_.vel_integrator_gain = can_getSignal<float>(msg, 32, 32, true);
+}
+
+// =====================================================================
+// MIT-style packed control frame (CMD 0x01F)
+//
+// 8-byte layout, big-endian bit packing (AK / T-Motor compatible):
+//   p_des : 16 bit   (buf[0..1])
+//   v_des : 12 bit   (buf[2] : buf[3] hi-nibble)
+//   kp    : 12 bit   (buf[3] lo-nibble : buf[4])
+//   kd    : 12 bit   (buf[5] : buf[6] hi-nibble)
+//   t_ff  : 12 bit   (buf[6] lo-nibble : buf[7])
+//
+// Units: p_des [rad], v_des [rad/s], kp [Nm/rad], kd [Nm/(rad/s)], t_ff [Nm].
+// =====================================================================
+static constexpr float MIT_P_MIN  = -12.5f;   // [rad]
+static constexpr float MIT_P_MAX  =  12.5f;
+static constexpr float MIT_V_MIN  = -45.0f;   // [rad/s]
+static constexpr float MIT_V_MAX  =  45.0f;
+static constexpr float MIT_KP_MIN = 0.0f;     // [Nm/rad]
+static constexpr float MIT_KP_MAX = 500.0f;
+static constexpr float MIT_KD_MIN = 0.0f;     // [Nm/(rad/s)]
+static constexpr float MIT_KD_MAX = 5.0f;
+static constexpr float MIT_T_MIN  = -18.0f;   // [Nm]
+static constexpr float MIT_T_MAX  =  18.0f;
+
+// Inverse of the standard AK/T-Motor quantiser: maps a raw unsigned integer
+// in [0, 2^bits - 1] back to a float in [min, max].
+static inline float mit_uint_to_float(uint32_t raw, float min, float max, uint32_t bits) {
+    float span = max - min;
+    float scale = span / static_cast<float>((1u << bits) - 1u);
+    return min + scale * static_cast<float>(raw);
+}
+
+void CANSimple::set_mit_control_callback(Axis& axis, const can_Message_t& msg) {
+    // MIT frames are exactly 8 bytes; ignore malformed frames silently.
+    if (msg.len != 8) {
+        return;
+    }
+
+    const uint8_t* b = msg.buf;
+    uint16_t p_int  = static_cast<uint16_t>((b[0] << 8) | b[1]);
+    uint16_t v_int  = static_cast<uint16_t>((b[2] << 4) | (b[3] >> 4));
+    uint16_t kp_int = static_cast<uint16_t>(((b[3] & 0x0F) << 8) | b[4]);
+    uint16_t kd_int = static_cast<uint16_t>((b[5] << 4) | (b[6] >> 4));
+    uint16_t t_int  = static_cast<uint16_t>(((b[6] & 0x0F) << 8) | b[7]);
+
+    float p_des = mit_uint_to_float(p_int,  MIT_P_MIN,  MIT_P_MAX,  16);
+    float v_des = mit_uint_to_float(v_int,  MIT_V_MIN,  MIT_V_MAX,  12);
+    float kp    = mit_uint_to_float(kp_int, MIT_KP_MIN, MIT_KP_MAX, 12);
+    float kd    = mit_uint_to_float(kd_int, MIT_KD_MIN, MIT_KD_MAX, 12);
+    float t_ff  = mit_uint_to_float(t_int,  MIT_T_MIN,  MIT_T_MAX,  12);
+
+    // Hand the decoded values to the controller. The controller only acts on
+    // them when input_mode == INPUT_MODE_MIT; otherwise this just updates the
+    // stored input and does not drive the motor.
+    axis.controller_.set_mit_input(p_des, v_des, kp, kd, t_ff);
 }
 
 bool CANSimple::get_iq_callback(const Axis& axis) {
@@ -526,6 +585,10 @@ static bool is_positive_finite(float value) {
     return std::isfinite(value) && value > 0.0f;
 }
 
+static bool is_nonnegative_finite(float value) {
+    return std::isfinite(value) && value >= 0.0f;
+}
+
 // ---- dispatcher -----------------------------------------------------
 bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) {
     const uint8_t sub_cmd = msg.buf[0];
@@ -544,6 +607,8 @@ bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) 
         case 0x05: return handle_get_device_info(msg, txmsg);
         case 0x06: return handle_get_basic_config(axis, msg, txmsg);
         case 0x07: return handle_set_basic_config(axis, msg, txmsg);
+        case 0x08: return handle_get_anticogging_status(axis, msg, txmsg);
+        case 0x09: return handle_set_anticogging_config(axis, msg, txmsg);
         default:   return false;
     }
 }
@@ -705,6 +770,10 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
         case 0x21: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.encoder_.config_.cpr, 32, 32, true); break;
         case 0x22: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.abs_spi_cs_gpio_pin, 32, 32, true); break;
         case 0x23: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.bandwidth, 32, 32, true); break;
+        // --- controller ---
+        case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
+        case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
+        case 0x32: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_integrator_gain, 32, 32, true); break;
         default:   status = EXT_STATUS_UNKNOWN; can_setSignal<uint32_t>(txmsg, 0, 32, 32, true); break;
     }
 
@@ -802,6 +871,170 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             float value = can_getSignal<float>(msg, 32, 32, true);
             if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
             axis.encoder_.config_.set_bandwidth(value);
+            break;
+        }
+        // --- controller ---
+        case 0x30: {  // pos_gain (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.pos_gain = value;
+            break;
+        }
+        case 0x31: {  // vel_gain (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.vel_gain = value;
+            break;
+        }
+        case 0x32: {  // vel_integrator_gain (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.vel_integrator_gain = value;
+            break;
+        }
+        default:
+            status = EXT_STATUS_UNKNOWN;
+            break;
+    }
+
+    txmsg.buf[2] = status;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x08: GET_ANTICOGGING_STATUS
+//
+// item 0x01: flags
+//   bit0 calib_anticogging, bit1 anticogging_valid, bit2 pre_calibrated,
+//   bit3 anticogging_enabled
+// item 0x02: calibration index [0..3600]
+// item 0x03: calib_pos_threshold [encoder counts]
+// item 0x04: calib_vel_threshold [encoder counts/s]
+// item 0x05: cogging_ratio [turn/index]
+// item 0x06: odrv.error
+// item 0x10: cogging_map[index], where request value is the uint32 index
+// =====================================================================
+bool CANSimple::handle_get_anticogging_status(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type = EXT_TYPE_UINT32;
+
+    txmsg.buf[0] = 0x08;
+    txmsg.buf[1] = item_id;
+
+    switch (item_id) {
+        case 0x01: {
+            uint32_t flags = 0;
+            if (axis.controller_.config_.anticogging.calib_anticogging) flags |= (1 << 0);
+            if (axis.controller_.anticogging_valid_)                    flags |= (1 << 1);
+            if (axis.controller_.config_.anticogging.pre_calibrated)     flags |= (1 << 2);
+            if (axis.controller_.config_.anticogging.anticogging_enabled) flags |= (1 << 3);
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, flags, 32, 32, true);
+            break;
+        }
+        case 0x02:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, axis.controller_.config_.anticogging.index, 32, 32, true);
+            break;
+        case 0x03:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, axis.controller_.config_.anticogging.calib_pos_threshold, 32, 32, true);
+            break;
+        case 0x04:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, axis.controller_.config_.anticogging.calib_vel_threshold, 32, 32, true);
+            break;
+        case 0x05:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, axis.encoder_.getCoggingRatio(), 32, 32, true);
+            break;
+        case 0x06:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(odrv.error_), 32, 32, true);
+            break;
+        case 0x10: {
+            uint32_t index = can_getSignal<uint32_t>(msg, 32, 32, true);
+            type = EXT_TYPE_FLOAT32;
+            if (index >= 3600) {
+                status = EXT_STATUS_INVALID_VALUE;
+                can_setSignal<float>(txmsg, 0.0f, 32, 32, true);
+            } else {
+                can_setSignal<float>(txmsg, axis.controller_.config_.anticogging.cogging_map[index], 32, 32, true);
+            }
+            break;
+        }
+        default:
+            status = EXT_STATUS_UNKNOWN;
+            can_setSignal<uint32_t>(txmsg, 0, 32, 32, true);
+            break;
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x09: SET_ANTICOGGING_CONFIG
+//
+// item 0x01: anticogging_enabled (uint32/bool)
+// item 0x02: pre_calibrated (uint32/bool)
+// item 0x03: calib_pos_threshold [encoder counts] (float32)
+// item 0x04: calib_vel_threshold [encoder counts/s] (float32)
+// item 0x05: reset calibration state/map index (uint32, nonzero resets)
+// =====================================================================
+bool CANSimple::handle_set_anticogging_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    const uint8_t req_type = msg.buf[2];
+    uint8_t status = EXT_STATUS_OK;
+
+    txmsg.buf[0] = 0x09;
+    txmsg.buf[1] = item_id;
+    txmsg.buf[3] = req_type;
+
+    if (any_axis_armed()) {
+        txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
+        return canbus_->send_message(txmsg);
+    }
+
+    switch (item_id) {
+        case 0x01: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.controller_.config_.anticogging.anticogging_enabled = can_getSignal<uint32_t>(msg, 32, 32, true) != 0;
+            break;
+        }
+        case 0x02: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            bool value = can_getSignal<uint32_t>(msg, 32, 32, true) != 0;
+            axis.controller_.config_.anticogging.pre_calibrated = value;
+            axis.controller_.anticogging_valid_ = value;
+            break;
+        }
+        case 0x03: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.anticogging.calib_pos_threshold = value;
+            break;
+        }
+        case 0x04: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.anticogging.calib_vel_threshold = value;
+            break;
+        }
+        case 0x05: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            if (can_getSignal<uint32_t>(msg, 32, 32, true) != 0) {
+                axis.controller_.config_.anticogging.index = 0;
+                axis.controller_.config_.anticogging.calib_anticogging = false;
+                axis.controller_.anticogging_valid_ = false;
+            }
             break;
         }
         default:

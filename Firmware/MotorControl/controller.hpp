@@ -75,6 +75,11 @@ public:
 
     bool select_encoder(size_t encoder_num);
 
+    // Accept a decoded MIT-style packed control frame. Only stores the values
+    // (with finite/clamp sanity checks); the torque is computed later in
+    // update() under INPUT_MODE_MIT. Safe to call from the CAN thread.
+    void set_mit_input(float pos_rad, float vel_rad_per_s, float kp, float kd, float torque_ff);
+
     // Trajectory-Planned control
     void move_to_pos(float goal_point);
     void move_incremental(float displacement, bool from_goal_point);
@@ -114,6 +119,15 @@ public:
     float input_torque_ = 0.0f;  // [Nm]
     float input_filter_kp_ = 0.0f;
     float input_filter_ki_ = 0.0f;
+
+    // MIT-style packed control input (set from CAN layer, consumed in update()).
+    // Position/velocity are in [rad] / [rad/s]; kp in [Nm/rad], kd in [Nm/(rad/s)],
+    // torque feed-forward in [Nm]. These are only used when input_mode == INPUT_MODE_MIT.
+    float mit_pos_rad_ = 0.0f;
+    float mit_vel_rad_per_s_ = 0.0f;
+    float mit_kp_ = 0.0f;        // [Nm / rad]
+    float mit_kd_ = 0.0f;        // [Nm / (rad/s)]
+    float mit_torque_ff_ = 0.0f; // [Nm]
 
     Autotuning_t autotuning_;
     float autotuning_phase_ = 0.0f;

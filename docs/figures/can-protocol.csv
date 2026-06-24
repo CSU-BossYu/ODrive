@@ -130,5 +130,30 @@ IEEE 754 Float","32
 0"
 0x01C,Get ADC Voltage****,Master***,ADC Voltage,0,IEEE 754 Float,32,1,0
 0x01D,Get Controller Error*,Axis,Controller Error,0,Unsigned Int,32,1,0
-0x01E,Extended Command,Master,"Sub-cmds: 0x01=GET_AXIS_STATUS_EX, 0x02=SET_PRECALIBRATED, 0x03=SAVE_CONFIGURATION, 0x04=GET_CALIB_RESULT, 0x05=GET_DEVICE_INFO, 0x06=GET_BASIC_CONFIG, 0x07=SET_BASIC_CONFIG. ODrive vendor extension - protocol v1.0. Request: byte0=sub_cmd byte1=item/param byte2=type for SET_BASIC_CONFIG byte3=reserved byte4-7=value(LE). Response: byte0=sub_cmd byte1=item/param byte2=status byte3=type/aux byte4-7=value(LE). GET_AXIS_STATUS_EX response exception: byte1=status byte2=current_state byte3=flags.",-,-,-,-,-
+0x01E,Extended Command,Master,"Sub-cmds: 0x01=GET_AXIS_STATUS_EX, 0x02=SET_PRECALIBRATED, 0x03=SAVE_CONFIGURATION, 0x04=GET_CALIB_RESULT, 0x05=GET_DEVICE_INFO, 0x06=GET_BASIC_CONFIG, 0x07=SET_BASIC_CONFIG, 0x08=GET_ANTICOGGING_STATUS, 0x09=SET_ANTICOGGING_CONFIG. ODrive vendor extension - protocol v1.0. Request: byte0=sub_cmd byte1=item/param byte2=type for SET commands byte3=reserved byte4-7=value(LE). Response: byte0=sub_cmd byte1=item/param byte2=status byte3=type/aux byte4-7=value(LE). GET_AXIS_STATUS_EX response exception: byte1=status byte2=current_state byte3=flags.",-,-,-,-,-
+0x01F,Set MIT Control,Master,"MIT Pos Des
+MIT Vel Des
+MIT Kp
+MIT Kd
+MIT Torque FF","0.0
+2.0
+3.4
+5.0
+6.4","Packed Unsigned Int
+Packed Unsigned Int
+Packed Unsigned Int
+Packed Unsigned Int
+Packed Unsigned Int","16
+12
+12
+12
+12","25/65535
+90/4095
+500/4095
+5/4095
+36/4095","-12.5
+-45
+0
+0
+-18"
 0x700,CANOpen Heartbeat Message**,Slave,-,-,-,-,-,-

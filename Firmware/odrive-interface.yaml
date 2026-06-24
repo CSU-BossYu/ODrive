@@ -1723,6 +1723,23 @@ valuetypes:
           Used for tuning your odrive, this mode allows the user to set different frequencies.
           Set control_mode for the loop you want to tune, then set the frequency desired.
           The ODrive will send a 1 turn amplitude sine wave to the controller with the given frequency and phase.
+      MIT:
+        brief: MIT-style packed position/velocity/torque control (per-frame kp/kd).
+        doc: |
+          Accepts a single 8-byte MIT-style packed frame (compatible with the
+          common AK/T-Motor layout) carrying p_des, v_des, kp, kd and t_ff.
+
+          Each frame is decoded in the CAN layer and handed to the controller,
+          which evaluates `torque = kp*(p_des - pos) + kd*(v_des - vel) + t_ff`
+          directly into `torque_setpoint_`. Because kp and kd travel per-frame,
+          this mode does not touch `config.pos_gain` / `config.vel_gain`.
+
+          ### Valid Inputs:
+          * MIT packed frame (CMD 0x01F)
+
+          ### Valid Control Modes:
+          * `CONTROL_MODE_TORQUE_CONTROL` (recommended; avoids the velocity PI
+            and position loop re-processing the MIT-computed torque)
 
   ODrive.Motor.MotorType:
     values:

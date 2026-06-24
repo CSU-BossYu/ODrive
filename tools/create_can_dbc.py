@@ -228,6 +228,37 @@ for axisID in range(0, 8):
         senders=[newNode.name]
     )
 
+    # 0x01F - Set MIT Control (AK/T-Motor compatible packed frame)
+    # Big-endian (Motorola) bit packing, non-byte-aligned 12-bit fields:
+    #   p_des 16b @bit7   v_des 12b @bit23   kp 12b @bit27
+    #   kd    12b @bit47   t_ff  12b @bit51
+    # Each raw unsigned int maps linearly to [min, max] over (2^bits - 1) steps.
+    mitPos = can.Signal("MIT_Pos_Des", 7, 16, byte_order='big_endian',
+                        scale=25.0/65535.0, offset=-12.5,
+                        minimum=-12.5, maximum=12.5, unit='rad',
+                        receivers=[newNode.name])
+    mitVel = can.Signal("MIT_Vel_Des", 23, 12, byte_order='big_endian',
+                        scale=90.0/4095.0, offset=-45.0,
+                        minimum=-45.0, maximum=45.0, unit='rad/s',
+                        receivers=[newNode.name])
+    mitKp = can.Signal("MIT_Kp", 27, 12, byte_order='big_endian',
+                       scale=500.0/4095.0, offset=0.0,
+                       minimum=0.0, maximum=500.0, unit='Nm/rad',
+                       receivers=[newNode.name])
+    mitKd = can.Signal("MIT_Kd", 47, 12, byte_order='big_endian',
+                       scale=5.0/4095.0, offset=0.0,
+                       minimum=0.0, maximum=5.0, unit='Nm/(rad/s)',
+                       receivers=[newNode.name])
+    mitTff = can.Signal("MIT_Torque_FF", 51, 12, byte_order='big_endian',
+                        scale=36.0/4095.0, offset=-18.0,
+                        minimum=-18.0, maximum=18.0, unit='Nm',
+                        receivers=[newNode.name])
+    setMitCtrlMsg = can.Message(
+        0x01F, "Set_MIT_Control", 8,
+        [mitPos, mitVel, mitKp, mitKd, mitTff],
+        senders=['Master']
+    )
+
     axisMsgs = [
         heartbeatMsg,
         motorErrorMsg,
@@ -257,6 +288,7 @@ for axisID in range(0, 8):
         getADCVoltageMsg,
         controllerErrorMsg,
         extendedCmdMsg,
+        setMitCtrlMsg,
     ]
 
     masterMsgs = [
