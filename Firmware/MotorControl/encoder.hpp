@@ -5,6 +5,7 @@ class Encoder;
 
 #include <board.h> // needed for arm_math.h
 #include <Drivers/STM32/stm32_spi_arbiter.hpp>
+#include <Drivers/MT6826S/mt6826s_spi.hpp>
 #include "utils.hpp"
 #include <autogen/interfaces.hpp>
 #include "component.hpp"
@@ -135,6 +136,8 @@ public:
 
     bool abs_spi_start_transaction();
     void abs_spi_cb(bool success);
+    static void mt6826s_spi_cb(void* ctx, const Mt6826sSpi::Sample& sample, bool success);
+    void handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool success);
     void abs_spi_cs_pin_init();
     bool abs_spi_pos_updated_ = false;
     Mode mode_ = MODE_INCREMENTAL;
@@ -144,6 +147,7 @@ public:
     uint16_t abs_spi_dma_tx_[1] = {0xFFFF};
     uint16_t abs_spi_dma_rx_[1];
     Stm32SpiArbiter::SpiTask spi_task_;
+    Mt6826sSpi mt6826s_spi_;
 
     constexpr float getCoggingRatio(){
         return 1.0f / 3600.0f;

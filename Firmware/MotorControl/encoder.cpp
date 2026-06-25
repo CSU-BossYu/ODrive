@@ -60,6 +60,14 @@ void Encoder::setup() {
     if(mode_ & MODE_FLAG_ABS){
         abs_spi_cs_pin_init();
 
+        if (mode_ == MODE_SPI_ABS_MT6826S) {
+            Mt6826sSpi::Config mt6826s_config = {};
+            mt6826s_config.check_crc = true;
+            mt6826s_config.check_fixed_bits = true;
+            mt6826s_config.fail_on_status_warning = false;
+            mt6826s_spi_.init(spi_arbiter_, abs_spi_cs_gpio_, mt6826s_config);
+        }
+
         if (axis_->controller_.config_.anticogging.pre_calibrated) {
             axis_->controller_.anticogging_valid_ = true;
         }
@@ -499,6 +507,11 @@ void Encoder::sample_now() {
             // Do nothing
         } break;
 
+        case MODE_SPI_ABS_MT6826S: {
+            mt6826s_spi_.start_sample_async(&Encoder::mt6826s_spi_cb, this);
+            // Do nothing
+        } break;
+
         default: {
            set_error(ERROR_UNSUPPORTED_ENCODER_MODE);
         } break;
@@ -609,6 +622,23 @@ void Encoder::abs_spi_cb(bool success) {
 
 done:
     Stm32SpiArbiter::release_task(&spi_task_);
+}
+
+void Encoder::mt6826s_spi_cb(void* ctx, const Mt6826sSpi::Sample& sample, bool success) {
+    reinterpret_cast<Encoder*>(ctx)->handle_mt6826s_spi_cb(sample, success);
+}
+
+void Encoder::handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool success) {
+    if (!success || !sample.valid) {
+        return;
+    }
+
+    pos_abs_ = sample.angle;
+    abs_spi_pos_updated_ = true;
+
+    if (config_.pre_calibrated) {
+        is_ready_ = true;
+    }
 }
 
 void Encoder::abs_spi_cs_pin_init(){
@@ -732,6 +762,7 @@ bool Encoder::update() {
         case MODE_SPI_ABS_AMS:
         case MODE_SPI_ABS_CUI: 
         case MODE_SPI_ABS_AEAT:
+        case MODE_SPI_ABS_MT6826S:
         case MODE_SPI_ABS_MA732: {
             if (abs_spi_pos_updated_ == false) {
                 // Low pass filter the error

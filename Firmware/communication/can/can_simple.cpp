@@ -575,6 +575,7 @@ static bool is_valid_encoder_mode(uint32_t value) {
         case Encoder::MODE_SPI_ABS_AEAT:
         case Encoder::MODE_SPI_ABS_RLS:
         case Encoder::MODE_SPI_ABS_MA732:
+        case Encoder::MODE_SPI_ABS_MT6826S:
             return true;
         default:
             return false;
@@ -774,6 +775,9 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
         case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
         case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
         case 0x32: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_integrator_gain, 32, 32, true); break;
+        // --- odrive power limits ---
+        case 0x40: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   odrv.config_.dc_max_negative_current, 32, 32, true); break;
+        case 0x41: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   odrv.config_.dc_max_positive_current, 32, 32, true); break;
         default:   status = EXT_STATUS_UNKNOWN; can_setSignal<uint32_t>(txmsg, 0, 32, 32, true); break;
     }
 
@@ -893,6 +897,20 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             float value = can_getSignal<float>(msg, 32, 32, true);
             if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
             axis.controller_.config_.vel_integrator_gain = value;
+            break;
+        }
+        case 0x40: {  // odrv.config.dc_max_negative_current (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!std::isfinite(value) || value > 0.0f) { status = EXT_STATUS_INVALID_VALUE; break; }
+            odrv.config_.dc_max_negative_current = value;
+            break;
+        }
+        case 0x41: {  // odrv.config.dc_max_positive_current (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            odrv.config_.dc_max_positive_current = value;
             break;
         }
         default:

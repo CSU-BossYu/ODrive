@@ -1599,6 +1599,9 @@ valuetypes:
       SPI_ABS_MA732:
         value: 0x104
         doc: MagAlpha MA732 magnetic encoder
+      SPI_ABS_MT6826S:
+        value: 0x105
+        doc: MT6826S 15-bit magnetic encoder over SPI
 
   ODrive.Controller.ControlMode:
     values:
