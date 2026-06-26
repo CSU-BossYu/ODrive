@@ -75,6 +75,12 @@ void Stm32SpiArbiter::transfer_async(SpiTask* task) {
     // If the list was empty before, kick off the SPI arbiter now
     if (ptr == &task_list_) {
         if (!start()) {
+            CRITICAL_SECTION() {
+                if (task_list_ == task) {
+                    task_list_ = task->next;
+                }
+                task->next = nullptr;
+            }
             if (task->on_complete) {
                 (*task->on_complete)(task->on_complete_ctx, false);
             }
@@ -113,16 +119,21 @@ void Stm32SpiArbiter::on_complete() {
     }
 
     // Wrap up transfer
-    task_list_->ncs_gpio.write(true);
-    if (task_list_->on_complete) {
-        (*task_list_->on_complete)(task_list_->on_complete_ctx, true);
+    SpiTask* completed = task_list_;
+    completed->ncs_gpio.write(true);
+
+    SpiTask* next = nullptr;
+    CRITICAL_SECTION() {
+        next = completed->next;
+        task_list_ = next;
+        completed->next = nullptr;
+    }
+
+    if (completed->on_complete) {
+        (*completed->on_complete)(completed->on_complete_ctx, true);
     }
 
     // Start next task if any
-    SpiTask* next = nullptr;
-    CRITICAL_SECTION() {
-        next = task_list_ = task_list_->next;
-    }
     if (next) {
         start();
     }
