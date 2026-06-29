@@ -5,7 +5,6 @@ class Axis;
 
 #include "encoder.hpp"
 #include "acim_estimator.hpp"
-#include "sensorless_estimator.hpp"
 #include "controller.hpp"
 #include "open_loop_controller.hpp"
 #include "trapTraj.hpp"
@@ -34,7 +33,6 @@ public:
     struct TaskTimes {
         TaskTimer thermistor_update;
         TaskTimer encoder_update;
-        TaskTimer sensorless_estimator_update;
         TaskTimer endstop_update;
         TaskTimer can_heartbeat;
         TaskTimer controller_update;
@@ -48,7 +46,6 @@ public:
     };
 
     static LockinConfig_t default_calibration();
-    static LockinConfig_t default_sensorless();
     static LockinConfig_t default_lockin();
 
     struct CANConfig_t {
@@ -59,10 +56,8 @@ public:
         uint32_t motor_error_rate_ms = 0;
         uint32_t encoder_error_rate_ms = 0;
         uint32_t controller_error_rate_ms = 0;
-        uint32_t sensorless_error_rate_ms = 0;
         uint32_t encoder_count_rate_ms = 0;
         uint32_t iq_rate_ms = 0;
-        uint32_t sensorless_rate_ms = 0;
         uint32_t bus_vi_rate_ms = 0;
     };
 
@@ -81,8 +76,6 @@ public:
                                          //<! This setting only takes effect on a state transition
                                          //<! into idle or out of closed loop control.
 
-        bool enable_sensorless_mode = false;
-
         float watchdog_timeout = 0.0f; // [s]
         bool enable_watchdog = false;
 
@@ -91,7 +84,6 @@ public:
         uint16_t dir_gpio_pin = 0;
 
         LockinConfig_t calibration_lockin = default_calibration();
-        LockinConfig_t sensorless_ramp = default_sensorless();
         LockinConfig_t general_lockin;
 
         CANConfig_t can;
@@ -112,10 +104,8 @@ public:
         uint32_t last_motor_error = 0;
         uint32_t last_encoder_error = 0;
         uint32_t last_controller_error = 0;
-        uint32_t last_sensorless_error = 0;
         uint32_t last_encoder_count = 0;
         uint32_t last_iq = 0;
-        uint32_t last_sensorless = 0;
         uint32_t last_bus_vi = 0;
     };
 
@@ -124,7 +114,6 @@ public:
             uint16_t default_dir_gpio_pin,
             osPriority thread_priority,
             Encoder& encoder,
-            SensorlessEstimator& sensorless_estimator,
             Controller& controller,
             Motor& motor,
             TrapezoidalTrajectory& trap,
@@ -175,7 +164,6 @@ public:
 
     Encoder& encoder_;
     AcimEstimator acim_estimator_;
-    SensorlessEstimator& sensorless_estimator_;
     Controller& controller_;
     OpenLoopController open_loop_controller_;
     Motor& motor_;

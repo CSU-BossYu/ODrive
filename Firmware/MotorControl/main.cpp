@@ -89,7 +89,6 @@ static bool config_read_all() {
            config_manager.read(&odrv.can_.config_);
     for (size_t i = 0; (i < AXIS_COUNT) && success; ++i) {
         success = config_manager.read(&encoders[i].config_) &&
-                  config_manager.read(&axes[i].sensorless_estimator_.config_) &&
                   config_manager.read(&axes[i].controller_.config_) &&
                   config_manager.read(&axes[i].trap_traj_.config_) &&
                   config_manager.read(&axes[i].min_endstop_.config_) &&
@@ -109,7 +108,6 @@ static bool config_write_all() {
            config_manager.write(&odrv.can_.config_);
     for (size_t i = 0; (i < AXIS_COUNT) && success; ++i) {
         success = config_manager.write(&encoders[i].config_) &&
-                  config_manager.write(&axes[i].sensorless_estimator_.config_) &&
                   config_manager.write(&axes[i].controller_.config_) &&
                   config_manager.write(&axes[i].trap_traj_.config_) &&
                   config_manager.write(&axes[i].min_endstop_.config_) &&
@@ -128,7 +126,6 @@ static void config_clear_all() {
     odrv.can_.config_ = {};
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         encoders[i].config_ = {};
-        axes[i].sensorless_estimator_.config_ = {};
         axes[i].controller_.config_ = {};
         axes[i].controller_.config_.load_encoder_axis = i;
         axes[i].trap_traj_.config_ = {};
@@ -217,7 +214,6 @@ bool ODrive::any_error() {
         || std::any_of(axes.begin(), axes.end(), [](Axis& axis){
             return axis.error_ != Axis::ERROR_NONE
                 || axis.motor_.error_ != Motor::ERROR_NONE
-                || axis.sensorless_estimator_.error_ != SensorlessEstimator::ERROR_NONE
                 || axis.encoder_.error_ != Encoder::ERROR_NONE
                 || axis.controller_.error_ != Controller::ERROR_NONE;
         });
@@ -237,7 +233,6 @@ void ODrive::clear_errors() {
     for (auto& axis: axes) {
         axis.motor_.error_ = Motor::ERROR_NONE;
         axis.controller_.error_ = Controller::ERROR_NONE;
-        axis.sensorless_estimator_.error_ = SensorlessEstimator::ERROR_NONE;
         axis.encoder_.error_ = Encoder::ERROR_NONE;
         axis.encoder_.spi_error_rate_ = 0.0f;
         axis.error_ = Axis::ERROR_NONE;
@@ -388,9 +383,6 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
         axis.open_loop_controller_.phase_.reset();
         axis.open_loop_controller_.phase_vel_.reset();
         axis.open_loop_controller_.total_distance_.reset();
-        axis.sensorless_estimator_.phase_.reset();
-        axis.sensorless_estimator_.phase_vel_.reset();
-        axis.sensorless_estimator_.vel_estimate_.reset();
 
         uart_poll();
         odrv.oscilloscope_.update();
@@ -423,15 +415,6 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
     MEASURE_TIME(axis.task_times_.encoder_update)
         axis.encoder_.update();
 
-    MEASURE_TIME(axis.task_times_.sensorless_estimator_update) {
-        bool diagnostic_current_tolerance =
-            axis.motor_.control_law_
-            && axis.motor_.control_law_->allow_missing_current_measurement();
-        if (!diagnostic_current_tolerance) {
-            axis.sensorless_estimator_.update();
-        }
-    }
-
     MEASURE_TIME(axis.task_times_.controller_update) {
         if (!axis.controller_.update()) { // uses position and velocity from encoder
             axis.error_ |= Axis::ERROR_CONTROLLER_FAILED;
@@ -445,7 +428,7 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
         axis.motor_.update(timestamp); // uses torque from controller and phase_vel from encoder
 
     MEASURE_TIME(axis.task_times_.current_controller_update)
-        axis.motor_.current_control_.update(timestamp); // uses the output of controller_ or open_loop_contoller_ and encoder_ or sensorless_estimator_ or acim_estimator_
+        axis.motor_.current_control_.update(timestamp); // uses the output of controller_ or open_loop_contoller_ and encoder_ or acim_estimator_
 
     // Tell the axis threads that the control loop has finished
     if (axis.thread_id_) {
@@ -558,8 +541,6 @@ static void rtos_main(void*) {
         }
         osDelay(1);
     }
-
-    axes[0].sensorless_estimator_.error_ &= ~SensorlessEstimator::ERROR_UNKNOWN_CURRENT_MEASUREMENT;
 
     axes[0].start_thread();
 

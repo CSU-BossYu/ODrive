@@ -177,7 +177,7 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
     float mod_alpha = c_p * mod_d - s_p * mod_q;
     float mod_beta = c_p * mod_q + s_p * mod_d;
 
-    // Report final applied voltage in stationary frame (for sensorless estimator)
+    // Report final applied voltage in stationary frame.
     final_v_alpha_ = mod_to_V * mod_alpha;
     final_v_beta_ = mod_to_V * mod_beta;
 

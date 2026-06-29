@@ -143,7 +143,6 @@ inline ENUMTYPE operator ~ (ENUMTYPE a) { return static_cast<ENUMTYPE>(~static_c
 #include <utils.hpp>
 #include <low_level.h>
 #include <encoder.hpp>
-#include <sensorless_estimator.hpp>
 #include <controller.hpp>
 #include <current_limiter.hpp>
 #include <thermistor.hpp>

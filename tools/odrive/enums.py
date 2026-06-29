@@ -101,7 +101,6 @@ CAN_ERROR_DUPLICATE_CAN_IDS              = 0x00000001
 AXIS_ERROR_NONE                          = 0x00000000
 AXIS_ERROR_INVALID_STATE                 = 0x00000001
 AXIS_ERROR_MOTOR_FAILED                  = 0x00000040
-AXIS_ERROR_SENSORLESS_ESTIMATOR_FAILED   = 0x00000080
 AXIS_ERROR_ENCODER_FAILED                = 0x00000100
 AXIS_ERROR_CONTROLLER_FAILED             = 0x00000200
 AXIS_ERROR_WATCHDOG_TIMER_EXPIRED        = 0x00000800
@@ -165,11 +164,6 @@ ENCODER_ERROR_ABS_SPI_TIMEOUT            = 0x00000040
 ENCODER_ERROR_ABS_SPI_COM_FAIL           = 0x00000080
 ENCODER_ERROR_ABS_SPI_NOT_READY          = 0x00000100
 ENCODER_ERROR_HALL_NOT_CALIBRATED_YET    = 0x00000200
-
-# ODrive.SensorlessEstimator.Error
-SENSORLESS_ESTIMATOR_ERROR_NONE          = 0x00000000
-SENSORLESS_ESTIMATOR_ERROR_UNSTABLE_GAIN = 0x00000001
-SENSORLESS_ESTIMATOR_ERROR_UNKNOWN_CURRENT_MEASUREMENT = 0x00000002
 class GpioMode(enum.Enum):
     DIGITAL                                  = 0
     DIGITAL_PULL_UP                          = 1
@@ -256,7 +250,6 @@ class AxisError(enum.IntFlag):
     NONE                                     = 0x00000000
     INVALID_STATE                            = 0x00000001
     MOTOR_FAILED                             = 0x00000040
-    SENSORLESS_ESTIMATOR_FAILED              = 0x00000080
     ENCODER_FAILED                           = 0x00000100
     CONTROLLER_FAILED                        = 0x00000200
     WATCHDOG_TIMER_EXPIRED                   = 0x00000800
@@ -317,7 +310,3 @@ class EncoderError(enum.IntFlag):
     ABS_SPI_COM_FAIL                         = 0x00000080
     ABS_SPI_NOT_READY                        = 0x00000100
     HALL_NOT_CALIBRATED_YET                  = 0x00000200
-class SensorlessEstimatorError(enum.IntFlag):
-    NONE                                     = 0x00000000
-    UNSTABLE_GAIN                            = 0x00000001
-    UNKNOWN_CURRENT_MEASUREMENT              = 0x00000002

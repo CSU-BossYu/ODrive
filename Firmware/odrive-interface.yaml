@@ -449,8 +449,8 @@ interfaces:
           MOTOR_FAILED:
             bit: 6
             doc: Check `motor.error` for more information.
-          SENSORLESS_ESTIMATOR_FAILED:
           ENCODER_FAILED:
+            bit: 8
             doc: Check `encoder.error` for more information.
           CONTROLLER_FAILED:
           WATCHDOG_TIMER_EXPIRED:
@@ -521,7 +521,6 @@ interfaces:
               This is ignored if enable_step_dir is false.
               This setting only takes effect on a state transition
               into idle or out of closed loop control.
-          enable_sensorless_mode: bool
           watchdog_timeout:
             type: float32
             unit: s
@@ -536,14 +535,12 @@ interfaces:
               ramp_distance: float32
               accel: float32
               vel: float32
-          sensorless_ramp: LockinConfig
           general_lockin: LockinConfig
           can: CanConfig
       motor: Motor
       controller: Controller
       encoder: Encoder
       acim_estimator: AcimEstimator
-      sensorless_estimator: SensorlessEstimator
       trap_traj: TrapezoidalTrajectory
       min_endstop: Endstop
       max_endstop: Endstop
@@ -553,7 +550,6 @@ interfaces:
         attributes:
           thermistor_update: TaskTimer
           encoder_update: TaskTimer
-          sensorless_estimator_update: TaskTimer
           endstop_update: TaskTimer
           can_heartbeat: TaskTimer
           controller_update: TaskTimer
@@ -603,10 +599,8 @@ interfaces:
       motor_error_rate_ms: uint32
       encoder_error_rate_ms: uint32
       controller_error_rate_ms: uint32
-      sensorless_error_rate_ms: uint32
       encoder_count_rate_ms: uint32
       iq_rate_ms: uint32
-      sensorless_rate_ms: uint32
       bus_vi_rate_ms: uint32
 
   ODrive.ThermistorCurrentLimiter:
@@ -1408,29 +1402,6 @@ interfaces:
             type: int32
             unit: counts
         doc: Set the current linear position of the axis, in counts
-
-
-  ODrive.SensorlessEstimator:
-    c_is_class: True
-    attributes:
-      error:
-        nullflag: NONE
-        flags:
-          UNSTABLE_GAIN:
-          UNKNOWN_CURRENT_MEASUREMENT:
-      phase: {type: readonly float32, unit: rad, c_getter: phase_.any().value_or(0.0f)}
-      pll_pos: {type: readonly float32, unit: rad}
-      phase_vel: {type: readonly float32, unit: rad/s, c_getter: phase_vel_.any().value_or(0.0f)}
-      vel_estimate: {type: readonly float32, unit: turn/s, c_getter: vel_estimate_.any().value_or(0.0f)}
-      # pll_kp: float32
-      # pll_ki: float32
-      config:
-        c_is_class: False
-        attributes:
-          observer_gain: float32
-          pll_bandwidth: float32
-          pm_flux_linkage: float32
-
 
   ODrive.TrapezoidalTrajectory:
     c_is_class: True
