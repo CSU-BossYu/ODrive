@@ -40,7 +40,9 @@ public:
     struct Config {
         // ODrive v3 absolute SPI encoders commonly use PRESCALER_16.
         // Keep this conservative first; raise only after checking DMA timing and signal integrity.
-        uint32_t baudrate_prescaler = SPI_BAUDRATEPRESCALER_16;
+        uint32_t baudrate_prescaler = SPI_BAUDRATEPRESCALER_4;
+        uint32_t clk_polarity = SPI_POLARITY_HIGH;
+        uint32_t clk_phase = SPI_PHASE_2EDGE;
 
         // Datasheet CRC is CRC-8 poly x^8 + x^2 + x + 1, applied to registers 0x003..0x005.
         bool check_crc = true;
@@ -70,6 +72,7 @@ public:
     Mt6826sSpi() = default;
 
     void init(Stm32SpiArbiter* spi_arbiter, Stm32Gpio ncs_gpio, const Config& config);
+    void set_config(const Config& config);
 
     bool is_initialized() const { return spi_arbiter_ != nullptr; }
     bool is_busy() const { return transaction_in_flight_ || task_.is_in_use; }
@@ -81,6 +84,7 @@ public:
     // Copies latest sample. consume_sample() clears the "new sample" flag; read_latest_sample() does not.
     bool consume_sample(Sample* out);
     bool read_latest_sample(Sample* out) const;
+    bool read_last_sample_for_diagnostics(Sample* out) const;
     bool has_new_sample() const { return new_sample_ready_; }
 
     uint32_t error() const { return error_; }
@@ -201,6 +205,7 @@ private:
 
     PairSample pending_pair_ = {};
     PairSample latest_pair_ = {};
+    Error pending_error_ = ERROR_NONE;
     uint32_t next_sequence_ = 0;
 
     volatile bool new_pair_ready_ = false;

@@ -14,6 +14,7 @@ from common import (
     CMD_GET_IQ,
     CMD_GET_MOTOR_ERROR,
     EXT_STATUS,
+    EXT_TYPE_FLOAT32,
     EXT_TYPE_INT32,
     clear_errors,
     get_basic_config,
@@ -32,6 +33,7 @@ from common import (
 
 CMD_GET_ENCODER_COUNT = 0x00A
 ENCODER_MODE_SPI_ABS_MT6826S = 0x105
+ENCODER_MODE_SPI_ABS_MT6826S_VERNIER = 0x106
 
 
 ENCODER_ERROR_BITS = [
@@ -93,6 +95,31 @@ def set_config_int(bus, args, param_id, value, name):
         raise RuntimeError(f"{name}: set failed with {status}")
 
 
+def read_config_float(bus, args, param_id, name):
+    resp = get_basic_config(bus, args.node_id, param_id, args.extended_id)
+    if resp is None:
+        raise RuntimeError(f"{name}: no response")
+    value = resp["value_f"] if resp["type"] == EXT_TYPE_FLOAT32 else float(resp["value_i"])
+    status = EXT_STATUS.get(resp["status"], resp["status"])
+    print(f"{name}: {value} status={status} raw={resp['raw']}")
+    if resp["status"] != 0:
+        raise RuntimeError(f"{name}: read failed with {status}")
+    return value
+
+
+def set_config_float(bus, args, param_id, value, name):
+    resp = set_basic_config(
+        bus, args.node_id, param_id, EXT_TYPE_FLOAT32,
+        value_float=value, extended_id=args.extended_id,
+    )
+    if resp is None:
+        raise RuntimeError(f"{name}: no response")
+    status = EXT_STATUS.get(resp["status"], resp["status"])
+    print(f"{name} <- {value}: {status} raw={resp['raw']}")
+    if resp["status"] != 0:
+        raise RuntimeError(f"{name}: set failed with {status}")
+
+
 def print_calibration_values(bus, args, label):
     print(label)
     for item_id, name in [
@@ -136,27 +163,48 @@ def count_delta(a, b):
     return b - a
 
 
+def wait_heartbeat_retry(bus, args, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        hb = wait_heartbeat(bus, args.node_id, args.extended_id, timeout=0.5)
+        if hb is not None:
+            last = hb
+            if hb["axis_state"] != 0:
+                return hb
+    return last
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Observe MT6826S encoder offset calibration over CANSimple."
     )
     parser.add_argument("--channel", default="PCAN_USBBUS1")
-    parser.add_argument("--bitrate", type=int, default=250000)
+    parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--node-id", type=int, default=0)
     parser.add_argument("--extended-id", action="store_true")
     parser.add_argument("--pole-pairs", type=int, default=14)
     parser.add_argument("--encoder-cpr", type=int, default=32768)
     parser.add_argument("--period", type=float, default=0.12)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--calibration-current", type=float)
+    parser.add_argument("--current-lim", type=float)
     parser.add_argument("--clear-at-end", action="store_true")
     args = parser.parse_args()
+
+    if args.calibration_current is not None and args.calibration_current <= 0.0:
+        raise ValueError("--calibration-current must be positive")
+    if args.current_lim is not None and args.current_lim <= 0.0:
+        raise ValueError("--current-lim must be positive")
 
     expected_delta = 8.0 * args.encoder_cpr / args.pole_pairs
 
     bus = open_bus(args.channel, args.bitrate)
+    original_calibration_current = None
+    original_current_lim = None
     try:
         print(f"Opened {bus.channel_info}")
-        hb = wait_heartbeat(bus, args.node_id, args.extended_id, timeout=5.0)
+        hb = wait_heartbeat_retry(bus, args, timeout=5.0)
         if hb is None:
             raise RuntimeError("No heartbeat received")
         print(
@@ -170,12 +218,29 @@ def main():
         pole_pairs = read_config_int(bus, args, 0x11, "motor.pole_pairs")
         read_config_int(bus, args, 0x22, "encoder.abs_spi_cs_gpio_pin")
 
-        if mode is not None and mode != ENCODER_MODE_SPI_ABS_MT6826S:
-            print(f"WARN: encoder.mode={mode}, expected {ENCODER_MODE_SPI_ABS_MT6826S}")
+        if mode is not None and mode not in (ENCODER_MODE_SPI_ABS_MT6826S, ENCODER_MODE_SPI_ABS_MT6826S_VERNIER):
+            print(
+                f"WARN: encoder.mode={mode}, expected "
+                f"{ENCODER_MODE_SPI_ABS_MT6826S} or {ENCODER_MODE_SPI_ABS_MT6826S_VERNIER}"
+            )
         if cpr != args.encoder_cpr:
             set_config_int(bus, args, 0x21, args.encoder_cpr, "encoder.cpr")
         if pole_pairs != args.pole_pairs:
             set_config_int(bus, args, 0x11, args.pole_pairs, "motor.pole_pairs")
+
+        if args.calibration_current is not None:
+            original_calibration_current = read_config_float(
+                bus, args, 0x12, "motor.calibration_current"
+            )
+            set_config_float(
+                bus, args, 0x12, args.calibration_current,
+                "temporary motor.calibration_current",
+            )
+        if args.current_lim is not None:
+            original_current_lim = read_config_float(bus, args, 0x14, "motor.current_lim")
+            set_config_float(
+                bus, args, 0x14, args.current_lim, "temporary motor.current_lim"
+            )
 
         print_calibration_values(bus, args, "Calibration values before:")
         print(
@@ -299,6 +364,20 @@ def main():
 
         return 0
     finally:
+        try:
+            set_requested_state(bus, args.node_id, AXIS_STATE_IDLE, args.extended_id)
+            time.sleep(0.1)
+            if original_calibration_current is not None:
+                set_config_float(
+                    bus, args, 0x12, original_calibration_current,
+                    "restore motor.calibration_current",
+                )
+            if original_current_lim is not None:
+                set_config_float(
+                    bus, args, 0x14, original_current_lim, "restore motor.current_lim"
+                )
+        except Exception as ex:
+            print(f"WARNING: failed to restore temporary motor limits: {ex}")
         bus.shutdown()
 
 

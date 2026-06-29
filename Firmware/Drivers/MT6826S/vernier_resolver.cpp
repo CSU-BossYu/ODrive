@@ -18,6 +18,8 @@ void VernierResolver::reset() {
 
     has_last_phase_ = false;
     last_main_phase_corr_ = 0.0f;
+    has_last_output_phase_ = false;
+    last_output_phase_ = 0.0f;
     main_cycle_index_ = 0;
     position_turns_ = 0.0f;
 
@@ -368,6 +370,10 @@ VernierResolver::Result VernierResolver::update(uint16_t main_angle,
                                                 bool main_valid,
                                                 uint16_t aux_angle,
                                                 bool aux_valid) {
+    if (config_.use_phase_difference) {
+        return update_phase_difference(main_angle, main_valid, aux_angle, aux_valid);
+    }
+
     if (!validate_config()) {
         error_ |= ERROR_BAD_CONFIG;
         state_ = STATE_ERROR;
@@ -445,6 +451,125 @@ VernierResolver::Result VernierResolver::update(uint16_t main_angle,
                                     main_phase, aux_phase,
                                     main_phase_corr, aux_phase_corr,
                                     ERROR_RESIDUAL_TOO_HIGH);
+}
+
+VernierResolver::Result VernierResolver::update_phase_difference(uint16_t main_angle,
+                                                                 bool main_valid,
+                                                                 uint16_t aux_angle,
+                                                                 bool aux_valid) {
+    if (!validate_config()) {
+        error_ |= ERROR_BAD_CONFIG;
+        state_ = STATE_ERROR;
+        last_result_.state = state_;
+        last_result_.error = error_;
+        last_result_.valid = false;
+        return last_result_;
+    }
+
+    if (!main_valid) {
+        error_ |= ERROR_MAIN_INVALID;
+        state_ = STATE_ERROR;
+        last_result_.state = state_;
+        last_result_.error = error_;
+        last_result_.valid = false;
+        return last_result_;
+    }
+
+    const float main_phase = normalize_raw_angle(main_angle, config_.main_reversed);
+    const float main_phase_corr = wrap01(main_phase - config_.main_offset);
+
+    if (!aux_valid) {
+        error_ |= ERROR_AUX_INVALID;
+
+        if ((state_ == STATE_LOCKED || state_ == STATE_SUSPECT) && has_last_phase_) {
+            const float delta_main = wrap_pm_half(main_phase_corr - last_main_phase_corr_);
+            position_turns_ += delta_main / config_.main_ratio;
+            last_main_phase_corr_ = main_phase_corr;
+            state_ = STATE_SUSPECT;
+
+            ++consecutive_aux_miss_;
+            consecutive_good_ = 0;
+            if (consecutive_aux_miss_ > config_.max_aux_miss_frames) {
+                error_ |= ERROR_EXCESSIVE_MISSES;
+                state_ = STATE_ERROR;
+            }
+        } else {
+            state_ = STATE_ACQUIRING;
+            error_ |= ERROR_NO_LOCK;
+            ++consecutive_aux_miss_;
+            consecutive_good_ = 0;
+        }
+
+        Result result = make_result_base(main_angle, 0, false,
+                                         main_phase, 0.0f,
+                                         main_phase_corr, 0.0f);
+        result.state = state_;
+        result.error = error_;
+        result.valid = (state_ == STATE_LOCKED || state_ == STATE_SUSPECT);
+        result.locked = false;
+        result.accepted_aux = false;
+        result.degraded = result.valid;
+        result.main_unwrapped = config_.main_ratio * position_turns_;
+        result.main_cycle_index = static_cast<int32_t>(floorf(result.main_unwrapped));
+        result.position_turns = position_turns_;
+        result.confidence = 0.0f;
+        result.consecutive_good = consecutive_good_;
+        result.consecutive_mismatch = consecutive_mismatch_;
+        result.consecutive_aux_miss = consecutive_aux_miss_;
+        last_result_ = result;
+        return result;
+    }
+
+    const float aux_phase = normalize_raw_angle(aux_angle, config_.aux_reversed);
+    const float aux_phase_corr = wrap01(aux_phase - config_.aux_offset);
+    const float output_phase = wrap01(aux_phase_corr - main_phase_corr);
+
+    if (!has_last_output_phase_) {
+        position_turns_ = output_phase;
+    } else {
+        position_turns_ += wrap_pm_half(output_phase - last_output_phase_);
+    }
+
+    if (!position_within_limit(position_turns_)) {
+        error_ |= ERROR_OUTPUT_LIMIT;
+        state_ = STATE_ERROR;
+    } else {
+        state_ = STATE_LOCKED;
+    }
+
+    has_last_output_phase_ = true;
+    last_output_phase_ = output_phase;
+    has_last_phase_ = true;
+    last_main_phase_corr_ = main_phase_corr;
+    main_cycle_index_ = static_cast<int32_t>(floorf(config_.main_ratio * position_turns_));
+
+    consecutive_aux_miss_ = 0;
+    consecutive_mismatch_ = 0;
+    ++consecutive_good_;
+    pending_count_ = 0;
+
+    Result result = make_result_base(main_angle, aux_angle, true,
+                                     main_phase, aux_phase,
+                                     main_phase_corr, aux_phase_corr);
+    result.state = state_;
+    result.error = error_;
+    result.valid = (state_ == STATE_LOCKED);
+    result.locked = (state_ == STATE_LOCKED);
+    result.accepted_aux = (state_ == STATE_LOCKED);
+    result.degraded = false;
+    result.main_cycle_index = main_cycle_index_;
+    result.main_unwrapped = config_.main_ratio * position_turns_;
+    result.position_turns = position_turns_;
+    result.aux_pred_phase = aux_phase_corr;
+    result.residual_turns = 0.0f;
+    result.abs_residual_turns = 0.0f;
+    result.confidence = result.valid ? 1.0f : 0.0f;
+    result.consecutive_good = consecutive_good_;
+    result.consecutive_mismatch = consecutive_mismatch_;
+    result.consecutive_aux_miss = consecutive_aux_miss_;
+
+    last_result_ = result;
+    return result;
 }
 
 VernierResolver::Result VernierResolver::update_main_only(uint16_t main_angle, bool main_valid) {

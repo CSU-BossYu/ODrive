@@ -14,7 +14,9 @@ from common import (
     CMD_GET_MOTOR_ERROR,
     EXT_STATUS,
     EXT_TYPE_FLOAT32,
+    EXT_TYPE_UINT32,
     clear_errors,
+    ext_request,
     get_basic_config,
     get_calib_result,
     get_status_ex,
@@ -29,6 +31,7 @@ from common import (
 
 
 CMD_GET_ENCODER_COUNT = 0x00A
+SUB_CMD_VERNIER_DIAG = 0x0A
 
 MOTOR_ERROR_BITS = [
     (0x0000000000000001, "PHASE_RESISTANCE_OUT_OF_RANGE"),
@@ -222,6 +225,77 @@ def read_error_values(bus, args):
     return values
 
 
+def read_diag_item(bus, args, item_id, want_float=False):
+    resp = ext_request(
+        bus, args.node_id, SUB_CMD_VERNIER_DIAG,
+        item=item_id, req_type=EXT_TYPE_UINT32, value=0,
+        extended_id=args.extended_id, timeout=0.2,
+    )
+    if resp is None or resp["status"] != 0:
+        return None
+    return resp["value_f"] if want_float else resp["value_u"]
+
+
+def read_m0_diag(bus, args):
+    return {
+        "foc_bt": read_diag_item(bus, args, 0x30),
+        "adc_pre": read_diag_item(bus, args, 0x34),
+        "adc_post": read_diag_item(bus, args, 0x35),
+        "dl_miss": read_diag_item(bus, args, 0x36),
+        "a1j": read_diag_item(bus, args, 0x3A),
+        "a2j": read_diag_item(bus, args, 0x3C),
+        "a3j": read_diag_item(bus, args, 0x3E),
+        "adc1": read_diag_item(bus, args, 0x3F),
+        "adc2": read_diag_item(bus, args, 0x40),
+        "adc3": read_diag_item(bus, args, 0x41),
+        "ivalid": read_diag_item(bus, args, 0x42),
+        "ia": read_diag_item(bus, args, 0x43, True),
+        "ib": read_diag_item(bus, args, 0x44, True),
+        "ic": read_diag_item(bus, args, 0x45, True),
+        "bdtr": read_diag_item(bus, args, 0x46),
+        "ccr1": read_diag_item(bus, args, 0x47),
+        "ccr2": read_diag_item(bus, args, 0x48),
+        "ccr3": read_diag_item(bus, args, 0x49),
+        "armed": read_diag_item(bus, args, 0x4A),
+        "r_i": read_diag_item(bus, args, 0x4B, True),
+        "r_v": read_diag_item(bus, args, 0x4C, True),
+        "r_ibeta": read_diag_item(bus, args, 0x4D, True),
+        "r_mod": read_diag_item(bus, args, 0x4E, True),
+        "cm_present": read_diag_item(bus, args, 0x4F),
+        "cm_dcok": read_diag_item(bus, args, 0x50),
+        "cm_valid": read_diag_item(bus, args, 0x51),
+        "cm_armed_state": read_diag_item(bus, args, 0x52),
+        "dc_time": read_diag_item(bus, args, 0x53, True),
+        "dc_a": read_diag_item(bus, args, 0x54, True),
+        "dc_b": read_diag_item(bus, args, 0x55, True),
+        "dc_c": read_diag_item(bus, args, 0x56, True),
+        "cm_a": read_diag_item(bus, args, 0x57, True),
+        "cm_b": read_diag_item(bus, args, 0x58, True),
+        "cm_c": read_diag_item(bus, args, 0x59, True),
+    }
+
+
+def fmt_m0_diag(diag):
+    if any(value is None for value in diag.values()):
+        return "diag=TIMEOUT"
+    return (
+        f"JDR={diag['adc1']}/{diag['adc2']}/{diag['adc3']} "
+        f"Ivalid={diag['ivalid']} "
+        f"Iabc={diag['ia']:.3f}/{diag['ib']:.3f}/{diag['ic']:.3f} "
+        f"TIM1=BDTR:{diag['bdtr']:04X} CCR:{diag['ccr1']}/{diag['ccr2']}/{diag['ccr3']} "
+        f"armed={diag['armed']} "
+        f"Rcal=I:{diag['r_i']:.3f} V:{diag['r_v']:.3f} "
+        f"Ib:{diag['r_ibeta']:.3f} mod:{diag['r_mod']:.4f} "
+        f"CM=present:{diag['cm_present']} dcok:{diag['cm_dcok']} "
+        f"valid:{diag['cm_valid']} ast:{diag['cm_armed_state']} "
+        f"CNT=FOC:{diag['foc_bt']} PRE:{diag['adc_pre']} POST:{diag['adc_post']} "
+        f"DL:{diag['dl_miss']} flags:{diag['a1j']}/{diag['a2j']}/{diag['a3j']} "
+        f"DC=t:{diag['dc_time']:.3f} "
+        f"abc:{diag['dc_a']:.3f}/{diag['dc_b']:.3f}/{diag['dc_c']:.3f} "
+        f"CMabc={diag['cm_a']:.3f}/{diag['cm_b']:.3f}/{diag['cm_c']:.3f}"
+    )
+
+
 def preflight_ready_for_motor_test(bus, args):
     status = get_status_ex(bus, args.node_id, args.extended_id, timeout=args.timeout)
     errors = read_error_values(bus, args)
@@ -258,7 +332,7 @@ def preflight_ready_for_motor_test(bus, args):
 def main():
     parser = argparse.ArgumentParser(description="Safely diagnose ODrive motor phase wiring over CANSimple.")
     parser.add_argument("--channel", default="PCAN_USBBUS1")
-    parser.add_argument("--bitrate", type=int, default=250000)
+    parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--node-id", type=int, default=0)
     parser.add_argument("--extended-id", action="store_true")
     parser.add_argument("--test-current", type=float, default=2.0)
@@ -336,6 +410,7 @@ def main():
                     f"flags=0x{hb['motor_flags']:02X}/0x{hb['encoder_flags']:02X}/0x{hb['controller_flags']:02X} "
                     f"bus={bus_vi}"
                 )
+                print(f"        {fmt_m0_diag(read_m0_diag(bus, args))}")
                 last_state = state
                 last_print = now
 

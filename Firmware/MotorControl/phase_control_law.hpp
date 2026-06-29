@@ -68,6 +68,10 @@ public:
             uint32_t output_timestamp,
             float (&pwm_timings)[N_PHASES],
             std::optional<float>* ibus) = 0;
+
+    virtual bool allow_missing_current_measurement() {
+        return false;
+    }
 };
 
 class AlphaBetaFrameController : public PhaseControlLaw<3> {

@@ -102,7 +102,7 @@ def print_sample(bus, args):
 def main():
     parser = argparse.ArgumentParser(description="Read MT6826S angle through ODrive CANSimple.")
     parser.add_argument("--channel", default="PCAN_USBBUS1")
-    parser.add_argument("--bitrate", type=int, default=250000)
+    parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--node-id", type=int, default=0)
     parser.add_argument("--extended-id", action="store_true")
     parser.add_argument("--cpr", type=int, default=32768)

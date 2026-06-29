@@ -72,8 +72,9 @@ void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 4, 0); // SPI RX - must have lower priority than SPI TX
-                                                 // and higher priority than the control loop handler
+  // SPI encoder completion work includes parsing and pair resolution. Keep it
+  // below the current-control IRQ so it cannot extend the FOC critical path.
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 7, 0); // SPI RX, below control loop (5)
   HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
   /* DMA1_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 10, 0);
@@ -88,8 +89,7 @@ void MX_DMA_Init(void)
   HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 10, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
   /* DMA1_Stream7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 3, 0); // SPI TX - must have higher priority than SPI RX
-                                                 // and higher priority than the control loop handler
+  HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 6, 0); // SPI TX, below control loop and above SPI RX
   HAL_NVIC_EnableIRQ(DMA1_Stream7_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
   // Dear STM, no we _don't_ want to fire an interrupt for this DMA

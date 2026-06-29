@@ -6,6 +6,7 @@ class Encoder;
 #include <board.h> // needed for arm_math.h
 #include <Drivers/STM32/stm32_spi_arbiter.hpp>
 #include <Drivers/MT6826S/mt6826s_spi.hpp>
+#include <Drivers/MT6826S/vernier_resolver.hpp>
 #include "utils.hpp"
 #include <autogen/interfaces.hpp>
 #include "component.hpp"
@@ -42,8 +43,21 @@ public:
         bool hall_polarity_calibrated = false;
         std::array<float, 6> hall_edge_phcnt = hall_edge_defaults;
         uint16_t abs_spi_cs_gpio_pin = 1;
+        uint16_t abs_spi_aux_cs_gpio_pin = 4;
         uint16_t sincos_gpio_pin_sin = 3;
         uint16_t sincos_gpio_pin_cos = 4;
+
+        float vernier_main_ratio = 1.0f;
+        float vernier_aux_ratio = 1.0f;
+        float vernier_main_offset = 0.0f;
+        float vernier_aux_offset = 0.0f;
+        bool vernier_main_reversed = false;
+        bool vernier_aux_reversed = false;
+        int32_t vernier_virtual_cpr = 32768;
+        float vernier_err_accept = 0.02f;
+        float vernier_err_reject = 0.08f;
+        uint16_t mt6826s_spi_mode = 3;
+        uint16_t mt6826s_spi_prescaler = 8;
 
 
         // custom setters
@@ -51,6 +65,17 @@ public:
         void set_use_index(bool value) { use_index = value; parent->set_idx_subscribe(); }
         void set_find_idx_on_lockin_only(bool value) { find_idx_on_lockin_only = value; parent->set_idx_subscribe(); }
         void set_abs_spi_cs_gpio_pin(uint16_t value) { abs_spi_cs_gpio_pin = value; parent->abs_spi_cs_pin_init(); }
+        void set_abs_spi_aux_cs_gpio_pin(uint16_t value) { abs_spi_aux_cs_gpio_pin = value; parent->abs_spi_aux_cs_pin_init(); }
+        void set_vernier_main_ratio(float value) { vernier_main_ratio = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_aux_ratio(float value) { vernier_aux_ratio = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_main_offset(float value) { vernier_main_offset = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_aux_offset(float value) { vernier_aux_offset = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_main_reversed(bool value) { vernier_main_reversed = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_aux_reversed(bool value) { vernier_aux_reversed = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_err_accept(float value) { vernier_err_accept = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_err_reject(float value) { vernier_err_reject = value; parent->apply_vernier_resolver_config(); }
+        void set_mt6826s_spi_mode(uint16_t value) { mt6826s_spi_mode = value; parent->apply_mt6826s_spi_config(); }
+        void set_mt6826s_spi_prescaler(uint16_t value) { mt6826s_spi_prescaler = value; parent->apply_mt6826s_spi_config(); }
         void set_pre_calibrated(bool value) { pre_calibrated = value; parent->check_pre_calibrated(); }
         void set_bandwidth(float value) { bandwidth = value; parent->update_pll_gains(); }
     };
@@ -138,16 +163,70 @@ public:
     void abs_spi_cb(bool success);
     static void mt6826s_spi_cb(void* ctx, const Mt6826sSpi::Sample& sample, bool success);
     void handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool success);
+    static void mt6826s_spi_pair_cb(void* ctx, const Mt6826sSpiPair::PairSample& sample, bool success);
+    void handle_mt6826s_spi_pair_cb(const Mt6826sSpiPair::PairSample& sample, bool success);
     void abs_spi_cs_pin_init();
+    void abs_spi_aux_cs_pin_init();
+    Mt6826sSpi::Config make_mt6826s_spi_config() const;
+    void apply_mt6826s_spi_config();
+    VernierResolver::Config make_vernier_resolver_config() const;
+    void apply_vernier_resolver_config();
+    void publish_vernier_output_estimate(float dt);
+    bool start_mt6826s_main_sample();
+    bool start_mt6826s_pair_sample();
     bool abs_spi_pos_updated_ = false;
     Mode mode_ = MODE_INCREMENTAL;
     Stm32Gpio abs_spi_cs_gpio_;
+    Stm32Gpio abs_spi_aux_cs_gpio_;
     uint32_t abs_spi_cr1;
     uint32_t abs_spi_cr2;
     uint16_t abs_spi_dma_tx_[1] = {0xFFFF};
     uint16_t abs_spi_dma_rx_[1];
     Stm32SpiArbiter::SpiTask spi_task_;
     Mt6826sSpi mt6826s_spi_;
+    Mt6826sSpi mt6826s_aux_spi_;
+    Mt6826sSpiPair mt6826s_spi_pair_;
+    VernierResolver vernier_resolver_;
+
+    struct VernierDiagnosticsSnapshot {
+        Mt6826sSpi::Sample main_sample = {};
+        Mt6826sSpi::Sample aux_sample = {};
+        uint32_t pair_count = 0;
+        bool pair_valid = false;
+        int32_t virtual_count = 0;
+        float position_turns = 0.0f;
+        float residual = 0.0f;
+        float encoder_pos_estimate = 0.0f;
+        float encoder_vel_estimate = 0.0f;
+        float encoder_pos_circular = 0.0f;
+        uint32_t state = 0;
+        uint32_t main_error_count = 0;
+        uint32_t aux_error_count = 0;
+        uint32_t pair_error_count = 0;
+        uint32_t main_spi_dma_error_count = 0;
+        uint32_t main_crc_error_count = 0;
+        uint32_t main_fixed_bit_error_count = 0;
+        uint32_t main_status_warning_count = 0;
+        uint32_t main_sample_count = 0;
+        uint32_t aux_spi_dma_error_count = 0;
+        uint32_t aux_crc_error_count = 0;
+        uint32_t aux_fixed_bit_error_count = 0;
+        uint32_t aux_status_warning_count = 0;
+        uint32_t aux_sample_count = 0;
+    };
+    void get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out);
+
+    Mt6826sSpi::Sample mt6826s_main_sample_;
+    Mt6826sSpi::Sample mt6826s_aux_sample_;
+    VernierResolver::Result vernier_result_;
+    float vernier_output_pos_estimate_ = 0.0f;
+    float vernier_output_vel_estimate_ = 0.0f;
+    float vernier_output_sample_dt_ = 0.0f;
+    uint32_t vernier_output_pair_sequence_ = 0;
+    bool vernier_output_estimate_valid_ = false;
+    uint32_t mt6826s_pair_sequence_ = 0;
+    uint32_t mt6826s_vernier_sample_counter_ = 0;
+    bool mt6826s_pair_valid_ = false;
 
     constexpr float getCoggingRatio(){
         return 1.0f / 3600.0f;

@@ -1,6 +1,7 @@
 
 #define __MAIN_CPP__
 #include "odrive_main.h"
+#include "debug_counters.hpp"
 #include "nvm_config.hpp"
 
 #include "usart.h"
@@ -341,6 +342,9 @@ void ODrive::disarm_with_error(Error error) {
 void ODrive::sampling_cb() {
     n_evt_sampling_++;
 
+    extern DebugCounters g_debug;
+    ++g_debug.loop_alive_cnt;
+
     MEASURE_TIME(task_times_.sampling) {
         for (auto& axis: axes) {
             axis.encoder_.sample_now();
@@ -436,8 +440,14 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
     // axis so we process both encoders before we continue.
 
     for (auto& axis: axes) {
-        MEASURE_TIME(axis.task_times_.sensorless_estimator_update)
-            axis.sensorless_estimator_.update();
+        MEASURE_TIME(axis.task_times_.sensorless_estimator_update) {
+            bool diagnostic_current_tolerance =
+                axis.motor_.control_law_
+                && axis.motor_.control_law_->allow_missing_current_measurement();
+            if (!diagnostic_current_tolerance) {
+                axis.sensorless_estimator_.update();
+            }
+        }
 
         MEASURE_TIME(axis.task_times_.controller_update) {
             if (!axis.controller_.update()) { // uses position and velocity from encoder

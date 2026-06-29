@@ -1,5 +1,6 @@
 
 #include "foc.hpp"
+#include "debug_counters.hpp"
 #include <board.h>
 
 Motor::Error AlphaBetaFrameController::on_measurement(
@@ -47,14 +48,22 @@ Motor::Error AlphaBetaFrameController::get_output(
 void FieldOrientedController::reset() {
     v_current_control_integral_d_ = 0.0f;
     v_current_control_integral_q_ = 0.0f;
+    ctrl_timestamp_ = 0;
+    i_timestamp_ = 0;
     vbus_voltage_measured_ = std::nullopt;
     Ialpha_beta_measured_ = std::nullopt;
+    Id_measured_ = 0.0f;
+    Iq_measured_ = 0.0f;
     power_ = 0.0f;
 }
 
 Motor::Error FieldOrientedController::on_measurement(
         std::optional<float> vbus_voltage, std::optional<float2D> Ialpha_beta,
         uint32_t input_timestamp) {
+    if (ctrl_timestamp_ == 0) {
+        ctrl_timestamp_ = input_timestamp;
+    }
+
     // Store the measurements for later processing.
     i_timestamp_ = input_timestamp;
     vbus_voltage_measured_ = vbus_voltage;
@@ -72,6 +81,11 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
         return Motor::ERROR_CONTROLLER_INITIALIZING;
     } else if (abs((int32_t)(i_timestamp_ - ctrl_timestamp_)) > MAX_CONTROL_LOOP_UPDATE_TO_CURRENT_UPDATE_DELTA) {
         // Data from control loop and current measurement are too far apart.
+        extern DebugCounters g_debug;
+        ++g_debug.foc_bad_timing_cnt;
+        g_debug.foc_bad_timing_delta = (uint32_t)abs((int32_t)(i_timestamp_ - ctrl_timestamp_));
+        g_debug.foc_bad_timing_i_ts = i_timestamp_;
+        g_debug.foc_bad_timing_ctrl_ts = ctrl_timestamp_;
         return Motor::ERROR_BAD_TIMING;
     }
 

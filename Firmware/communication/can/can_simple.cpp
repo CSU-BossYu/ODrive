@@ -1,11 +1,90 @@
 
 #include "can_simple.hpp"
 
+#include "debug_counters.hpp"
+#include "phase_control_law.hpp"
 #include <odrive_main.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <functional>
+
+class PhaseScanControlLaw : public AlphaBetaFrameController {
+public:
+    void configure(float v_alpha, float v_beta, uint32_t vector_id) {
+        v_alpha_ = v_alpha;
+        v_beta_ = v_beta;
+        vector_id_ = vector_id;
+        have_measurement_ = false;
+        g_debug.m0_phase_scan_vector = vector_id_;
+        g_debug.m0_phase_scan_v_alpha = v_alpha_;
+        g_debug.m0_phase_scan_v_beta = v_beta_;
+        g_debug.m0_phase_scan_i_alpha = 0.0f;
+        g_debug.m0_phase_scan_i_beta = 0.0f;
+        g_debug.m0_phase_scan_missing_current = 0;
+        g_debug.m0_phase_scan_sample_count = 0;
+        g_debug.m0_phase_scan_avg_phA = 0.0f;
+        g_debug.m0_phase_scan_avg_phB = 0.0f;
+        g_debug.m0_phase_scan_avg_phC = 0.0f;
+        g_debug.m0_phase_scan_avg_i_alpha = 0.0f;
+        g_debug.m0_phase_scan_avg_i_beta = 0.0f;
+    }
+
+    void reset() final {
+        have_measurement_ = false;
+    }
+
+protected:
+    ODriveIntf::MotorIntf::Error on_measurement(
+            std::optional<float> vbus_voltage,
+            std::optional<float2D> Ialpha_beta,
+            uint32_t input_timestamp) final {
+        (void)input_timestamp;
+        vbus_voltage_ = vbus_voltage;
+        Ialpha_beta_ = Ialpha_beta;
+        have_measurement_ = Ialpha_beta.has_value();
+        if (Ialpha_beta.has_value()) {
+            g_debug.m0_phase_scan_i_alpha = Ialpha_beta->first;
+            g_debug.m0_phase_scan_i_beta = Ialpha_beta->second;
+        } else {
+            ++g_debug.m0_phase_scan_missing_current;
+        }
+        return Motor::ERROR_NONE;
+    }
+
+    bool allow_missing_current_measurement() final {
+        return true;
+    }
+
+    ODriveIntf::MotorIntf::Error get_alpha_beta_output(
+            uint32_t output_timestamp,
+            std::optional<float2D>* mod_alpha_beta,
+            std::optional<float>* ibus) final {
+        (void)output_timestamp;
+        if (!vbus_voltage_.has_value()) {
+            *ibus = 0.0f;
+            return Motor::ERROR_CONTROLLER_INITIALIZING;
+        }
+
+        float v_to_mod = 1.0f / ((2.0f / 3.0f) * *vbus_voltage_);
+        *mod_alpha_beta = {v_alpha_ * v_to_mod, v_beta_ * v_to_mod};
+        *ibus = 0.0f;
+        return Motor::ERROR_NONE;
+    }
+
+private:
+    float v_alpha_ = 0.0f;
+    float v_beta_ = 0.0f;
+    uint32_t vector_id_ = 0;
+    bool have_measurement_ = false;
+    std::optional<float> vbus_voltage_;
+    std::optional<float2D> Ialpha_beta_;
+};
+
+static PhaseScanControlLaw phase_scan_control_law;
+static uint32_t phase_scan_active_axis = UINT32_MAX;
+static uint32_t phase_scan_stop_ms = 0;
+static constexpr uint32_t PHASE_SCAN_TIMEOUT_MS = 1500;
 
 bool CANSimple::init() {
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
@@ -247,8 +326,18 @@ bool CANSimple::get_encoder_estimates_callback(const Axis& axis) {
     txmsg.isExt = axis.config_.can.is_extended;
     txmsg.len = 8;
 
-    can_setSignal<float>(txmsg, axis.controller_.pos_estimate_linear_src_.any().value_or(0.0f), 0, 32, true);
-    can_setSignal<float>(txmsg, axis.controller_.vel_estimate_src_.any().value_or(0.0f), 32, 32, true);
+    auto pos_estimate = axis.controller_.pos_estimate_linear_src_.any();
+    if (!pos_estimate.has_value()) {
+        pos_estimate = axis.encoder_.pos_estimate_.any();
+    }
+
+    auto vel_estimate = axis.controller_.vel_estimate_src_.any();
+    if (!vel_estimate.has_value()) {
+        vel_estimate = axis.encoder_.vel_estimate_.any();
+    }
+
+    can_setSignal<float>(txmsg, pos_estimate.value_or(0.0f), 0, 32, true);
+    can_setSignal<float>(txmsg, vel_estimate.value_or(0.0f), 32, 32, true);
 
     return canbus_->send_message(txmsg);
 }
@@ -464,6 +553,14 @@ uint32_t CANSimple::service_stack() {
         }
     }
 
+    if (phase_scan_active_axis < AXIS_COUNT && (int32_t)(now - phase_scan_stop_ms) >= 0) {
+        axes[phase_scan_active_axis].motor_.disarm();
+        phase_scan_active_axis = UINT32_MAX;
+        g_debug.m0_phase_scan_active = 0;
+        g_debug.m0_phase_scan_v_alpha = 0.0f;
+        g_debug.m0_phase_scan_v_beta = 0.0f;
+    }
+
     struct periodic {
         const uint32_t& rate;
         uint32_t& last_time;
@@ -576,6 +673,7 @@ static bool is_valid_encoder_mode(uint32_t value) {
         case Encoder::MODE_SPI_ABS_RLS:
         case Encoder::MODE_SPI_ABS_MA732:
         case Encoder::MODE_SPI_ABS_MT6826S:
+        case Encoder::MODE_SPI_ABS_MT6826S_VERNIER:
             return true;
         default:
             return false;
@@ -588,6 +686,11 @@ static bool is_positive_finite(float value) {
 
 static bool is_nonnegative_finite(float value) {
     return std::isfinite(value) && value >= 0.0f;
+}
+
+static bool is_valid_spi_prescaler_divisor(uint32_t value) {
+    return value == 2 || value == 4 || value == 8 || value == 16
+        || value == 32 || value == 64 || value == 128 || value == 256;
 }
 
 // ---- dispatcher -----------------------------------------------------
@@ -610,6 +713,8 @@ bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) 
         case 0x07: return handle_set_basic_config(axis, msg, txmsg);
         case 0x08: return handle_get_anticogging_status(axis, msg, txmsg);
         case 0x09: return handle_set_anticogging_config(axis, msg, txmsg);
+        case 0x0A: return handle_get_vernier_diagnostics(axis, msg, txmsg);
+        case 0x0B: return handle_phase_scan(axis, msg, txmsg);
         default:   return false;
     }
 }
@@ -771,6 +876,18 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
         case 0x21: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.encoder_.config_.cpr, 32, 32, true); break;
         case 0x22: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.abs_spi_cs_gpio_pin, 32, 32, true); break;
         case 0x23: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.bandwidth, 32, 32, true); break;
+        case 0x24: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.abs_spi_aux_cs_gpio_pin, 32, 32, true); break;
+        case 0x25: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.encoder_.config_.vernier_virtual_cpr, 32, 32, true); break;
+        case 0x26: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_main_ratio, 32, 32, true); break;
+        case 0x27: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_aux_ratio, 32, 32, true); break;
+        case 0x28: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_main_offset, 32, 32, true); break;
+        case 0x29: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_aux_offset, 32, 32, true); break;
+        case 0x2A: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_main_reversed ? 1u : 0u, 32, 32, true); break;
+        case 0x2B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_aux_reversed ? 1u : 0u, 32, 32, true); break;
+        case 0x2C: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.mt6826s_spi_mode, 32, 32, true); break;
+        case 0x2D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_err_accept, 32, 32, true); break;
+        case 0x2E: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_err_reject, 32, 32, true); break;
+        case 0x2F: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.mt6826s_spi_prescaler, 32, 32, true); break;
         // --- controller ---
         case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
         case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
@@ -877,6 +994,86 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             axis.encoder_.config_.set_bandwidth(value);
             break;
         }
+        case 0x24: {  // abs_spi_aux_cs_gpio_pin (uint32, stored as uint16)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (value >= GPIO_COUNT) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_abs_spi_aux_cs_gpio_pin(static_cast<uint16_t>(value));
+            break;
+        }
+        case 0x25: {  // vernier_virtual_cpr (int32)
+            if (req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            int32_t value = can_getSignal<int32_t>(msg, 32, 32, true);
+            if (value <= 0) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.vernier_virtual_cpr = value;
+            break;
+        }
+        case 0x26: {  // vernier_main_ratio (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_vernier_main_ratio(value);
+            break;
+        }
+        case 0x27: {  // vernier_aux_ratio (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_vernier_aux_ratio(value);
+            break;
+        }
+        case 0x28: {  // vernier_main_offset (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!std::isfinite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_vernier_main_offset(value);
+            break;
+        }
+        case 0x29: {  // vernier_aux_offset (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!std::isfinite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_vernier_aux_offset(value);
+            break;
+        }
+        case 0x2A: {  // vernier_main_reversed (uint32 as bool)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.encoder_.config_.set_vernier_main_reversed(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            break;
+        }
+        case 0x2B: {  // vernier_aux_reversed (uint32 as bool)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.encoder_.config_.set_vernier_aux_reversed(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            break;
+        }
+        case 0x2C: {  // mt6826s_spi_mode (uint32, 0..3)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (value > 3u) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_mt6826s_spi_mode(static_cast<uint16_t>(value));
+            break;
+        }
+        case 0x2D: {  // vernier_err_accept (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_vernier_err_accept(value);
+            break;
+        }
+        case 0x2E: {  // vernier_err_reject (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_vernier_err_reject(value);
+            break;
+        }
+        case 0x2F: {  // mt6826s_spi_prescaler (uint32 divisor)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (!is_valid_spi_prescaler_divisor(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.encoder_.config_.set_mt6826s_spi_prescaler(static_cast<uint16_t>(value));
+            break;
+        }
         // --- controller ---
         case 0x30: {  // pos_gain (float32)
             if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
@@ -919,6 +1116,343 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
     }
 
     txmsg.buf[2] = status;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x0A: GET_VERNIER_DIAGNOSTICS
+//
+// item 0x00: main_angle (uint32)
+// item 0x01: aux_angle (uint32)
+// item 0x02: main_valid (uint32/bool)
+// item 0x03: aux_valid (uint32/bool)
+// item 0x04: pair_sequence (uint32)
+// item 0x05: pair_valid / resolver_locked placeholder (uint32/bool)
+// item 0x06: resolver_residual placeholder (float32)
+// item 0x07: vernier_virtual_count placeholder (int32)
+// item 0x08: vernier_position_turns placeholder (float32)
+// item 0x09: main_error_count (uint32)
+// item 0x0A: aux_error_count (uint32)
+// item 0x0B: resolver_state placeholder (uint32)
+// item 0x0C: pair_error_count (uint32)
+// item 0x10: main_raw_003_006, little-endian byte pack (uint32)
+// item 0x11: aux_raw_003_006, little-endian byte pack (uint32)
+// item 0x12: main_crc_recv_calc, received in bits[7:0], calculated in bits[15:8] (uint32)
+// item 0x13: aux_crc_recv_calc, received in bits[7:0], calculated in bits[15:8] (uint32)
+// item 0x14: main_spi_dma_error_count (uint32)
+// item 0x15: main_crc_error_count (uint32)
+// item 0x16: main_fixed_bit_error_count (uint32)
+// item 0x17: main_status_warning_count (uint32)
+// item 0x18: main_sample_count (uint32)
+// item 0x19: aux_spi_dma_error_count (uint32)
+// item 0x1A: aux_crc_error_count (uint32)
+// item 0x1B: aux_fixed_bit_error_count (uint32)
+// item 0x1C: aux_status_warning_count (uint32)
+// item 0x1D: aux_sample_count (uint32)
+// item 0x1E: main_sequence (uint32)
+// item 0x1F: aux_sequence (uint32)
+// item 0x20: encoder_pos_estimate (float32)
+// item 0x21: encoder_vel_estimate (float32)
+// item 0x22: encoder_pos_circular (float32)
+// =====================================================================
+static uint32_t pack_mt6826s_raw(const Mt6826sSpi::Sample& sample) {
+    return static_cast<uint32_t>(sample.raw[0])
+        | (static_cast<uint32_t>(sample.raw[1]) << 8)
+        | (static_cast<uint32_t>(sample.raw[2]) << 16)
+        | (static_cast<uint32_t>(sample.raw[3]) << 24);
+}
+
+static uint32_t pack_mt6826s_crc(const Mt6826sSpi::Sample& sample) {
+    return static_cast<uint32_t>(sample.crc)
+        | (static_cast<uint32_t>(sample.crc_calc) << 8);
+}
+
+bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type = EXT_TYPE_UINT32;
+    Encoder::VernierDiagnosticsSnapshot snapshot = {};
+    axis.encoder_.get_vernier_diagnostics_snapshot(&snapshot);
+
+    txmsg.buf[0] = 0x0A;
+    txmsg.buf[1] = item_id;
+
+    auto set_u32 = [&](uint32_t v) {
+        can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+    };
+    auto set_f32 = [&](float v) {
+        can_setSignal<float>(txmsg, v, 32, 32, true);
+    };
+
+    switch (item_id) {
+        case 0x00:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_sample.angle, 32, 32, true);
+            break;
+        case 0x01:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_sample.angle, 32, 32, true);
+            break;
+        case 0x02:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_sample.valid ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x03:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_sample.valid ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x04:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.pair_count, 32, 32, true);
+            break;
+        case 0x05:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.pair_valid ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x06:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.residual, 32, 32, true);
+            break;
+        case 0x07:
+            type = EXT_TYPE_INT32;
+            can_setSignal<int32_t>(txmsg, snapshot.virtual_count, 32, 32, true);
+            break;
+        case 0x08:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.position_turns, 32, 32, true);
+            break;
+        case 0x09:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_error_count, 32, 32, true);
+            break;
+        case 0x0A:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_error_count, 32, 32, true);
+            break;
+        case 0x0B:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.state, 32, 32, true);
+            break;
+        case 0x0C:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.pair_error_count, 32, 32, true);
+            break;
+        case 0x10:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, pack_mt6826s_raw(snapshot.main_sample), 32, 32, true);
+            break;
+        case 0x11:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, pack_mt6826s_raw(snapshot.aux_sample), 32, 32, true);
+            break;
+        case 0x12:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, pack_mt6826s_crc(snapshot.main_sample), 32, 32, true);
+            break;
+        case 0x13:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, pack_mt6826s_crc(snapshot.aux_sample), 32, 32, true);
+            break;
+        case 0x14:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_spi_dma_error_count, 32, 32, true);
+            break;
+        case 0x15:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_crc_error_count, 32, 32, true);
+            break;
+        case 0x16:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_fixed_bit_error_count, 32, 32, true);
+            break;
+        case 0x17:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_status_warning_count, 32, 32, true);
+            break;
+        case 0x18:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_sample_count, 32, 32, true);
+            break;
+        case 0x19:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_spi_dma_error_count, 32, 32, true);
+            break;
+        case 0x1A:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_crc_error_count, 32, 32, true);
+            break;
+        case 0x1B:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_fixed_bit_error_count, 32, 32, true);
+            break;
+        case 0x1C:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_status_warning_count, 32, 32, true);
+            break;
+        case 0x1D:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_sample_count, 32, 32, true);
+            break;
+        case 0x1E:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_sample.sequence, 32, 32, true);
+            break;
+        case 0x1F:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.aux_sample.sequence, 32, 32, true);
+            break;
+        case 0x20:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.encoder_pos_estimate, 32, 32, true);
+            break;
+        case 0x21:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.encoder_vel_estimate, 32, 32, true);
+            break;
+        case 0x22:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.encoder_pos_circular, 32, 32, true);
+            break;
+        // Debug counters (0x30-0x39)
+        case 0x30: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.foc_bad_timing_cnt;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x31: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.foc_bad_timing_delta;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x32: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.foc_bad_timing_i_ts;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x33: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.foc_bad_timing_ctrl_ts;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x34: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.cl_adc_fail_pre_cnt;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x35: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.cl_adc_fail_post_cnt;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x36: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.cl_deadline_miss_cnt;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x37: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.enc_pair_busy_cnt;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x38: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.enc_pair_ok_cnt;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x39: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.loop_alive_cnt;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        // Per-ADC/flag breakdown (0x3A-0x3E)
+        case 0x3A: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.adc1_jeoc_fail;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x3B: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.adc2_eoc_fail;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x3C: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.adc2_jeoc_fail;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x3D: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.adc3_eoc_fail;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x3E: {
+            type = EXT_TYPE_UINT32;
+            uint32_t v = g_debug.adc3_jeoc_fail;
+            can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
+            break;
+        }
+        case 0x3F: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_adc1_jdr); break; }
+        case 0x40: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_adc2_jdr); break; }
+        case 0x41: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_adc3_jdr); break; }
+        case 0x42: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_current_sample_valid); break; }
+        case 0x43: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_current_phA); break; }
+        case 0x44: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_current_phB); break; }
+        case 0x45: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_current_phC); break; }
+        case 0x46: { type = EXT_TYPE_UINT32; set_u32(g_debug.tim1_bdtr); break; }
+        case 0x47: { type = EXT_TYPE_UINT32; set_u32(g_debug.tim1_ccr1); break; }
+        case 0x48: { type = EXT_TYPE_UINT32; set_u32(g_debug.tim1_ccr2); break; }
+        case 0x49: { type = EXT_TYPE_UINT32; set_u32(g_debug.tim1_ccr3); break; }
+        case 0x4A: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_is_armed); break; }
+        case 0x4B: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.resistance_actual_current); break; }
+        case 0x4C: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.resistance_test_voltage); break; }
+        case 0x4D: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.resistance_i_beta); break; }
+        case 0x4E: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.resistance_test_mod); break; }
+        case 0x4F: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_cm_current_present); break; }
+        case 0x50: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_cm_dc_calib_valid); break; }
+        case 0x51: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_cm_current_meas_valid); break; }
+        case 0x52: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_cm_armed_state); break; }
+        case 0x53: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_dc_calib_running_since); break; }
+        case 0x54: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_dc_calib_phA); break; }
+        case 0x55: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_dc_calib_phB); break; }
+        case 0x56: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_dc_calib_phC); break; }
+        case 0x57: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_cm_phA); break; }
+        case 0x58: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_cm_phB); break; }
+        case 0x59: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_cm_phC); break; }
+        case 0x5A: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_phase_scan_active); break; }
+        case 0x5B: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_phase_scan_vector); break; }
+        case 0x5C: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_v_alpha); break; }
+        case 0x5D: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_v_beta); break; }
+        case 0x5E: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_i_alpha); break; }
+        case 0x5F: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_i_beta); break; }
+        case 0x60: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_phase_scan_missing_current); break; }
+        case 0x61: { type = EXT_TYPE_UINT32; set_u32(g_debug.m0_phase_scan_sample_count); break; }
+        case 0x62: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_avg_phA); break; }
+        case 0x63: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_avg_phB); break; }
+        case 0x64: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_avg_phC); break; }
+        case 0x65: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_avg_i_alpha); break; }
+        case 0x66: { type = EXT_TYPE_FLOAT32; set_f32(g_debug.m0_phase_scan_avg_i_beta); break; }
+        default:
+            status = EXT_STATUS_UNKNOWN;
+            can_setSignal<uint32_t>(txmsg, 0, 32, 32, true);
+            break;
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
     return canbus_->send_message(txmsg);
 }
 
@@ -1061,5 +1595,76 @@ bool CANSimple::handle_set_anticogging_config(Axis& axis, const can_Message_t& m
     }
 
     txmsg.buf[2] = status;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x0B: M0_PHASE_SCAN
+//
+// Request: byte1 item, byte2 req_type, byte4-7 float voltage.
+//   item 0: stop
+//   item 1: +alpha, item 2: -alpha
+//   item 3: +beta,  item 4: -beta
+//   item 5: +60deg, item 6: -60deg
+//
+// Response value is 1 when the scan is active after handling the request.
+// The scan has a short auto-timeout in service_stack().
+// =====================================================================
+bool CANSimple::handle_phase_scan(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    uint8_t item = msg.buf[1];
+    uint8_t req_type = msg.buf[2];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type = EXT_TYPE_UINT32;
+
+    txmsg.buf[0] = 0x0B;
+    txmsg.buf[1] = item;
+
+    if (axis.axis_num_ != 0) {
+        status = EXT_STATUS_INVALID_VALUE;
+    } else if (item == 0) {
+        axis.motor_.disarm();
+        phase_scan_active_axis = UINT32_MAX;
+        g_debug.m0_phase_scan_active = 0;
+        g_debug.m0_phase_scan_vector = 0;
+        g_debug.m0_phase_scan_v_alpha = 0.0f;
+        g_debug.m0_phase_scan_v_beta = 0.0f;
+    } else if (req_type != EXT_TYPE_FLOAT32) {
+        status = EXT_STATUS_INVALID_TYPE;
+    } else if (any_axis_armed() && phase_scan_active_axis >= AXIS_COUNT) {
+        status = EXT_STATUS_BUSY_ARMED;
+    } else {
+        float voltage = can_getSignal<float>(msg, 32, 32, true);
+        if (!std::isfinite(voltage) || voltage <= 0.0f || voltage > 1.0f) {
+            status = EXT_STATUS_INVALID_VALUE;
+        } else {
+            float v_alpha = 0.0f;
+            float v_beta = 0.0f;
+            switch (item) {
+                case 1: v_alpha =  voltage; break;
+                case 2: v_alpha = -voltage; break;
+                case 3: v_beta  =  voltage; break;
+                case 4: v_beta  = -voltage; break;
+                case 5: v_alpha =  0.5f * voltage; v_beta =  0.8660254038f * voltage; break;
+                case 6: v_alpha = -0.5f * voltage; v_beta = -0.8660254038f * voltage; break;
+                default: status = EXT_STATUS_INVALID_VALUE; break;
+            }
+
+            if (status == EXT_STATUS_OK) {
+                phase_scan_control_law.configure(v_alpha, v_beta, item);
+                axis.motor_.arm(&phase_scan_control_law);
+                if (axis.motor_.is_armed_) {
+                    phase_scan_active_axis = axis.axis_num_;
+                    phase_scan_stop_ms = HAL_GetTick() + PHASE_SCAN_TIMEOUT_MS;
+                    g_debug.m0_phase_scan_active = 1;
+                } else {
+                    status = EXT_STATUS_BUSY_ARMED;
+                }
+            }
+        }
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
+    can_setSignal<uint32_t>(txmsg, (phase_scan_active_axis < AXIS_COUNT) ? 1u : 0u, 32, 32, true);
     return canbus_->send_message(txmsg);
 }

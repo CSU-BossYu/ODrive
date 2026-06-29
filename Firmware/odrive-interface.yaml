@@ -1316,9 +1316,54 @@ interfaces:
             type: uint16
             c_setter: set_abs_spi_cs_gpio_pin
             doc: Make sure that the GPIO is in `GPIO_MODE_DIGITAL`.
+          abs_spi_aux_cs_gpio_pin:
+            type: uint16
+            c_setter: set_abs_spi_aux_cs_gpio_pin
+            doc: Auxiliary chip-select GPIO for dual MT6826S vernier diagnostics.
           cpr: 
             type: int32
             doc: Counts per Revolution of the encoder.  This is 4x the Pulses per Revolution.
+          vernier_main_ratio:
+            type: float32
+            c_setter: set_vernier_main_ratio
+            doc: Main encoder revolutions per vernier output turn.
+          vernier_aux_ratio:
+            type: float32
+            c_setter: set_vernier_aux_ratio
+            doc: Auxiliary encoder revolutions per vernier output turn.
+          vernier_main_offset:
+            type: float32
+            c_setter: set_vernier_main_offset
+            doc: Main encoder phase offset in turns.
+          vernier_aux_offset:
+            type: float32
+            c_setter: set_vernier_aux_offset
+            doc: Auxiliary encoder phase offset in turns.
+          vernier_main_reversed:
+            type: bool
+            c_setter: set_vernier_main_reversed
+          vernier_aux_reversed:
+            type: bool
+            c_setter: set_vernier_aux_reversed
+          mt6826s_spi_mode:
+            type: uint16
+            c_setter: set_mt6826s_spi_mode
+            doc: SPI mode for MT6826S diagnostics. Datasheet default is mode 3.
+          vernier_virtual_cpr:
+            type: int32
+            doc: Counts per resolved vernier output turn for diagnostics.
+          vernier_err_accept:
+            type: float32
+            c_setter: set_vernier_err_accept
+            doc: Residual threshold below which a vernier observation is accepted.
+          vernier_err_reject:
+            type: float32
+            c_setter: set_vernier_err_reject
+            doc: Residual threshold above which a vernier observation is rejected.
+          mt6826s_spi_prescaler:
+            type: uint16
+            c_setter: set_mt6826s_spi_prescaler
+            doc: SPI baudrate prescaler divisor for MT6826S diagnostics.
           phase_offset: int32
           phase_offset_float: float32
           direction: int32
@@ -1602,6 +1647,9 @@ valuetypes:
       SPI_ABS_MT6826S:
         value: 0x105
         doc: MT6826S 15-bit magnetic encoder over SPI
+      SPI_ABS_MT6826S_VERNIER:
+        value: 0x106
+        doc: Dual MT6826S vernier diagnostics over SPI
 
   ODrive.Controller.ControlMode:
     values:

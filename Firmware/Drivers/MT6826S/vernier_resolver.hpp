@@ -17,6 +17,11 @@
 //   main_corr = frac(main_phase - main_offset) = frac(main_ratio * x)
 //   aux_corr  = frac(aux_phase  - aux_offset)  = frac(aux_ratio  * x)
 //
+// For gear pairs where aux_ratio - main_ratio = 1, the direct phase-difference
+// path can be used:
+//   output_phase = frac(aux_corr - main_corr) = frac(x)
+// This is the preferred path for the 41:42 / 42:1 reduction MT6826S layout.
+//
 // Output:
 //   position_turns = x
 //   main_cycle_index = integer unwrap index of main_corr
@@ -96,6 +101,11 @@ public:
         // Optional output limit, in output turns.  Set <=0 to disable.
         // This is a sanity guard against choosing an impossible Vernier branch.
         float max_abs_position_turns = 0.0f;
+
+        // If true, compute output position from frac(aux - main) and unwrap it
+        // over time. This matches a 41:42 gear pair where the phase difference
+        // is exactly the output shaft phase.
+        bool use_phase_difference = false;
     };
 
     struct Result {
@@ -189,6 +199,11 @@ private:
                             float main_phase_corr,
                             float aux_phase_corr) const;
 
+    Result update_phase_difference(uint16_t main_angle,
+                                   bool main_valid,
+                                   uint16_t aux_angle,
+                                   bool aux_valid);
+
     Result accept_candidate(const Candidate& candidate,
                             uint16_t main_angle,
                             uint16_t aux_angle,
@@ -217,6 +232,8 @@ private:
 
     bool has_last_phase_ = false;
     float last_main_phase_corr_ = 0.0f;
+    bool has_last_output_phase_ = false;
+    float last_output_phase_ = 0.0f;
     int32_t main_cycle_index_ = 0;
     float position_turns_ = 0.0f;
 

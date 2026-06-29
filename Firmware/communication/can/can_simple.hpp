@@ -98,6 +98,8 @@ class CANSimple {
     bool handle_set_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_get_anticogging_status(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_set_anticogging_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_phase_scan(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
 
     // Other functions
     static void nmt_callback(const Axis& axis, const can_Message_t& msg);

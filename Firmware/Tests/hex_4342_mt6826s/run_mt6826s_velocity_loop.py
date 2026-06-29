@@ -215,6 +215,7 @@ def enter_closed_loop(bus, args):
         ):
             return
         if hb["axis_error"] or hb["motor_error_flag"] or hb["encoder_error_flag"] or hb["controller_error_flag"]:
+            print_error_summary("Errors while entering closed loop:", read_error_summary(bus, args))
             raise RuntimeError("Error while entering closed loop")
         time.sleep(0.1)
     raise RuntimeError("Timed out waiting for CLOSED_LOOP_CONTROL")
@@ -223,7 +224,7 @@ def enter_closed_loop(bus, args):
 def main():
     parser = argparse.ArgumentParser(description="Run MT6826S velocity loop over CANSimple.")
     parser.add_argument("--channel", default="PCAN_USBBUS1")
-    parser.add_argument("--bitrate", type=int, default=250000)
+    parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--node-id", type=int, default=0)
     parser.add_argument("--extended-id", action="store_true")
     parser.add_argument("--velocity", type=float, default=0.3, help="Motor rotor velocity in turns/s.")

@@ -36,13 +36,19 @@ void Mt6826sSpi::init(Stm32SpiArbiter* spi_arbiter, Stm32Gpio ncs_gpio, const Co
     }
 }
 
+void Mt6826sSpi::set_config(const Config& config) {
+    uint32_t prim = cpu_enter_critical();
+    config_ = config;
+    cpu_exit_critical(prim);
+}
+
 SPI_InitTypeDef Mt6826sSpi::make_spi_config() const {
     SPI_InitTypeDef cfg = {};
     cfg.Mode = SPI_MODE_MASTER;
     cfg.Direction = SPI_DIRECTION_2LINES;
     cfg.DataSize = SPI_DATASIZE_8BIT;
-    cfg.CLKPolarity = SPI_POLARITY_HIGH;       // SPI mode 3
-    cfg.CLKPhase = SPI_PHASE_2EDGE;            // SPI mode 3
+    cfg.CLKPolarity = config_.clk_polarity;
+    cfg.CLKPhase = config_.clk_phase;
     cfg.NSS = SPI_NSS_SOFT;
     cfg.BaudRatePrescaler = config_.baudrate_prescaler;
     cfg.FirstBit = SPI_FIRSTBIT_MSB;
@@ -140,12 +146,14 @@ void Mt6826sSpi::handle_spi_done(bool success) {
         }
     }
 
-    if (ok) {
+    if (success) {
         uint32_t prim = cpu_enter_critical();
         next_sequence_ = sample.sequence;
         latest_sample_ = sample;
         new_sample_ready_ = true;
-        ++sample_count_;
+        if (ok) {
+            ++sample_count_;
+        }
         cpu_exit_critical(prim);
     }
 
@@ -191,6 +199,18 @@ bool Mt6826sSpi::read_latest_sample(Sample* out) const {
     }
     cpu_exit_critical(prim);
     return valid;
+}
+
+bool Mt6826sSpi::read_last_sample_for_diagnostics(Sample* out) const {
+    if (!out) {
+        return false;
+    }
+
+    uint32_t prim = cpu_enter_critical();
+    *out = latest_sample_;
+    const bool has_sample = latest_sample_.sequence != 0u;
+    cpu_exit_critical(prim);
+    return has_sample;
 }
 
 uint8_t Mt6826sSpi::crc8_mt6826s(const uint8_t* data, size_t length, uint8_t init) {
@@ -272,6 +292,7 @@ void Mt6826sSpiPair::init(Mt6826sSpi* main_sensor, Mt6826sSpi* aux_sensor) {
 
     pending_pair_ = {};
     latest_pair_ = {};
+    pending_error_ = ERROR_NONE;
     next_sequence_ = 0;
 
     new_pair_ready_ = false;
@@ -298,6 +319,7 @@ bool Mt6826sSpiPair::start_sample_async(CompletionCallback cb, void* ctx) {
     completion_cb_ = cb;
     completion_ctx_ = ctx;
     pending_pair_ = {};
+    pending_error_ = ERROR_NONE;
     state_ = STATE_READING_MAIN;
 
     if (!main_->start_sample_async(&Mt6826sSpiPair::main_done_cb, this)) {
@@ -324,12 +346,11 @@ void Mt6826sSpiPair::handle_main_done(const Mt6826sSpi::Sample& sample, bool suc
         return;
     }
 
+    pending_pair_.main = sample;
     if (!success || !sample.valid) {
-        finish(false, ERROR_MAIN_READ_FAIL);
-        return;
+        pending_error_ = ERROR_MAIN_READ_FAIL;
     }
 
-    pending_pair_.main = sample;
     state_ = STATE_READING_AUX;
 
     if (!aux_->start_sample_async(&Mt6826sSpiPair::aux_done_cb, this)) {
@@ -343,13 +364,16 @@ void Mt6826sSpiPair::handle_aux_done(const Mt6826sSpi::Sample& sample, bool succ
         return;
     }
 
+    pending_pair_.aux = sample;
     if (!success || !sample.valid) {
-        finish(false, ERROR_AUX_READ_FAIL);
-        return;
+        if (pending_error_ == ERROR_NONE) {
+            pending_error_ = ERROR_AUX_READ_FAIL;
+        } else {
+            set_error(ERROR_AUX_READ_FAIL);
+        }
     }
 
-    pending_pair_.aux = sample;
-    finish(true);
+    finish(pending_error_ == ERROR_NONE, pending_error_);
 }
 
 void Mt6826sSpiPair::finish(bool success, Error error_if_failed) {
@@ -366,11 +390,17 @@ void Mt6826sSpiPair::finish(bool success, Error error_if_failed) {
         ++pair_count_;
         cpu_exit_critical(prim);
     } else {
+        cb_sample.sequence = next_sequence_ + 1;
         cb_sample.valid = false;
         ++pair_error_count_;
         if (error_if_failed != ERROR_NONE) {
             set_error(error_if_failed);
         }
+        uint32_t prim = cpu_enter_critical();
+        next_sequence_ = cb_sample.sequence;
+        latest_pair_ = cb_sample;
+        new_pair_ready_ = true;
+        cpu_exit_critical(prim);
     }
 
     state_ = STATE_IDLE;

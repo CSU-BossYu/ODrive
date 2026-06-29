@@ -5,6 +5,7 @@
 #include <board.h>
 
 #include <odrive_main.h>
+#include "debug_counters.hpp"
 #include <low_level.h>
 
 #include <Drivers/STM32/stm32_timer.hpp>
@@ -396,9 +397,13 @@ void start_timers() {
             {TIM1_INIT_COUNT, 0, TIM1_INIT_COUNT / 2 /* TIM13 is on a clock that's only have as fast as TIM1 */}
         );
 
-        hadc1.Instance->CR2 |= (ADC_EXTERNALTRIGINJECCONVEDGE_RISING);
-        hadc2.Instance->CR2 |= (ADC_EXTERNALTRIGCONVEDGE_RISING | ADC_EXTERNALTRIGINJECCONVEDGE_RISING);
-        hadc3.Instance->CR2 |= (ADC_EXTERNALTRIGCONVEDGE_RISING | ADC_EXTERNALTRIGINJECCONVEDGE_RISING);
+        hadc1.Instance->CR2 |= ADC_EXTERNALTRIGINJECCONVEDGE_RISING;
+        // M1 current data is unused, but ADC2's regular conversion remains the
+        // hardware timing marker used by the original control-loop pipeline.
+        hadc2.Instance->CR2 |=
+            ADC_EXTERNALTRIGCONVEDGE_RISING |
+            ADC_EXTERNALTRIGINJECCONVEDGE_RISING;
+        hadc3.Instance->CR2 |= ADC_EXTERNALTRIGINJECCONVEDGE_RISING;
 
         __HAL_ADC_CLEAR_FLAG(&hadc1, ADC_FLAG_JEOC);
         __HAL_ADC_CLEAR_FLAG(&hadc2, ADC_FLAG_JEOC);
@@ -415,37 +420,59 @@ void start_timers() {
     }
 }
 
+static void clear_realtime_adc_flags() {
+    ADC1->SR = ~(ADC_SR_JEOC | ADC_SR_OVR);
+    ADC2->SR = ~(ADC_SR_EOC | ADC_SR_JEOC | ADC_SR_OVR);
+    ADC3->SR = ~(ADC_SR_EOC | ADC_SR_JEOC | ADC_SR_OVR);
+}
+
 static bool fetch_and_reset_adcs(
         std::optional<Iph_ABC_t>* current0,
         std::optional<Iph_ABC_t>* current1) {
-    bool all_adcs_done = (ADC1->SR & ADC_SR_JEOC) == ADC_SR_JEOC
-        && (ADC2->SR & (ADC_SR_EOC | ADC_SR_JEOC)) == (ADC_SR_EOC | ADC_SR_JEOC)
-        && (ADC3->SR & (ADC_SR_EOC | ADC_SR_JEOC)) == (ADC_SR_EOC | ADC_SR_JEOC);
+    (void)current1;
+    // M1 is unused in this build. Only consume the M0 real-time sample set:
+    // ADC1 injected VBUS plus ADC2/3 injected M0 phase currents.
+    bool adc1_done     = (ADC1->SR & ADC_SR_JEOC) == ADC_SR_JEOC;
+    bool adc2_jeoc_done = (ADC2->SR & ADC_SR_JEOC) == ADC_SR_JEOC;
+    bool adc3_jeoc_done = (ADC3->SR & ADC_SR_JEOC) == ADC_SR_JEOC;
+
+    bool all_adcs_done = adc1_done && adc2_jeoc_done && adc3_jeoc_done;
+
     if (!all_adcs_done) {
+        extern DebugCounters g_debug;
+        if (!adc1_done)      ++g_debug.adc1_jeoc_fail;
+        if (!adc2_jeoc_done) ++g_debug.adc2_jeoc_fail;
+        if (!adc3_jeoc_done) ++g_debug.adc3_jeoc_fail;
         return false;
     }
 
     vbus_sense_adc_cb(ADC1->JDR1);
+    g_debug.m0_adc1_jdr = ADC1->JDR1;
+    g_debug.m0_adc2_jdr = ADC2->JDR1;
+    g_debug.m0_adc3_jdr = ADC3->JDR1;
+    g_debug.tim1_bdtr = TIM1->BDTR;
+    g_debug.tim1_ccr1 = TIM1->CCR1;
+    g_debug.tim1_ccr2 = TIM1->CCR2;
+    g_debug.tim1_ccr3 = TIM1->CCR3;
+    g_debug.m0_is_armed = motors[0].is_armed_ ? 1u : 0u;
 
     if (m0_gate_driver.is_ready()) {
         std::optional<float> phB = motors[0].phase_current_from_adcval(ADC2->JDR1);
         std::optional<float> phC = motors[0].phase_current_from_adcval(ADC3->JDR1);
         if (phB.has_value() && phC.has_value()) {
             *current0 = {-*phB - *phC, *phB, *phC};
+            g_debug.m0_current_phA = current0->value().phA;
+            g_debug.m0_current_phB = current0->value().phB;
+            g_debug.m0_current_phC = current0->value().phC;
+            g_debug.m0_current_sample_valid = 1;
+        } else {
+            g_debug.m0_current_sample_valid = 0;
         }
+    } else {
+        g_debug.m0_current_sample_valid = 0;
     }
 
-    if (m1_gate_driver.is_ready()) {
-        std::optional<float> phB = motors[1].phase_current_from_adcval(ADC2->DR);
-        std::optional<float> phC = motors[1].phase_current_from_adcval(ADC3->DR);
-        if (phB.has_value() && phC.has_value()) {
-            *current1 = {-*phB - *phC, *phB, *phC};
-        }
-    }
-    
-    ADC1->SR = ~(ADC_SR_JEOC);
-    ADC2->SR = ~(ADC_SR_EOC | ADC_SR_JEOC | ADC_SR_OVR);
-    ADC3->SR = ~(ADC_SR_EOC | ADC_SR_JEOC | ADC_SR_OVR);
+    clear_realtime_adc_flags();
 
     return true;
 }
@@ -524,8 +551,9 @@ void ControlLoop_IRQHandler(void) {
     std::optional<Iph_ABC_t> current1;
 
     if (!fetch_and_reset_adcs(&current0, &current1)) {
+        extern DebugCounters g_debug;
+        ++g_debug.cl_adc_fail_pre_cnt;
         motors[0].disarm_with_error(Motor::ERROR_BAD_TIMING);
-        motors[1].disarm_with_error(Motor::ERROR_BAD_TIMING);
     }
 
     // If the motor FETs are not switching then we can't measure the current
@@ -545,15 +573,16 @@ void ControlLoop_IRQHandler(void) {
 
     odrv.control_loop_cb(timestamp);
 
-    // By this time the ADCs for both M0 and M1 should have fired again. But
-    // let's wait for them just to be sure.
+    // ADC2 regular EOC is the original hardware timing marker for the second
+    // sample set. Its value is unused; it only synchronizes the M0 JEOC reads.
     MEASURE_TIME(odrv.task_times_.dc_calib_wait) {
         while (!(ADC2->SR & ADC_SR_EOC));
     }
 
     if (!fetch_and_reset_adcs(&current0, &current1)) {
+        extern DebugCounters g_debug;
+        ++g_debug.cl_adc_fail_post_cnt;
         motors[0].disarm_with_error(Motor::ERROR_BAD_TIMING);
-        motors[1].disarm_with_error(Motor::ERROR_BAD_TIMING);
     }
 
     motors[0].dc_calib_cb(timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1) - TIM1_INIT_COUNT, current0);
@@ -566,8 +595,9 @@ void ControlLoop_IRQHandler(void) {
     // called exactly once between the start of this function and now.
 
     if (timestamp_ != timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1)) {
+        extern DebugCounters g_debug;
+        ++g_debug.cl_deadline_miss_cnt;
         motors[0].disarm_with_error(Motor::ERROR_CONTROL_DEADLINE_MISSED);
-        motors[1].disarm_with_error(Motor::ERROR_CONTROL_DEADLINE_MISSED);
     }
 
     odrv.task_timers_armed_ = odrv.task_timers_armed_ && !TaskTimer::enabled;

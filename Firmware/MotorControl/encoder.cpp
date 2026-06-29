@@ -1,6 +1,8 @@
 
 #include "odrive_main.h"
+#include "debug_counters.hpp"
 #include <Drivers/STM32/stm32_system.h>
+#include <algorithm>
 #include <bitset>
 
 Encoder::Encoder(TIM_HandleTypeDef* timer, Stm32Gpio index_gpio,
@@ -14,6 +16,20 @@ Encoder::Encoder(TIM_HandleTypeDef* timer, Stm32Gpio index_gpio,
 
 static void enc_index_cb_wrapper(void* ctx) {
     reinterpret_cast<Encoder*>(ctx)->enc_index_cb();
+}
+
+static uint32_t spi_prescaler_from_divisor(uint16_t divisor) {
+    switch (divisor) {
+        case 2: return SPI_BAUDRATEPRESCALER_2;
+        case 4: return SPI_BAUDRATEPRESCALER_4;
+        case 8: return SPI_BAUDRATEPRESCALER_8;
+        case 16: return SPI_BAUDRATEPRESCALER_16;
+        case 32: return SPI_BAUDRATEPRESCALER_32;
+        case 64: return SPI_BAUDRATEPRESCALER_64;
+        case 128: return SPI_BAUDRATEPRESCALER_128;
+        case 256: return SPI_BAUDRATEPRESCALER_256;
+        default: return SPI_BAUDRATEPRESCALER_16;
+    }
 }
 
 bool Encoder::apply_config(ODriveIntf::MotorIntf::MotorType motor_type) {
@@ -60,12 +76,16 @@ void Encoder::setup() {
     if(mode_ & MODE_FLAG_ABS){
         abs_spi_cs_pin_init();
 
-        if (mode_ == MODE_SPI_ABS_MT6826S) {
-            Mt6826sSpi::Config mt6826s_config = {};
-            mt6826s_config.check_crc = true;
-            mt6826s_config.check_fixed_bits = true;
-            mt6826s_config.fail_on_status_warning = false;
+        if (mode_ == MODE_SPI_ABS_MT6826S || mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
+            Mt6826sSpi::Config mt6826s_config = make_mt6826s_spi_config();
             mt6826s_spi_.init(spi_arbiter_, abs_spi_cs_gpio_, mt6826s_config);
+
+            if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
+                abs_spi_aux_cs_pin_init();
+                mt6826s_aux_spi_.init(spi_arbiter_, abs_spi_aux_cs_gpio_, mt6826s_config);
+                mt6826s_spi_pair_.init(&mt6826s_spi_, &mt6826s_aux_spi_);
+                vernier_resolver_.init(make_vernier_resolver_config());
+            }
         }
 
         if (axis_->controller_.config_.anticogging.pre_calibrated) {
@@ -508,8 +528,12 @@ void Encoder::sample_now() {
         } break;
 
         case MODE_SPI_ABS_MT6826S: {
-            mt6826s_spi_.start_sample_async(&Encoder::mt6826s_spi_cb, this);
+            start_mt6826s_main_sample();
             // Do nothing
+        } break;
+
+        case MODE_SPI_ABS_MT6826S_VERNIER: {
+            start_mt6826s_pair_sample();
         } break;
 
         default: {
@@ -629,6 +653,10 @@ void Encoder::mt6826s_spi_cb(void* ctx, const Mt6826sSpi::Sample& sample, bool s
 }
 
 void Encoder::handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool success) {
+    uint32_t prim = cpu_enter_critical();
+    mt6826s_main_sample_ = sample;
+    cpu_exit_critical(prim);
+
     if (!success || !sample.valid) {
         return;
     }
@@ -639,6 +667,66 @@ void Encoder::handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool succe
     if (config_.pre_calibrated) {
         is_ready_ = true;
     }
+}
+
+bool Encoder::start_mt6826s_main_sample() {
+    if (mt6826s_spi_.start_sample_async(&Encoder::mt6826s_spi_cb, this)) {
+        return true;
+    }
+
+    // MT6826S reads are asynchronous, so a single busy cycle is expected
+    // if the previous DMA transaction has not completed yet. Let update()
+    // decide if the missing sample rate is persistent enough to be a fault.
+    return false;
+}
+
+bool Encoder::start_mt6826s_pair_sample() {
+    if (mt6826s_spi_pair_.start_sample_async(&Encoder::mt6826s_spi_pair_cb, this)) {
+        ++mt6826s_vernier_sample_counter_;
+        return true;
+    }
+
+    // Pair sampling can miss a control cycle while the main/aux transfers
+    // are still in flight. This is not by itself an encoder fault.
+    extern DebugCounters g_debug;
+    ++g_debug.enc_pair_busy_cnt;
+    return false;
+}
+
+void Encoder::mt6826s_spi_pair_cb(void* ctx, const Mt6826sSpiPair::PairSample& sample, bool success) {
+    reinterpret_cast<Encoder*>(ctx)->handle_mt6826s_spi_pair_cb(sample, success);
+}
+
+void Encoder::handle_mt6826s_spi_pair_cb(const Mt6826sSpiPair::PairSample& sample, bool success) {
+    extern DebugCounters g_debug;
+    ++g_debug.enc_pair_ok_cnt;
+    g_debug.enc_pair_ok_main = sample.main.angle;
+    g_debug.enc_pair_ok_aux = sample.aux.angle;
+
+    if (sample.main.valid) {
+        handle_mt6826s_spi_cb(sample.main, true);
+    }
+
+    VernierResolver::Result resolver_result = vernier_resolver_.update(
+        sample.main.angle,
+        sample.main.valid,
+        sample.aux.angle,
+        sample.aux.valid
+    );
+
+    uint32_t prim = cpu_enter_critical();
+    mt6826s_pair_valid_ = success && sample.valid;
+    vernier_result_ = resolver_result;
+    if (sample.main.sequence != 0) {
+        mt6826s_main_sample_ = sample.main;
+    }
+    if (sample.aux.sequence != 0) {
+        mt6826s_aux_sample_ = sample.aux;
+    }
+    if (sample.sequence != 0) {
+        mt6826s_pair_sequence_ = sample.sequence;
+    }
+    cpu_exit_critical(prim);
 }
 
 void Encoder::abs_spi_cs_pin_init(){
@@ -654,6 +742,156 @@ void Encoder::abs_spi_cs_pin_init(){
 
     // Write pin high
     abs_spi_cs_gpio_.write(true);
+}
+
+void Encoder::abs_spi_aux_cs_pin_init(){
+    abs_spi_aux_cs_gpio_ = get_gpio(config_.abs_spi_aux_cs_gpio_pin);
+    abs_spi_aux_cs_gpio_.config(GPIO_MODE_OUTPUT_PP, GPIO_PULLUP);
+    abs_spi_aux_cs_gpio_.write(true);
+}
+
+Mt6826sSpi::Config Encoder::make_mt6826s_spi_config() const {
+    Mt6826sSpi::Config mt6826s_config = {};
+    mt6826s_config.check_crc = true;
+    mt6826s_config.check_fixed_bits = true;
+    mt6826s_config.fail_on_status_warning = false;
+    mt6826s_config.baudrate_prescaler = spi_prescaler_from_divisor(config_.mt6826s_spi_prescaler);
+
+    switch (config_.mt6826s_spi_mode) {
+        case 0:
+            mt6826s_config.clk_polarity = SPI_POLARITY_LOW;
+            mt6826s_config.clk_phase = SPI_PHASE_1EDGE;
+            break;
+        case 1:
+            mt6826s_config.clk_polarity = SPI_POLARITY_LOW;
+            mt6826s_config.clk_phase = SPI_PHASE_2EDGE;
+            break;
+        case 2:
+            mt6826s_config.clk_polarity = SPI_POLARITY_HIGH;
+            mt6826s_config.clk_phase = SPI_PHASE_1EDGE;
+            break;
+        case 3:
+        default:
+            mt6826s_config.clk_polarity = SPI_POLARITY_HIGH;
+            mt6826s_config.clk_phase = SPI_PHASE_2EDGE;
+            break;
+    }
+
+    return mt6826s_config;
+}
+
+void Encoder::apply_mt6826s_spi_config() {
+    Mt6826sSpi::Config mt6826s_config = make_mt6826s_spi_config();
+    mt6826s_spi_.set_config(mt6826s_config);
+    mt6826s_aux_spi_.set_config(mt6826s_config);
+}
+
+VernierResolver::Config Encoder::make_vernier_resolver_config() const {
+    VernierResolver::Config vernier_config = {};
+    vernier_config.angle_counts_per_rev = Mt6826sSpi::kCountsPerRev;
+    vernier_config.main_ratio = config_.vernier_main_ratio;
+    vernier_config.aux_ratio = config_.vernier_aux_ratio;
+    vernier_config.main_offset = config_.vernier_main_offset;
+    vernier_config.aux_offset = config_.vernier_aux_offset;
+    vernier_config.main_reversed = config_.vernier_main_reversed;
+    vernier_config.aux_reversed = config_.vernier_aux_reversed;
+    vernier_config.err_accept = config_.vernier_err_accept;
+    vernier_config.err_reject = config_.vernier_err_reject;
+    vernier_config.max_main_cycle_index = 64;
+    vernier_config.use_phase_difference = true;
+    return vernier_config;
+}
+
+void Encoder::apply_vernier_resolver_config() {
+    vernier_resolver_.init(make_vernier_resolver_config());
+    vernier_output_estimate_valid_ = false;
+    vernier_output_sample_dt_ = 0.0f;
+    vernier_output_pair_sequence_ = 0;
+}
+
+void Encoder::publish_vernier_output_estimate(float dt) {
+    VernierResolver::Result result = {};
+    uint32_t pair_sequence = 0;
+    uint32_t prim = cpu_enter_critical();
+    result = vernier_result_;
+    pair_sequence = mt6826s_pair_sequence_;
+    cpu_exit_critical(prim);
+
+    if (!result.valid || dt <= 0.0f) {
+        return;
+    }
+
+    vernier_output_sample_dt_ += dt;
+
+    if (!vernier_output_estimate_valid_) {
+        vernier_output_pos_estimate_ = result.position_turns;
+        vernier_output_vel_estimate_ = 0.0f;
+        vernier_output_estimate_valid_ = true;
+        vernier_output_pair_sequence_ = pair_sequence;
+        vernier_output_sample_dt_ = 0.0f;
+    } else if (pair_sequence != vernier_output_pair_sequence_ && vernier_output_sample_dt_ > 0.0f) {
+        const float measured_vel = (result.position_turns - vernier_output_pos_estimate_) / vernier_output_sample_dt_;
+        const float alpha = std::min(1.0f, vernier_output_sample_dt_ * config_.bandwidth);
+        vernier_output_vel_estimate_ += alpha * (measured_vel - vernier_output_vel_estimate_);
+        vernier_output_pos_estimate_ = result.position_turns;
+        vernier_output_pair_sequence_ = pair_sequence;
+        vernier_output_sample_dt_ = 0.0f;
+    }
+
+    pos_estimate_ = vernier_output_pos_estimate_;
+    // vel_estimate_ is now always sourced from the motor-side PLL (see update()).
+    pos_circular_ = fmodf_pos(vernier_output_pos_estimate_,
+                              axis_->controller_.config_.circular_setpoint_range);
+}
+
+void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) {
+    if (!out) {
+        return;
+    }
+
+    uint32_t prim = cpu_enter_critical();
+    out->main_sample = mt6826s_main_sample_;
+    out->aux_sample = mt6826s_aux_sample_;
+    VernierResolver::Result resolver_result = vernier_result_;
+    out->pair_count = mt6826s_pair_sequence_;
+    out->pair_valid = mt6826s_pair_valid_;
+    cpu_exit_critical(prim);
+
+    Mt6826sSpi::Sample latest_main = {};
+    if (mt6826s_spi_.read_last_sample_for_diagnostics(&latest_main)) {
+        out->main_sample = latest_main;
+    }
+
+    Mt6826sSpi::Sample latest_aux = {};
+    if (mt6826s_aux_spi_.read_last_sample_for_diagnostics(&latest_aux)) {
+        out->aux_sample = latest_aux;
+    }
+
+    out->virtual_count = 0;
+    vernier_resolver_.get_virtual_count(config_.vernier_virtual_cpr, &out->virtual_count);
+    out->position_turns = resolver_result.position_turns;
+    out->residual = resolver_result.residual_turns;
+    out->encoder_pos_estimate = pos_estimate_.any().value_or(0.0f);
+    out->encoder_vel_estimate = vel_estimate_.any().value_or(0.0f);
+    out->encoder_pos_circular = pos_circular_.any().value_or(0.0f);
+    out->state = static_cast<uint32_t>(resolver_result.state);
+    out->main_spi_dma_error_count = mt6826s_spi_.spi_dma_error_count();
+    out->main_crc_error_count = mt6826s_spi_.crc_error_count();
+    out->main_fixed_bit_error_count = mt6826s_spi_.fixed_bit_error_count();
+    out->main_status_warning_count = mt6826s_spi_.status_warning_count();
+    out->main_sample_count = mt6826s_spi_.sample_count();
+    out->main_error_count = out->main_crc_error_count
+        + out->main_fixed_bit_error_count
+        + out->main_spi_dma_error_count;
+    out->aux_spi_dma_error_count = mt6826s_aux_spi_.spi_dma_error_count();
+    out->aux_crc_error_count = mt6826s_aux_spi_.crc_error_count();
+    out->aux_fixed_bit_error_count = mt6826s_aux_spi_.fixed_bit_error_count();
+    out->aux_status_warning_count = mt6826s_aux_spi_.status_warning_count();
+    out->aux_sample_count = mt6826s_aux_spi_.sample_count();
+    out->aux_error_count = out->aux_crc_error_count
+        + out->aux_fixed_bit_error_count
+        + out->aux_spi_dma_error_count;
+    out->pair_error_count = mt6826s_spi_pair_.pair_error_count();
 }
 
 // Note that this may return counts +1 or -1 without any wrapping
@@ -763,6 +1001,7 @@ bool Encoder::update() {
         case MODE_SPI_ABS_CUI: 
         case MODE_SPI_ABS_AEAT:
         case MODE_SPI_ABS_MT6826S:
+        case MODE_SPI_ABS_MT6826S_VERNIER:
         case MODE_SPI_ABS_MA732: {
             if (abs_spi_pos_updated_ == false) {
                 // Low pass filter the error
@@ -827,9 +1066,19 @@ bool Encoder::update() {
         snap_to_zero_vel = true;
     }
 
-    // Outputs from Encoder for Controller
-    pos_estimate_ = pos_estimate_counts_ / (float)config_.cpr;
-    vel_estimate_ = vel_estimate_counts_ / (float)config_.cpr;
+    const float motor_pos_estimate_turns = pos_estimate_counts_ / (float)config_.cpr;
+    const float motor_vel_estimate_turns = vel_estimate_counts_ / (float)config_.cpr;
+
+    // Motor-side velocity from PLL is always used for controller feedback.
+    // It is fast, low-noise, and correct for commutation scale.
+    vel_estimate_ = motor_vel_estimate_turns;
+
+    // In vernier mode the pos_estimate_ comes from the output-shaft resolver
+    // (absolute multi-turn).  For all other modes the motor-side PLL position
+    // is used.
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
+        pos_estimate_ = motor_pos_estimate_turns;
+    }
     
     // TODO: we should strictly require that this value is from the previous iteration
     // to avoid spinout scenarios. However that requires a proper way to reset
@@ -837,7 +1086,9 @@ bool Encoder::update() {
     float pos_circular = pos_circular_.any().value_or(0.0f);
     pos_circular +=  wrap_pm((pos_cpr_counts_ - pos_cpr_counts_last) / (float)config_.cpr, 1.0f);
     pos_circular = fmodf_pos(pos_circular, axis_->controller_.config_.circular_setpoint_range);
-    pos_circular_ = pos_circular;
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
+        pos_circular_ = pos_circular;
+    }
 
     //// run encoder count interpolation
     int32_t corrected_enc = count_in_cpr_ - config_.phase_offset;
@@ -866,7 +1117,11 @@ bool Encoder::update() {
     
     if (is_ready_) {
         phase_ = wrap_pm_pi(ph) * config_.direction;
-        phase_vel_ = (2*M_PI) * *vel_estimate_.present() * axis_->motor_.config_.pole_pairs * config_.direction;
+        phase_vel_ = (2*M_PI) * motor_vel_estimate_turns * axis_->motor_.config_.pole_pairs * config_.direction;
+    }
+
+    if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
+        publish_vernier_output_estimate(current_meas_period);
     }
 
     return true;

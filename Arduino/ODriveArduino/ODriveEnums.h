@@ -68,6 +68,7 @@ enum EncoderMode {
     ENCODER_MODE_SPI_ABS_RLS                 = 259,
     ENCODER_MODE_SPI_ABS_MA732               = 260,
     ENCODER_MODE_SPI_ABS_MT6826S             = 261,
+    ENCODER_MODE_SPI_ABS_MT6826S_VERNIER     = 262,
 };
 
 // ODrive.Controller.ControlMode
