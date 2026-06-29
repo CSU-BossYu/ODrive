@@ -263,9 +263,8 @@ void vApplicationIdleHook(void) {
         odrv.system_stats_.uptime = xTaskGetTickCount();
         odrv.system_stats_.min_heap_space = xPortGetMinimumEverFreeHeapSize();
 
-        uint32_t min_stack_space[AXIS_COUNT];
-        std::transform(axes.begin(), axes.end(), std::begin(min_stack_space), [](auto& axis) { return uxTaskGetStackHighWaterMark(axis.thread_id_) * sizeof(StackType_t); });
-        odrv.system_stats_.max_stack_usage_axis = axes[0].stack_size_ - *std::min_element(std::begin(min_stack_space), std::end(min_stack_space));
+        uint32_t axis0_stack_space = uxTaskGetStackHighWaterMark(axes[0].thread_id_) * sizeof(StackType_t);
+        odrv.system_stats_.max_stack_usage_axis = axes[0].stack_size_ - axis0_stack_space;
         odrv.system_stats_.max_stack_usage_usb = stack_size_usb_thread - uxTaskGetStackHighWaterMark(usb_thread) * sizeof(StackType_t);
         odrv.system_stats_.max_stack_usage_uart = stack_size_uart_thread - uxTaskGetStackHighWaterMark(uart_thread) * sizeof(StackType_t);
         odrv.system_stats_.max_stack_usage_startup = stack_size_default_task - uxTaskGetStackHighWaterMark(defaultTaskHandle) * sizeof(StackType_t);
@@ -342,9 +341,7 @@ void ODrive::sampling_cb() {
     n_evt_sampling_++;
 
     MEASURE_TIME(task_times_.sampling) {
-        for (auto& axis: axes) {
-            axis.encoder_.sample_now();
-        }
+        axes[0].encoder_.sample_now();
     }
 }
 
@@ -374,98 +371,85 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
         // this safety check doesn't work.
         // TODO: maybe we should add a check to output ports that prevents
         // double-setting the value.
-        for (auto& axis: axes) {
-            axis.acim_estimator_.slip_vel_.reset();
-            axis.acim_estimator_.stator_phase_vel_.reset();
-            axis.acim_estimator_.stator_phase_.reset();
-            axis.controller_.torque_output_.reset();
-            axis.encoder_.phase_.reset();
-            axis.encoder_.phase_vel_.reset();
-            axis.encoder_.pos_estimate_.reset();
-            axis.encoder_.vel_estimate_.reset();
-            axis.encoder_.pos_circular_.reset();
-            axis.motor_.Vdq_setpoint_.reset();
-            axis.motor_.Idq_setpoint_.reset();
-            axis.open_loop_controller_.Idq_setpoint_.reset();
-            axis.open_loop_controller_.Vdq_setpoint_.reset();
-            axis.open_loop_controller_.phase_.reset();
-            axis.open_loop_controller_.phase_vel_.reset();
-            axis.open_loop_controller_.total_distance_.reset();
-            axis.sensorless_estimator_.phase_.reset();
-            axis.sensorless_estimator_.phase_vel_.reset();
-            axis.sensorless_estimator_.vel_estimate_.reset();
-        }
+        Axis& axis = axes[0];
+        axis.acim_estimator_.slip_vel_.reset();
+        axis.acim_estimator_.stator_phase_vel_.reset();
+        axis.acim_estimator_.stator_phase_.reset();
+        axis.controller_.torque_output_.reset();
+        axis.encoder_.phase_.reset();
+        axis.encoder_.phase_vel_.reset();
+        axis.encoder_.pos_estimate_.reset();
+        axis.encoder_.vel_estimate_.reset();
+        axis.encoder_.pos_circular_.reset();
+        axis.motor_.Vdq_setpoint_.reset();
+        axis.motor_.Idq_setpoint_.reset();
+        axis.open_loop_controller_.Idq_setpoint_.reset();
+        axis.open_loop_controller_.Vdq_setpoint_.reset();
+        axis.open_loop_controller_.phase_.reset();
+        axis.open_loop_controller_.phase_vel_.reset();
+        axis.open_loop_controller_.total_distance_.reset();
+        axis.sensorless_estimator_.phase_.reset();
+        axis.sensorless_estimator_.phase_vel_.reset();
+        axis.sensorless_estimator_.vel_estimate_.reset();
 
         uart_poll();
         odrv.oscilloscope_.update();
     }
 
-    for (auto& axis : axes) {
-        MEASURE_TIME(axis.task_times_.endstop_update) {
-            axis.min_endstop_.update();
-            axis.max_endstop_.update();
-        }
+    Axis& axis = axes[0];
+    MEASURE_TIME(axis.task_times_.endstop_update) {
+        axis.min_endstop_.update();
+        axis.max_endstop_.update();
     }
 
     MEASURE_TIME(task_times_.control_loop_checks) {
-        for (auto& axis: axes) {
-            // look for errors at axis level and also all subcomponents
-            bool checks_ok = axis.do_checks(timestamp);
+        // look for errors at axis level and also all subcomponents
+        bool checks_ok = axis.do_checks(timestamp);
 
-            // make sure the watchdog is being fed. 
-            bool watchdog_ok = axis.watchdog_check();
+        // make sure the watchdog is being fed.
+        bool watchdog_ok = axis.watchdog_check();
 
-            if (!checks_ok || !watchdog_ok) {
-                axis.motor_.disarm();
-            }
+        if (!checks_ok || !watchdog_ok) {
+            axis.motor_.disarm();
         }
     }
 
-    for (auto& axis: axes) {
-        // Sub-components should use set_error which will propegate to this error_
-        MEASURE_TIME(axis.task_times_.thermistor_update) {
-            axis.motor_.fet_thermistor_.update();
-            axis.motor_.motor_thermistor_.update();
-        }
-
-        MEASURE_TIME(axis.task_times_.encoder_update)
-            axis.encoder_.update();
+    // Sub-components should use set_error which will propagate to this error_
+    MEASURE_TIME(axis.task_times_.thermistor_update) {
+        axis.motor_.fet_thermistor_.update();
+        axis.motor_.motor_thermistor_.update();
     }
 
-    // Controller of either axis might use the encoder estimate of the other
-    // axis so we process both encoders before we continue.
+    MEASURE_TIME(axis.task_times_.encoder_update)
+        axis.encoder_.update();
 
-    for (auto& axis: axes) {
-        MEASURE_TIME(axis.task_times_.sensorless_estimator_update) {
-            bool diagnostic_current_tolerance =
-                axis.motor_.control_law_
-                && axis.motor_.control_law_->allow_missing_current_measurement();
-            if (!diagnostic_current_tolerance) {
-                axis.sensorless_estimator_.update();
-            }
+    MEASURE_TIME(axis.task_times_.sensorless_estimator_update) {
+        bool diagnostic_current_tolerance =
+            axis.motor_.control_law_
+            && axis.motor_.control_law_->allow_missing_current_measurement();
+        if (!diagnostic_current_tolerance) {
+            axis.sensorless_estimator_.update();
         }
-
-        MEASURE_TIME(axis.task_times_.controller_update) {
-            if (!axis.controller_.update()) { // uses position and velocity from encoder
-                axis.error_ |= Axis::ERROR_CONTROLLER_FAILED;
-            }
-        }
-
-        MEASURE_TIME(axis.task_times_.open_loop_controller_update)
-            axis.open_loop_controller_.update(timestamp);
-
-        MEASURE_TIME(axis.task_times_.motor_update)
-            axis.motor_.update(timestamp); // uses torque from controller and phase_vel from encoder
-
-        MEASURE_TIME(axis.task_times_.current_controller_update)
-            axis.motor_.current_control_.update(timestamp); // uses the output of controller_ or open_loop_contoller_ and encoder_ or sensorless_estimator_ or acim_estimator_
     }
+
+    MEASURE_TIME(axis.task_times_.controller_update) {
+        if (!axis.controller_.update()) { // uses position and velocity from encoder
+            axis.error_ |= Axis::ERROR_CONTROLLER_FAILED;
+        }
+    }
+
+    MEASURE_TIME(axis.task_times_.open_loop_controller_update)
+        axis.open_loop_controller_.update(timestamp);
+
+    MEASURE_TIME(axis.task_times_.motor_update)
+        axis.motor_.update(timestamp); // uses torque from controller and phase_vel from encoder
+
+    MEASURE_TIME(axis.task_times_.current_controller_update)
+        axis.motor_.current_control_.update(timestamp); // uses the output of controller_ or open_loop_contoller_ and encoder_ or sensorless_estimator_ or acim_estimator_
 
     // Tell the axis threads that the control loop has finished
-    for (auto& axis: axes) {
-        if (axis.thread_id_) {
-            osSignalSet(axis.thread_id_, 0x0001);
-        }
+    if (axis.thread_id_) {
+        osSignalSet(axis.thread_id_, 0x0001);
     }
 
     get_gpio(odrv.config_.error_gpio_pin).write(odrv.any_error());
@@ -569,25 +553,18 @@ static void rtos_main(void*) {
     // converge. If the DRV chip is unpowered, the motor will not become ready
     // but we still enter idle state.
     for (size_t i = 0; i < 2000; ++i) {
-        bool motors_ready = std::all_of(axes.begin(), axes.end(), [](auto& axis) {
-            return axis.motor_.current_meas_.has_value();
-        });
-        if (motors_ready) {
+        if (axes[0].motor_.current_meas_.has_value()) {
             break;
         }
         osDelay(1);
     }
 
-    for (auto& axis: axes) {
-        axis.sensorless_estimator_.error_ &= ~SensorlessEstimator::ERROR_UNKNOWN_CURRENT_MEASUREMENT;
-    }
+    axes[0].sensorless_estimator_.error_ &= ~SensorlessEstimator::ERROR_UNKNOWN_CURRENT_MEASUREMENT;
 
-    // Start state machine threads. Each thread will go through various calibration
-    // procedures and then run the actual controller loops.
-    // TODO: generalize for AXIS_COUNT != 2
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        axes[i].start_thread();
-    }
+    // Axis 1 remains constructed for board-level timing dependencies but has no
+    // upper-layer state machine in the single-axis build.
+    axes[1].requested_state_ = Axis::AXIS_STATE_IDLE;
+    axes[0].start_thread();
 
     odrv.system_stats_.fully_booted = true;
 

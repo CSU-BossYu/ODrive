@@ -9,13 +9,7 @@
 #include <functional>
 
 bool CANSimple::init() {
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (!renew_subscription(i)) {
-            return false;
-        }
-    }
-
-    return true;
+    return renew_subscription(0);
 }
 
 bool CANSimple::renew_subscription(size_t i) {
@@ -51,11 +45,9 @@ void CANSimple::handle_can_message(const can_Message_t& msg) {
     // 6 bits | 5 bits
     uint32_t nodeID = get_node_id(msg.id);
 
-    for (auto& axis : axes) {
-        if ((axis.config_.can.node_id == nodeID) && (axis.config_.can.is_extended == msg.isExt)) {
-            do_command(axis, msg);
-            return;
-        }
+    Axis& axis = axes[0];
+    if ((axis.config_.can.node_id == nodeID) && (axis.config_.can.is_extended == msg.isExt)) {
+        do_command(axis, msg);
     }
 }
 
@@ -468,11 +460,10 @@ uint32_t CANSimple::service_stack() {
     uint32_t now = HAL_GetTick();
 
     // TODO: remove this polling loop and replace with protocol hook
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        bool node_id_changed = (axes[i].config_.can.node_id != node_ids_[i]) || (axes[i].config_.can.is_extended != extended_node_ids_[i]);
-        if (node_id_changed) {
-            renew_subscription(i);
-        }
+    bool node_id_changed = (axes[0].config_.can.node_id != node_ids_[0])
+        || (axes[0].config_.can.is_extended != extended_node_ids_[0]);
+    if (node_id_changed) {
+        renew_subscription(0);
     }
 
     struct periodic {
@@ -481,8 +472,8 @@ uint32_t CANSimple::service_stack() {
         bool (CANSimple::* callback)(const Axis& axis);
     };
 
-    for (auto& axis : axes) {
-        std::array<periodic, 10> periodics = {{
+    Axis& axis = axes[0];
+    std::array<periodic, 10> periodics = {{
             {axis.config_.can.heartbeat_rate_ms, axis.can_.last_heartbeat, &CANSimple::send_heartbeat},
             {axis.config_.can.encoder_rate_ms, axis.can_.last_encoder, &CANSimple::get_encoder_estimates_callback},
             {axis.config_.can.motor_error_rate_ms, axis.can_.last_motor_error, &CANSimple::get_motor_error_callback},
@@ -493,20 +484,19 @@ uint32_t CANSimple::service_stack() {
             {axis.config_.can.iq_rate_ms, axis.can_.last_iq, &CANSimple::get_iq_callback},
             {axis.config_.can.sensorless_rate_ms, axis.can_.last_sensorless, &CANSimple::get_sensorless_estimates_callback},
             {axis.config_.can.bus_vi_rate_ms, axis.can_.last_bus_vi, &CANSimple::get_bus_voltage_current_callback},
-        }};
+    }};
 
-        MEASURE_TIME(axis.task_times_.can_heartbeat) {
-            for (auto& msg : periodics) {
-                if (msg.rate > 0) {
-                    if ((now - msg.last_time) >= msg.rate) {
-                        if (std::invoke(msg.callback, this, axis)) {
-                            msg.last_time = now;
-                        }
+    MEASURE_TIME(axis.task_times_.can_heartbeat) {
+        for (auto& msg : periodics) {
+            if (msg.rate > 0) {
+                if ((now - msg.last_time) >= msg.rate) {
+                    if (std::invoke(msg.callback, this, axis)) {
+                        msg.last_time = now;
                     }
-
-                    int nextAxisService = msg.last_time + msg.rate - now;
-                    nextServiceTime = std::min(nextServiceTime, static_cast<uint32_t>(std::max(0, nextAxisService)));
                 }
+
+                int nextAxisService = msg.last_time + msg.rate - now;
+                nextServiceTime = std::min(nextServiceTime, static_cast<uint32_t>(std::max(0, nextAxisService)));
             }
         }
     }

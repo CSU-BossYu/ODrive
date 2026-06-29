@@ -549,7 +549,6 @@ void ControlLoop_IRQHandler(void) {
     }
 
     motors[0].current_meas_cb(timestamp - TIM1_INIT_COUNT, current0);
-    motors[1].current_meas_cb(timestamp, current1);
 
     odrv.control_loop_cb(timestamp);
 
@@ -566,10 +565,8 @@ void ControlLoop_IRQHandler(void) {
     }
 
     motors[0].dc_calib_cb(timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1) - TIM1_INIT_COUNT, current0);
-    motors[1].dc_calib_cb(timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1), current1);
 
     motors[0].pwm_update_cb(timestamp + 3 * TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1) - TIM1_INIT_COUNT);
-    motors[1].pwm_update_cb(timestamp + 3 * TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1));
 
     // If we did everything right, the TIM8 update handler should have been
     // called exactly once between the start of this function and now.

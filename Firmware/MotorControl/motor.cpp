@@ -201,6 +201,10 @@ Motor::Motor(TIM_HandleTypeDef* timer,
  * @returns: True on success, false otherwise
  */
 bool Motor::arm(PhaseControlLaw<3>* control_law) {
+    if (axis_->axis_num_ != 0) {
+        return false;
+    }
+
     axis_->mechanical_brake_.release();
 
     CRITICAL_SECTION() {
