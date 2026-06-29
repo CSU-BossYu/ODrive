@@ -561,9 +561,6 @@ static void rtos_main(void*) {
 
     axes[0].sensorless_estimator_.error_ &= ~SensorlessEstimator::ERROR_UNKNOWN_CURRENT_MEASUREMENT;
 
-    // Axis 1 remains constructed for board-level timing dependencies but has no
-    // upper-layer state machine in the single-axis build.
-    axes[1].requested_state_ = Axis::AXIS_STATE_IDLE;
     axes[0].start_thread();
 
     odrv.system_stats_.fully_booted = true;

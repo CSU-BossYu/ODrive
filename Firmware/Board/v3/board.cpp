@@ -60,14 +60,6 @@ OnboardThermistorCurrentLimiter fet_thermistors[AXIS_COUNT] = {
         15, // adc_channel
         &fet_thermistor_poly_coeffs[0], // coefficients
         fet_thermistor_num_coeffs // num_coeffs
-    }, {
-#if HW_VERSION_MAJOR == 3 && HW_VERSION_MINOR >= 3
-        4, // adc_channel
-#else
-        1, // adc_channel
-#endif
-        &fet_thermistor_poly_coeffs[0], // coefficients
-        fet_thermistor_num_coeffs // num_coeffs
     }
 };
 
@@ -82,15 +74,6 @@ Motor motors[AXIS_COUNT] = {
         m0_gate_driver, // opamp
         fet_thermistors[0],
         motor_thermistors[0]
-    },
-    {
-        &htim8, // timer
-        0b110, // current_sensor_mask
-        1.0f / SHUNT_RESISTANCE, // shunt_conductance [S]
-        m1_gate_driver, // gate_driver
-        m1_gate_driver, // opamp
-        fet_thermistors[1],
-        motor_thermistors[1]
     }
 };
 
@@ -101,14 +84,6 @@ Encoder encoders[AXIS_COUNT] = {
         {M0_ENC_A_GPIO_Port, M0_ENC_A_Pin}, // hallA_gpio
         {M0_ENC_B_GPIO_Port, M0_ENC_B_Pin}, // hallB_gpio
         {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // hallC_gpio
-        &spi3_arbiter // spi_arbiter
-    },
-    {
-        &htim4, // timer
-        {M1_ENC_Z_GPIO_Port, M1_ENC_Z_Pin}, // index_gpio
-        {M1_ENC_A_GPIO_Port, M1_ENC_A_Pin}, // hallA_gpio
-        {M1_ENC_B_GPIO_Port, M1_ENC_B_Pin}, // hallB_gpio
-        {M1_ENC_Z_GPIO_Port, M1_ENC_Z_Pin}, // hallC_gpio
         &spi3_arbiter // spi_arbiter
     }
 };
@@ -134,24 +109,6 @@ std::array<Axis, AXIS_COUNT> axes{{
         trap[0], // trap
         endstops[0], endstops[1], // min_endstop, max_endstop
         mechanical_brakes[0], // mechanical brake
-    },
-    {
-        1, // axis_num
-#if HW_VERSION_MAJOR == 3 && HW_VERSION_MINOR >= 5
-        7, // step_gpio_pin
-        8, // dir_gpio_pin
-#else
-        3, // step_gpio_pin
-        4, // dir_gpio_pin
-#endif
-        osPriorityHigh, // thread_priority
-        encoders[1], // encoder
-        sensorless_estimators[1], // sensorless_estimator
-        controllers[1], // controller
-        motors[1], // motor
-        trap[1], // trap
-        endstops[2], endstops[3], // min_endstop, max_endstop
-        mechanical_brakes[1], // mechanical brake
     },
 }};
 
@@ -495,7 +452,6 @@ void TIM8_UP_TIM13_IRQHandler(void) {
     bool timer_update_missed = (counting_down_ == counting_down);
     if (timer_update_missed) {
         motors[0].disarm_with_error(Motor::ERROR_TIMER_UPDATE_MISSED);
-        motors[1].disarm_with_error(Motor::ERROR_TIMER_UPDATE_MISSED);
         return;
     }
     counting_down_ = counting_down;
