@@ -1,7 +1,6 @@
 
 #define __MAIN_CPP__
 #include "odrive_main.h"
-#include "debug_counters.hpp"
 #include "nvm_config.hpp"
 
 #include "usart.h"
@@ -341,9 +340,6 @@ void ODrive::disarm_with_error(Error error) {
  */
 void ODrive::sampling_cb() {
     n_evt_sampling_++;
-
-    extern DebugCounters g_debug;
-    ++g_debug.loop_alive_cnt;
 
     MEASURE_TIME(task_times_.sampling) {
         for (auto& axis: axes) {

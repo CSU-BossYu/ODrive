@@ -1290,7 +1290,6 @@ interfaces:
         type: readonly float32
         unit: counts/sec
         doc: Estimate of the linear velocity of an axis, in counts/s.
-      calib_scan_response: readonly float32
       pos_abs:
         type: int32
         doc: The last (valid) position from an absolute encoder, if used.

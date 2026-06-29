@@ -242,36 +242,6 @@ def read_m0_diag(bus, args):
         "adc_pre": read_diag_item(bus, args, 0x34),
         "adc_post": read_diag_item(bus, args, 0x35),
         "dl_miss": read_diag_item(bus, args, 0x36),
-        "a1j": read_diag_item(bus, args, 0x3A),
-        "a2j": read_diag_item(bus, args, 0x3C),
-        "a3j": read_diag_item(bus, args, 0x3E),
-        "adc1": read_diag_item(bus, args, 0x3F),
-        "adc2": read_diag_item(bus, args, 0x40),
-        "adc3": read_diag_item(bus, args, 0x41),
-        "ivalid": read_diag_item(bus, args, 0x42),
-        "ia": read_diag_item(bus, args, 0x43, True),
-        "ib": read_diag_item(bus, args, 0x44, True),
-        "ic": read_diag_item(bus, args, 0x45, True),
-        "bdtr": read_diag_item(bus, args, 0x46),
-        "ccr1": read_diag_item(bus, args, 0x47),
-        "ccr2": read_diag_item(bus, args, 0x48),
-        "ccr3": read_diag_item(bus, args, 0x49),
-        "armed": read_diag_item(bus, args, 0x4A),
-        "r_i": read_diag_item(bus, args, 0x4B, True),
-        "r_v": read_diag_item(bus, args, 0x4C, True),
-        "r_ibeta": read_diag_item(bus, args, 0x4D, True),
-        "r_mod": read_diag_item(bus, args, 0x4E, True),
-        "cm_present": read_diag_item(bus, args, 0x4F),
-        "cm_dcok": read_diag_item(bus, args, 0x50),
-        "cm_valid": read_diag_item(bus, args, 0x51),
-        "cm_armed_state": read_diag_item(bus, args, 0x52),
-        "dc_time": read_diag_item(bus, args, 0x53, True),
-        "dc_a": read_diag_item(bus, args, 0x54, True),
-        "dc_b": read_diag_item(bus, args, 0x55, True),
-        "dc_c": read_diag_item(bus, args, 0x56, True),
-        "cm_a": read_diag_item(bus, args, 0x57, True),
-        "cm_b": read_diag_item(bus, args, 0x58, True),
-        "cm_c": read_diag_item(bus, args, 0x59, True),
     }
 
 
@@ -279,20 +249,8 @@ def fmt_m0_diag(diag):
     if any(value is None for value in diag.values()):
         return "diag=TIMEOUT"
     return (
-        f"JDR={diag['adc1']}/{diag['adc2']}/{diag['adc3']} "
-        f"Ivalid={diag['ivalid']} "
-        f"Iabc={diag['ia']:.3f}/{diag['ib']:.3f}/{diag['ic']:.3f} "
-        f"TIM1=BDTR:{diag['bdtr']:04X} CCR:{diag['ccr1']}/{diag['ccr2']}/{diag['ccr3']} "
-        f"armed={diag['armed']} "
-        f"Rcal=I:{diag['r_i']:.3f} V:{diag['r_v']:.3f} "
-        f"Ib:{diag['r_ibeta']:.3f} mod:{diag['r_mod']:.4f} "
-        f"CM=present:{diag['cm_present']} dcok:{diag['cm_dcok']} "
-        f"valid:{diag['cm_valid']} ast:{diag['cm_armed_state']} "
         f"CNT=FOC:{diag['foc_bt']} PRE:{diag['adc_pre']} POST:{diag['adc_post']} "
-        f"DL:{diag['dl_miss']} flags:{diag['a1j']}/{diag['a2j']}/{diag['a3j']} "
-        f"DC=t:{diag['dc_time']:.3f} "
-        f"abc:{diag['dc_a']:.3f}/{diag['dc_b']:.3f}/{diag['dc_c']:.3f} "
-        f"CMabc={diag['cm_a']:.3f}/{diag['cm_b']:.3f}/{diag['cm_c']:.3f}"
+        f"DL:{diag['dl_miss']}"
     )
 
 

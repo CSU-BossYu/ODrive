@@ -30,6 +30,7 @@ from common import (
     set_input_vel,
     set_limits,
     set_requested_state,
+    set_vel_gains,
     wait_heartbeat,
 )
 
@@ -236,6 +237,8 @@ def main():
     parser.add_argument("--dc-max-negative-current", type=float, default=-0.5)
     parser.add_argument("--stop-negative-ibus", type=float, default=-0.35)
     parser.add_argument("--gear-ratio", type=float, default=42.0)
+    parser.add_argument("--vel-gain", type=float, default=1.0)
+    parser.add_argument("--vel-integrator-gain", type=float, default=0.05)
     parser.add_argument("--enter-timeout", type=float, default=3.0)
     parser.add_argument("--clear-at-end", action="store_true")
     args = parser.parse_args()
@@ -278,6 +281,8 @@ def main():
             args.extended_id,
         )
         set_limits(bus, args.node_id, args.vel_limit, args.current_limit, args.extended_id)
+        set_basic_config(bus, args.node_id, 0x30, EXT_TYPE_FLOAT32, value_float=args.vel_gain)
+        set_basic_config(bus, args.node_id, 0x31, EXT_TYPE_FLOAT32, value_float=args.vel_integrator_gain)
         time.sleep(0.1)
 
         enter_closed_loop(bus, args)
@@ -285,7 +290,8 @@ def main():
 
         print(
             f"Commanding velocity {args.velocity:.4f} turns/s for {args.duration:.2f}s "
-            f"(current_limit={args.current_limit:.3f}A)..."
+            f"(vel_gain={args.vel_gain:.2f}, vel_integrator_gain={args.vel_integrator_gain:.3f}, "
+            f"current_limit={args.current_limit:.3f}A)..."
         )
         start = time.monotonic()
         missed_telemetry = 0

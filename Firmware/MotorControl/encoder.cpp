@@ -453,8 +453,8 @@ bool Encoder::run_offset_calibration() {
     // Check CPR
     float elec_rad_per_enc = axis_->motor_.config_.pole_pairs * 2 * M_PI * (1.0f / (float)(config_.cpr));
     float expected_encoder_delta = config_.calib_scan_distance / elec_rad_per_enc;
-    calib_scan_response_ = std::abs(shadow_count_ - init_enc_val);
-    if (std::abs(calib_scan_response_ - expected_encoder_delta) / expected_encoder_delta > config_.calib_range) {
+    float calib_scan_response = std::abs(shadow_count_ - init_enc_val);
+    if (std::abs(calib_scan_response - expected_encoder_delta) / expected_encoder_delta > config_.calib_range) {
         set_error(ERROR_CPR_POLEPAIRS_MISMATCH);
         axis_->motor_.disarm();
         return false;
@@ -700,8 +700,6 @@ void Encoder::mt6826s_spi_pair_cb(void* ctx, const Mt6826sSpiPair::PairSample& s
 void Encoder::handle_mt6826s_spi_pair_cb(const Mt6826sSpiPair::PairSample& sample, bool success) {
     extern DebugCounters g_debug;
     ++g_debug.enc_pair_ok_cnt;
-    g_debug.enc_pair_ok_main = sample.main.angle;
-    g_debug.enc_pair_ok_aux = sample.aux.angle;
 
     if (sample.main.valid) {
         handle_mt6826s_spi_cb(sample.main, true);

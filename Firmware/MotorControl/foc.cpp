@@ -83,9 +83,6 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
         // Data from control loop and current measurement are too far apart.
         extern DebugCounters g_debug;
         ++g_debug.foc_bad_timing_cnt;
-        g_debug.foc_bad_timing_delta = (uint32_t)abs((int32_t)(i_timestamp_ - ctrl_timestamp_));
-        g_debug.foc_bad_timing_i_ts = i_timestamp_;
-        g_debug.foc_bad_timing_ctrl_ts = ctrl_timestamp_;
         return Motor::ERROR_BAD_TIMING;
     }
 

@@ -439,37 +439,17 @@ static bool fetch_and_reset_adcs(
     bool all_adcs_done = adc1_done && adc2_jeoc_done && adc3_jeoc_done;
 
     if (!all_adcs_done) {
-        extern DebugCounters g_debug;
-        if (!adc1_done)      ++g_debug.adc1_jeoc_fail;
-        if (!adc2_jeoc_done) ++g_debug.adc2_jeoc_fail;
-        if (!adc3_jeoc_done) ++g_debug.adc3_jeoc_fail;
         return false;
     }
 
     vbus_sense_adc_cb(ADC1->JDR1);
-    g_debug.m0_adc1_jdr = ADC1->JDR1;
-    g_debug.m0_adc2_jdr = ADC2->JDR1;
-    g_debug.m0_adc3_jdr = ADC3->JDR1;
-    g_debug.tim1_bdtr = TIM1->BDTR;
-    g_debug.tim1_ccr1 = TIM1->CCR1;
-    g_debug.tim1_ccr2 = TIM1->CCR2;
-    g_debug.tim1_ccr3 = TIM1->CCR3;
-    g_debug.m0_is_armed = motors[0].is_armed_ ? 1u : 0u;
 
     if (m0_gate_driver.is_ready()) {
         std::optional<float> phB = motors[0].phase_current_from_adcval(ADC2->JDR1);
         std::optional<float> phC = motors[0].phase_current_from_adcval(ADC3->JDR1);
         if (phB.has_value() && phC.has_value()) {
             *current0 = {-*phB - *phC, *phB, *phC};
-            g_debug.m0_current_phA = current0->value().phA;
-            g_debug.m0_current_phB = current0->value().phB;
-            g_debug.m0_current_phC = current0->value().phC;
-            g_debug.m0_current_sample_valid = 1;
-        } else {
-            g_debug.m0_current_sample_valid = 0;
         }
-    } else {
-        g_debug.m0_current_sample_valid = 0;
     }
 
     clear_realtime_adc_flags();

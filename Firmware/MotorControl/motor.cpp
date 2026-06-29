@@ -1,7 +1,6 @@
 
 #include "motor.hpp"
 #include "axis.hpp"
-#include "debug_counters.hpp"
 #include "low_level.h"
 #include "odrive_main.h"
 
@@ -40,10 +39,6 @@ struct ResistanceMeasurementControlLaw : AlphaBetaFrameController {
             test_voltage_ = 0.0f;
         }
 
-        g_debug.resistance_actual_current = actual_current_;
-        g_debug.resistance_test_voltage = test_voltage_;
-        g_debug.resistance_i_beta = I_beta_;
-    
         if (std::abs(test_voltage_) > max_voltage_) {
             test_voltage_ = NAN;
             return Motor::ERROR_PHASE_RESISTANCE_OUT_OF_RANGE;
@@ -52,7 +47,6 @@ struct ResistanceMeasurementControlLaw : AlphaBetaFrameController {
         } else {
             float vfactor = 1.0f / ((2.0f / 3.0f) * *vbus_voltage);
             test_mod_ = test_voltage_ * vfactor;
-            g_debug.resistance_test_mod = *test_mod_;
             return Motor::ERROR_NONE;
         }
     }
@@ -623,17 +617,6 @@ void Motor::current_meas_cb(uint32_t timestamp, std::optional<Iph_ABC_t> current
                        && (abs(DC_calib_.phB) < max_dc_calib_)
                        && (abs(DC_calib_.phC) < max_dc_calib_);
 
-    const bool is_m0 = (axis_ && axis_->axis_num_ == 0);
-    if (is_m0) {
-        g_debug.m0_cm_current_present = current.has_value() ? 1u : 0u;
-        g_debug.m0_cm_dc_calib_valid = dc_calib_valid ? 1u : 0u;
-        g_debug.m0_cm_armed_state = armed_state_;
-        g_debug.m0_dc_calib_running_since = dc_calib_running_since_;
-        g_debug.m0_dc_calib_phA = DC_calib_.phA;
-        g_debug.m0_dc_calib_phB = DC_calib_.phB;
-        g_debug.m0_dc_calib_phC = DC_calib_.phC;
-    }
-
     if (armed_state_ == 1 || armed_state_ == 2) {
         current_meas_ = {0.0f, 0.0f, 0.0f};
         armed_state_ += 1;
@@ -645,27 +628,6 @@ void Motor::current_meas_cb(uint32_t timestamp, std::optional<Iph_ABC_t> current
         };
     } else {
         current_meas_ = std::nullopt;
-    }
-
-    if (is_m0) {
-        g_debug.m0_cm_current_meas_valid = current_meas_.has_value() ? 1u : 0u;
-        if (current_meas_.has_value()) {
-            g_debug.m0_cm_phA = current_meas_->phA;
-            g_debug.m0_cm_phB = current_meas_->phB;
-            g_debug.m0_cm_phC = current_meas_->phC;
-            if (g_debug.m0_phase_scan_active) {
-                uint32_t n = g_debug.m0_phase_scan_sample_count + 1;
-                float k = 1.0f / static_cast<float>(n);
-                float i_alpha = current_meas_->phA;
-                float i_beta = one_by_sqrt3 * (current_meas_->phB - current_meas_->phC);
-                g_debug.m0_phase_scan_sample_count = n;
-                g_debug.m0_phase_scan_avg_phA += (current_meas_->phA - g_debug.m0_phase_scan_avg_phA) * k;
-                g_debug.m0_phase_scan_avg_phB += (current_meas_->phB - g_debug.m0_phase_scan_avg_phB) * k;
-                g_debug.m0_phase_scan_avg_phC += (current_meas_->phC - g_debug.m0_phase_scan_avg_phC) * k;
-                g_debug.m0_phase_scan_avg_i_alpha += (i_alpha - g_debug.m0_phase_scan_avg_i_alpha) * k;
-                g_debug.m0_phase_scan_avg_i_beta += (i_beta - g_debug.m0_phase_scan_avg_i_beta) * k;
-            }
-        }
     }
 
     // Run system-level checks (e.g. overvoltage/undervoltage condition)
@@ -729,12 +691,6 @@ void Motor::dc_calib_cb(uint32_t timestamp, std::optional<Iph_ABC_t> current) {
         dc_calib_running_since_ = 0.0f;
     }
 
-    if (axis_ && axis_->axis_num_ == 0) {
-        g_debug.m0_dc_calib_running_since = dc_calib_running_since_;
-        g_debug.m0_dc_calib_phA = DC_calib_.phA;
-        g_debug.m0_dc_calib_phB = DC_calib_.phB;
-        g_debug.m0_dc_calib_phC = DC_calib_.phC;
-    }
 }
 
 

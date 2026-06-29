@@ -121,33 +121,11 @@ def read_full_pair(bus, args):
         (ITEM_MAIN_SEQUENCE, "main_sequence"),
         (ITEM_AUX_SEQUENCE, "aux_sequence"),
         (0x30, "dbg_foc_bad_timing_cnt"),
-        (0x31, "dbg_foc_bad_timing_delta"),
-        (0x32, "dbg_foc_bad_timing_i_ts"),
-        (0x33, "dbg_foc_bad_timing_ctrl_ts"),
         (0x34, "dbg_cl_adc_fail_pre_cnt"),
         (0x35, "dbg_cl_adc_fail_post_cnt"),
         (0x36, "dbg_cl_deadline_miss_cnt"),
         (0x37, "dbg_enc_pair_busy_cnt"),
         (0x38, "dbg_enc_pair_ok_cnt"),
-        (0x39, "dbg_loop_alive_cnt"),
-        (0x3A, "dbg_adc1_jeoc_fail"),
-        (0x3B, "dbg_adc2_eoc_fail"),
-        (0x3C, "dbg_adc2_jeoc_fail"),
-        (0x3D, "dbg_adc3_eoc_fail"),
-        (0x3E, "dbg_adc3_jeoc_fail"),
-        (0x3F, "dbg_m0_adc1_jdr"),
-        (0x40, "dbg_m0_adc2_jdr"),
-        (0x41, "dbg_m0_adc3_jdr"),
-        (0x42, "dbg_m0_current_sample_valid"),
-        (0x46, "dbg_tim1_bdtr"),
-        (0x47, "dbg_tim1_ccr1"),
-        (0x48, "dbg_tim1_ccr2"),
-        (0x49, "dbg_tim1_ccr3"),
-        (0x4A, "dbg_m0_is_armed"),
-        (0x4F, "dbg_m0_cm_current_present"),
-        (0x50, "dbg_m0_cm_dc_calib_valid"),
-        (0x51, "dbg_m0_cm_current_meas_valid"),
-        (0x52, "dbg_m0_cm_armed_state"),
     ]:
         data[name], _ = read_item_value(bus, args, item_id)
 
@@ -157,20 +135,6 @@ def read_full_pair(bus, args):
         (ITEM_ENCODER_POS_ESTIMATE, "encoder_pos_estimate"),
         (ITEM_ENCODER_VEL_ESTIMATE, "encoder_vel_estimate"),
         (ITEM_ENCODER_POS_CIRCULAR, "encoder_pos_circular"),
-        (0x43, "dbg_m0_current_phA"),
-        (0x44, "dbg_m0_current_phB"),
-        (0x45, "dbg_m0_current_phC"),
-        (0x4B, "dbg_resistance_actual_current"),
-        (0x4C, "dbg_resistance_test_voltage"),
-        (0x4D, "dbg_resistance_i_beta"),
-        (0x4E, "dbg_resistance_test_mod"),
-        (0x53, "dbg_m0_dc_calib_running_since"),
-        (0x54, "dbg_m0_dc_calib_phA"),
-        (0x55, "dbg_m0_dc_calib_phB"),
-        (0x56, "dbg_m0_dc_calib_phC"),
-        (0x57, "dbg_m0_cm_phA"),
-        (0x58, "dbg_m0_cm_phB"),
-        (0x59, "dbg_m0_cm_phC"),
     ]:
         data[name], _ = read_item_value(bus, args, item_id, want_float=True)
 
@@ -263,51 +227,10 @@ def print_sample(data, cpr):
         f"DLmiss={data.get('dbg_cl_deadline_miss_cnt')}",
         f"pairBsy={data.get('dbg_enc_pair_busy_cnt')}",
         f"pairOk={data.get('dbg_enc_pair_ok_cnt')}",
-        f"loop={data.get('dbg_loop_alive_cnt')}",
+        f"crcM={data.get('main_crc_error_count')}",
+        f"crcA={data.get('aux_crc_error_count')}",
     ]
-    # Show BAD_TIMING details if any
-    if data.get("dbg_foc_bad_timing_cnt"):
-        dbg.append(
-            f"BTdelta={data.get('dbg_foc_bad_timing_delta')}|"
-            f"{data.get('dbg_foc_bad_timing_i_ts')}|"
-            f"{data.get('dbg_foc_bad_timing_ctrl_ts')}"
-        )
     print(f"  DEBUG: {' '.join(dbg)}")
-    # Per-ADC flag breakdown
-    adc_flag = [
-        f"A1j={data.get('dbg_adc1_jeoc_fail')}",
-        f"A2e={data.get('dbg_adc2_eoc_fail')}",
-        f"A2j={data.get('dbg_adc2_jeoc_fail')}",
-        f"A3e={data.get('dbg_adc3_eoc_fail')}",
-        f"A3j={data.get('dbg_adc3_jeoc_fail')}",
-    ]
-    print(f"  ADC_FLAGS: {' '.join(adc_flag)}")
-    m0_diag = [
-        f"JDR={data.get('dbg_m0_adc1_jdr')}/{data.get('dbg_m0_adc2_jdr')}/{data.get('dbg_m0_adc3_jdr')}",
-        f"Ivalid={data.get('dbg_m0_current_sample_valid')}",
-        f"Iabc={fmt_float(data.get('dbg_m0_current_phA'), 3)}/"
-        f"{fmt_float(data.get('dbg_m0_current_phB'), 3)}/"
-        f"{fmt_float(data.get('dbg_m0_current_phC'), 3)}",
-        f"TIM1=BDTR:{fmt_hex(data.get('dbg_tim1_bdtr'), 4)} "
-        f"CCR:{data.get('dbg_tim1_ccr1')}/{data.get('dbg_tim1_ccr2')}/{data.get('dbg_tim1_ccr3')}",
-        f"armed={data.get('dbg_m0_is_armed')}",
-        f"Rcal=I:{fmt_float(data.get('dbg_resistance_actual_current'), 3)} "
-        f"V:{fmt_float(data.get('dbg_resistance_test_voltage'), 3)} "
-        f"Ib:{fmt_float(data.get('dbg_resistance_i_beta'), 3)} "
-        f"mod:{fmt_float(data.get('dbg_resistance_test_mod'), 4)}",
-        f"CM=present:{data.get('dbg_m0_cm_current_present')} "
-        f"dcok:{data.get('dbg_m0_cm_dc_calib_valid')} "
-        f"valid:{data.get('dbg_m0_cm_current_meas_valid')} "
-        f"ast:{data.get('dbg_m0_cm_armed_state')}",
-        f"DC=t:{fmt_float(data.get('dbg_m0_dc_calib_running_since'), 3)} "
-        f"abc:{fmt_float(data.get('dbg_m0_dc_calib_phA'), 3)}/"
-        f"{fmt_float(data.get('dbg_m0_dc_calib_phB'), 3)}/"
-        f"{fmt_float(data.get('dbg_m0_dc_calib_phC'), 3)}",
-        f"CMabc={fmt_float(data.get('dbg_m0_cm_phA'), 3)}/"
-        f"{fmt_float(data.get('dbg_m0_cm_phB'), 3)}/"
-        f"{fmt_float(data.get('dbg_m0_cm_phC'), 3)}",
-    ]
-    print(f"  M0_DIAG: {' '.join(m0_diag)}")
 
 
 def main():
