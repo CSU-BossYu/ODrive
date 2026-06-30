@@ -114,3 +114,22 @@ and threshold values back unchanged, then verifies that they did not change:
 ```powershell
 python Firmware\Tests\hex_4342_mt6826s\run_anticogging_link_test.py --bitrate 1000000 --write-same-config --clear-at-end
 ```
+
+### Stage E: input modes and trajectory CAN link
+
+This gate checks the retained input-mode and trajectory CAN command surfaces
+while the axis remains IDLE. It does not qualify dynamic position following,
+trajectory tracking, or circular setpoint behavior.
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_input_modes_link_test.py --bitrate 1000000 --clear-at-end
+```
+
+Covered surfaces:
+
+- `VELOCITY_CONTROL + VEL_RAMP`
+- `TORQUE_CONTROL + TORQUE_RAMP`
+- `POSITION_CONTROL + POS_FILTER`
+- `POSITION_CONTROL + TRAP_TRAJ`
+- `Set_Traj_Vel_Limit`, `Set_Traj_Accel_Limits`, `Set_Traj_Inertia`
+- circular encoder diagnostic readout
