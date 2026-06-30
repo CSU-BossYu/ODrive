@@ -44,13 +44,6 @@ Drv8301 m0_gate_driver{
     {nFAULT_GPIO_Port, nFAULT_Pin} // nFAULT pin (shared between both motors)
 };
 
-Drv8301 m1_gate_driver{
-    &spi3_arbiter,
-    {M1_nCS_GPIO_Port, M1_nCS_Pin}, // nCS
-    {}, // EN pin (shared between both motors, therefore we actuate it outside of the drv8301 driver)
-    {nFAULT_GPIO_Port, nFAULT_Pin} // nFAULT pin (shared between both motors)
-};
-
 const float fet_thermistor_poly_coeffs[] =
     {363.93910201f, -462.15369634f, 307.55129571f, -27.72569531f};
 const size_t fet_thermistor_num_coeffs = sizeof(fet_thermistor_poly_coeffs)/sizeof(fet_thermistor_poly_coeffs[1]);
@@ -377,9 +370,7 @@ static void clear_realtime_adc_flags() {
 }
 
 static bool fetch_and_reset_adcs(
-        std::optional<Iph_ABC_t>* current0,
-        std::optional<Iph_ABC_t>* current1) {
-    (void)current1;
+        std::optional<Iph_ABC_t>* current0) {
     // M1 is unused in this build. Only consume the M0 real-time sample set:
     // ADC1 injected VBUS plus ADC2/3 injected M0 phase currents.
     bool adc1_done     = (ADC1->SR & ADC_SR_JEOC) == ADC_SR_JEOC;
@@ -464,9 +455,6 @@ void TIM8_UP_TIM13_IRQHandler(void) {
         TIM1->CCR1 =
         TIM1->CCR2 =
         TIM1->CCR3 =
-        TIM8->CCR1 =
-        TIM8->CCR2 =
-        TIM8->CCR3 =
             TIM_1_8_PERIOD_CLOCKS / 2;
     }
 }
@@ -477,9 +465,8 @@ void ControlLoop_IRQHandler(void) {
 
     // Ensure that all the ADCs are done
     std::optional<Iph_ABC_t> current0;
-    std::optional<Iph_ABC_t> current1;
 
-    if (!fetch_and_reset_adcs(&current0, &current1)) {
+    if (!fetch_and_reset_adcs(&current0)) {
         extern DebugCounters g_debug;
         ++g_debug.cl_adc_fail_pre_cnt;
         motors[0].disarm_with_error(Motor::ERROR_BAD_TIMING);
@@ -493,9 +480,6 @@ void ControlLoop_IRQHandler(void) {
     if (!(TIM1->BDTR & TIM_BDTR_MOE_Msk)) {
         current0 = {0.0f, 0.0f};
     }
-    if (!(TIM8->BDTR & TIM_BDTR_MOE_Msk)) {
-        current1 = {0.0f, 0.0f};
-    }
 
     motors[0].current_meas_cb(timestamp - TIM1_INIT_COUNT, current0);
 
@@ -507,7 +491,7 @@ void ControlLoop_IRQHandler(void) {
         while (!(ADC2->SR & ADC_SR_EOC));
     }
 
-    if (!fetch_and_reset_adcs(&current0, &current1)) {
+    if (!fetch_and_reset_adcs(&current0)) {
         extern DebugCounters g_debug;
         ++g_debug.cl_adc_fail_post_cnt;
         motors[0].disarm_with_error(Motor::ERROR_BAD_TIMING);
