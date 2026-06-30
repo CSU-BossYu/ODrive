@@ -50,6 +50,8 @@ BO_ 3 Axis0_Get_Motor_Error: 8 ODrive_Axis0
 BO_ 4 Axis0_Get_Encoder_Error: 8 ODrive_Axis0
  SG_ Encoder_Error : 0|32@1+ (1,0) [0|0] ""  Master
 
+BO_ 5 Axis0_Reserved_005: 0 ODrive_Axis0
+
 BO_ 6 Axis0_Set_Axis_Node_ID: 8 Master
  SG_ Axis_Node_ID : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis0
 
@@ -74,8 +76,8 @@ BO_ 12 Axis0_Set_Input_Pos: 8 Master
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis0
 
 BO_ 13 Axis0_Set_Input_Vel: 8 Master
- SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis0
- SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis0
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis0
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis0
 
 BO_ 14 Axis0_Set_Input_Torque: 8 Master
  SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis0
@@ -99,6 +101,8 @@ BO_ 19 Axis0_Set_Traj_Inertia: 8 Master
 BO_ 20 Axis0_Get_Iq: 8 ODrive_Axis0
  SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
  SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 21 Axis0_Reserved_015: 0 ODrive_Axis0
 
 BO_ 22 Axis0_Reboot: 0 Master
 

@@ -109,6 +109,12 @@ for axisID in range(0, 1):
         0x00A, "Get_Encoder_Count", 8, [encoderShadowCount, encoderCountInCPR], senders=[newNode.name]
     )
 
+    # 0x005 / 0x015 are explicitly reserved in this production protocol.
+    # They were used by sensorless support in upstream ODrive and must not be
+    # reused without a protocol-version bump.
+    reserved005Msg = can.Message(0x005, "Reserved_005", 0, [], senders=[newNode.name])
+    reserved015Msg = can.Message(0x015, "Reserved_015", 0, [], senders=[newNode.name])
+
     # 0x00B - Set Controller Modes
     controlMode = can.Signal("Control_Mode", 0, 32, receivers=[newNode.name], choices={state.value: state.name for state in ControlMode})
     inputMode = can.Signal("Input_Mode", 32, 32, receivers=[newNode.name], choices={state.value: state.name for state in InputMode})
@@ -125,8 +131,8 @@ for axisID in range(0, 1):
     )
 
     # 0x00D - Set Input Vel
-    inputVel = can.Signal("Input_Vel", 0, 32, is_float=True, receivers=[newNode.name], unit='rev')
-    inputTorqueFF = can.Signal("Input_Torque_FF", 32, 32, is_float=True, receivers=[newNode.name], unit='rev/s')
+    inputVel = can.Signal("Input_Vel", 0, 32, is_float=True, receivers=[newNode.name], unit='rev/s')
+    inputTorqueFF = can.Signal("Input_Torque_FF", 32, 32, is_float=True, receivers=[newNode.name], unit='Nm')
     setInputVelMsg = can.Message(
         0x00D, "Set_Input_Vel", 8, [inputVel, inputTorqueFF], senders=['Master']
     )
@@ -256,6 +262,7 @@ for axisID in range(0, 1):
         heartbeatMsg,
         motorErrorMsg,
         encoderErrorMsg,
+        reserved005Msg,
         axisNodeMsg,
         setAxisState,
         encoderEstimates,
@@ -270,6 +277,7 @@ for axisID in range(0, 1):
         setTrajAccelMsg,
         trajInertiaMsg,
         getIqMsg,
+        reserved015Msg,
         rebootMsg,
         getVbusVCMsg,
         clearErrorsMsg,
