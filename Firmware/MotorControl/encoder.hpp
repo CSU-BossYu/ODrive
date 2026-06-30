@@ -37,6 +37,7 @@ public:
         float vernier_aux_offset = 0.0f;
         bool vernier_main_reversed = false;
         bool vernier_aux_reversed = false;
+        bool vernier_output_reversed = false;
         int32_t vernier_virtual_cpr = 32768;
         float vernier_err_accept = 0.02f;
         float vernier_err_reject = 0.08f;
@@ -54,6 +55,7 @@ public:
         void set_vernier_aux_offset(float value) { vernier_aux_offset = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_main_reversed(bool value) { vernier_main_reversed = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_aux_reversed(bool value) { vernier_aux_reversed = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_output_reversed(bool value) { vernier_output_reversed = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_err_accept(float value) { vernier_err_accept = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_err_reject(float value) { vernier_err_reject = value; parent->apply_vernier_resolver_config(); }
         void set_mt6826s_spi_mode(uint16_t value) { mt6826s_spi_mode = value; parent->apply_mt6826s_spi_config(); }

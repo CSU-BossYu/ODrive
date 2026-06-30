@@ -404,6 +404,7 @@ VernierResolver::Config Encoder::make_vernier_resolver_config() const {
     vernier_config.aux_offset = config_.vernier_aux_offset;
     vernier_config.main_reversed = config_.vernier_main_reversed;
     vernier_config.aux_reversed = config_.vernier_aux_reversed;
+    vernier_config.output_reversed = config_.vernier_output_reversed;
     vernier_config.err_accept = config_.vernier_err_accept;
     vernier_config.err_reject = config_.vernier_err_reject;
     vernier_config.max_main_cycle_index = 64;

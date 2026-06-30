@@ -279,6 +279,9 @@ def main():
             print_config_value(bus, args, 0x25, "vernier_virtual_cpr")
             print_config_value(bus, args, 0x26, "vernier_main_ratio")
             print_config_value(bus, args, 0x27, "vernier_aux_ratio")
+            print_config_value(bus, args, 0x2A, "vernier_main_reversed")
+            print_config_value(bus, args, 0x2B, "vernier_aux_reversed")
+            print_config_value(bus, args, 0x33, "vernier_output_reversed")
             print_config_value(bus, args, 0x2C, "mt6826s_spi_mode")
             print_config_value(bus, args, 0x2F, "mt6826s_spi_prescaler")
             if mode is not None and int(mode) != ENCODER_MODE_SPI_ABS_MT6826S_VERNIER:

@@ -522,7 +522,9 @@ VernierResolver::Result VernierResolver::update_phase_difference(uint16_t main_a
 
     const float aux_phase = normalize_raw_angle(aux_angle, config_.aux_reversed);
     const float aux_phase_corr = wrap01(aux_phase - config_.aux_offset);
-    const float output_phase = wrap01(aux_phase_corr - main_phase_corr);
+    const float output_phase = config_.output_reversed
+        ? wrap01(main_phase_corr - aux_phase_corr)
+        : wrap01(aux_phase_corr - main_phase_corr);
 
     if (!has_last_output_phase_) {
         position_turns_ = output_phase;

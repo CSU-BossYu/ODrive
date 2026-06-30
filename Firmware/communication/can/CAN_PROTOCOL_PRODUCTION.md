@@ -182,7 +182,27 @@ Subcommands:
 | `0x0B..0x1F` | Reserved | reserved for production protocol growth |
 
 The current extended protocol version is returned by subcommand `0x05`, item
-`0x01`, and is `0x00000100`.
+`0x01`, and is `0x00000101`.
+
+## Basic configuration extended items
+
+Subcommands `0x06` and `0x07`, Get/Set_Basic_Config, use the same item IDs.
+Setters return `BUSY_ARMED` while the motor is armed.
+
+Vernier encoder items:
+
+| Item | Type | Meaning |
+| --- | --- | --- |
+| `0x25` | int32 | vernier_virtual_cpr |
+| `0x26` | float32 | vernier_main_ratio |
+| `0x27` | float32 | vernier_aux_ratio |
+| `0x28` | float32 | vernier_main_offset |
+| `0x29` | float32 | vernier_aux_offset |
+| `0x2A` | uint32 | vernier_main_reversed, bool |
+| `0x2B` | uint32 | vernier_aux_reversed, bool |
+| `0x2D` | float32 | vernier_err_accept |
+| `0x2E` | float32 | vernier_err_reject |
+| `0x33` | uint32 | vernier_output_reversed, bool |
 
 ## Anticogging extended items
 

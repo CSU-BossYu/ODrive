@@ -515,7 +515,7 @@ static constexpr uint8_t  EXT_STATUS_INVALID_TYPE = 3;
 static constexpr uint8_t  EXT_STATUS_INVALID_VALUE = 4;
 static constexpr uint8_t  EXT_STATUS_BUSY_ARMED  = 5;
 
-static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000100;  // v1.0
+static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000101;  // v1.1
 
 // ---- utility --------------------------------------------------------
 static bool any_axis_armed() {
@@ -746,6 +746,7 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
         case 0x2D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_err_accept, 32, 32, true); break;
         case 0x2E: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_err_reject, 32, 32, true); break;
         case 0x2F: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.mt6826s_spi_prescaler, 32, 32, true); break;
+        case 0x33: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_output_reversed ? 1u : 0u, 32, 32, true); break;
         // --- controller ---
         case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
         case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
@@ -930,6 +931,11 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
             if (!is_valid_spi_prescaler_divisor(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
             axis.encoder_.config_.set_mt6826s_spi_prescaler(static_cast<uint16_t>(value));
+            break;
+        }
+        case 0x33: {  // vernier_output_reversed (uint32 as bool)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.encoder_.config_.set_vernier_output_reversed(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
             break;
         }
         // --- controller ---

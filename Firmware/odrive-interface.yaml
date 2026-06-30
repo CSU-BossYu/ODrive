@@ -1284,6 +1284,10 @@ interfaces:
           vernier_aux_reversed:
             type: bool
             c_setter: set_vernier_aux_reversed
+          vernier_output_reversed:
+            type: bool
+            c_setter: set_vernier_output_reversed
+            doc: Reverse the resolved vernier output coordinate without changing raw sensor phase direction.
           mt6826s_spi_mode:
             type: uint16
             c_setter: set_mt6826s_spi_mode

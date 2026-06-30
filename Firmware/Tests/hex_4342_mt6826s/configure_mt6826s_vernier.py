@@ -83,6 +83,7 @@ def read_all(bus, args):
     read_and_print(bus, args, 0x29, "  vernier_aux_offset")
     read_and_print(bus, args, 0x2A, "  vernier_main_reversed")
     read_and_print(bus, args, 0x2B, "  vernier_aux_reversed")
+    read_and_print(bus, args, 0x33, "  vernier_output_reversed")
     read_and_print(bus, args, 0x2C, "  mt6826s_spi_mode")
     read_and_print(bus, args, 0x2D, "  vernier_err_accept")
     read_and_print(bus, args, 0x2E, "  vernier_err_reject")
@@ -111,6 +112,7 @@ def main():
     parser.add_argument("--aux-offset", type=float)
     parser.add_argument("--main-reversed", type=int, choices=[0, 1])
     parser.add_argument("--aux-reversed", type=int, choices=[0, 1])
+    parser.add_argument("--output-reversed", type=int, choices=[0, 1])
     parser.add_argument("--spi-mode", type=int, choices=[0, 1, 2, 3], default=3)
     parser.add_argument("--spi-prescaler", type=int, choices=[2, 4, 8, 16, 32, 64, 128, 256], default=8)
     parser.add_argument("--err-accept", type=float)
@@ -160,6 +162,8 @@ def main():
             ok &= set_u32(bus, args, 0x2A, "encoder.vernier_main_reversed", args.main_reversed)
         if args.aux_reversed is not None:
             ok &= set_u32(bus, args, 0x2B, "encoder.vernier_aux_reversed", args.aux_reversed)
+        if args.output_reversed is not None:
+            ok &= set_u32(bus, args, 0x33, "encoder.vernier_output_reversed", args.output_reversed)
 
         if args.save:
             resp = save_configuration(bus, args.node_id, args.extended_id, timeout=2.0)

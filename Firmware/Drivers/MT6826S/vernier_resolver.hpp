@@ -102,10 +102,16 @@ public:
         // This is a sanity guard against choosing an impossible Vernier branch.
         float max_abs_position_turns = 0.0f;
 
-        // If true, compute output position from frac(aux - main) and unwrap it
-        // over time. This matches a 41:42 gear pair where the phase difference
-        // is exactly the output shaft phase.
+        // If true, compute output position from the encoder phase difference
+        // and unwrap it over time. By default the output phase is
+        // frac(aux - main), matching a 41:42 gear pair where the phase
+        // difference is exactly the output shaft phase.
         bool use_phase_difference = false;
+
+        // Reverse only the resolved output coordinate in phase-difference mode.
+        // This is distinct from main_reversed/aux_reversed, which describe the
+        // raw sensor phase direction before offsets.
+        bool output_reversed = false;
     };
 
     struct Result {
