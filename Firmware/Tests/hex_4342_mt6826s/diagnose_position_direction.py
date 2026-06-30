@@ -41,6 +41,13 @@ def sign(value, deadband=1e-6):
     return "0"
 
 
+def wrap_pm_half(value):
+    wrapped = (value + 0.5) % 1.0 - 0.5
+    if wrapped >= 0.5:
+        wrapped -= 1.0
+    return wrapped
+
+
 def require_clean_hb(hb, context):
     if hb is None:
         raise RuntimeError(f"{context}: heartbeat timeout")
@@ -86,6 +93,17 @@ def read_vernier_float(bus, args, item):
     return resp["value_f"]
 
 
+def read_vernier_u32(bus, args, item):
+    resp = ext_request(
+        bus, args.node_id, SUB_CMD_VERNIER_DIAG,
+        item=item, req_type=EXT_TYPE_UINT32, value=0,
+        extended_id=args.extended_id, timeout=0.3,
+    )
+    if resp is None or resp["status"] != 0:
+        return None
+    return resp["value_u"]
+
+
 def snapshot(bus, args):
     enc = read_pair(bus, args, CMD_GET_ENCODER_ESTIMATES)
     iq = read_pair(bus, args, CMD_GET_IQ)
@@ -97,6 +115,12 @@ def snapshot(bus, args):
     iq_meas = iq[1] if iq else float("nan")
     vbus = bus_vi[0] if bus_vi else float("nan")
     ibus = bus_vi[1] if bus_vi else float("nan")
+    main_angle = read_vernier_u32(bus, args, 0x00)
+    aux_angle = read_vernier_u32(bus, args, 0x01)
+    main_phase = ((main_angle % args.cpr) / float(args.cpr)) if main_angle is not None else float("nan")
+    aux_phase = ((aux_angle % args.cpr) / float(args.cpr)) if aux_angle is not None else float("nan")
+    aux_minus_main = wrap_pm_half(aux_phase - main_phase) if main_angle is not None and aux_angle is not None else float("nan")
+    main_minus_aux = wrap_pm_half(main_phase - aux_phase) if main_angle is not None and aux_angle is not None else float("nan")
     vernier_pos = read_vernier_float(bus, args, 0x08)
     enc_pos_diag = read_vernier_float(bus, args, 0x20)
     enc_vel_diag = read_vernier_float(bus, args, 0x21)
@@ -110,6 +134,12 @@ def snapshot(bus, args):
         "iq_meas": iq_meas,
         "vbus": vbus,
         "ibus": ibus,
+        "main_angle": main_angle if main_angle is not None else -1,
+        "aux_angle": aux_angle if aux_angle is not None else -1,
+        "main_phase": main_phase,
+        "aux_phase": aux_phase,
+        "aux_minus_main": aux_minus_main,
+        "main_minus_aux": main_minus_aux,
         "vernier_pos": vernier_pos,
         "enc_pos_diag": enc_pos_diag,
         "enc_vel_diag": enc_vel_diag,
@@ -120,12 +150,19 @@ def snapshot(bus, args):
 def print_sample(label, t, s, base=None, target=None):
     dpos = s["pos"] - base["pos"] if base else 0.0
     dvernier = s["vernier_pos"] - base["vernier_pos"] if base else 0.0
+    dmain = wrap_pm_half(s["main_phase"] - base["main_phase"]) if base else 0.0
+    daux = wrap_pm_half(s["aux_phase"] - base["aux_phase"]) if base else 0.0
+    d_aux_main = wrap_pm_half(s["aux_minus_main"] - base["aux_minus_main"]) if base else 0.0
+    d_main_aux = wrap_pm_half(s["main_minus_aux"] - base["main_minus_aux"]) if base else 0.0
     err = target - s["pos"] if target is not None else float("nan")
     err_txt = "" if target is None else f" err={err:+.5f}({sign(err)})"
     print(
         f"  {label} t={t:4.2f}s pos={s['pos']:+.5f} dpos={dpos:+.5f}({sign(dpos)}) "
         f"vel={s['vel']:+.5f}({sign(s['vel'], 1e-3)}) "
         f"vern={s['vernier_pos']:+.5f} dvern={dvernier:+.5f}({sign(dvernier)}) "
+        f"main={s['main_angle']:5d} dmain={dmain:+.5f}({sign(dmain)}) "
+        f"aux={s['aux_angle']:5d} daux={daux:+.5f}({sign(daux)}) "
+        f"dA-M={d_aux_main:+.5f}({sign(d_aux_main)}) dM-A={d_main_aux:+.5f}({sign(d_main_aux)}) "
         f"diag_pos={s['enc_pos_diag']:+.5f} diag_vel={s['enc_vel_diag']:+.5f} "
         f"circ={s['circular']:+.5f} Iq={s['iq_set']:+.3f}/{s['iq_meas']:+.3f}{err_txt}"
     )
@@ -214,6 +251,7 @@ def main():
     parser.add_argument("--pos-gain", type=float, default=0.5)
     parser.add_argument("--vel-limit", type=float, default=2.0)
     parser.add_argument("--current-limit", type=float, default=3.0)
+    parser.add_argument("--cpr", type=int, default=32768)
     parser.add_argument("--abort-position-error", type=float, default=0.12)
     parser.add_argument("--skip-velocity", action="store_true")
     parser.add_argument("--skip-position", action="store_true")
