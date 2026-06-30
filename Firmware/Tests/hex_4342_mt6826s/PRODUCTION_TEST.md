@@ -58,13 +58,29 @@ Run with a current-limited 24 V bus supply.
 
    Pass criterion: scan response error < 2%, bus remains about 24 V.
 
-4. Run velocity closed-loop at 5 turns/s for 10 s with 3 A current limit:
+4. Check calibration values before any closed-loop gates:
+
+   ```powershell
+   python Firmware\Tests\hex_4342_mt6826s\run_calibration_persistence_check.py --bitrate 1000000 --clear-at-end
+   ```
+
+   Pass criterion: phase resistance/inductance are positive and encoder
+   direction is nonzero. If you intend to keep the calibration across reset,
+   explicitly mark and save it:
+
+   ```powershell
+   python Firmware\Tests\hex_4342_mt6826s\run_calibration_persistence_check.py --bitrate 1000000 --mark-precalibrated --save --clear-at-end
+   ```
+
+   Saving configuration triggers the firmware reset-after-ACK path.
+
+5. Run velocity closed-loop at 5 turns/s for 10 s with 3 A current limit:
 
    ```powershell
    python Firmware\Tests\hex_4342_mt6826s\run_mt6826s_velocity_loop.py --bitrate 1000000 --velocity 5 --duration 10 --current-limit 3.0 --clear-at-end
    ```
 
-5. Return to IDLE and confirm all errors are zero:
+6. Return to IDLE and confirm all errors are zero:
 
    ```powershell
    python Firmware\Tests\hex_4342_mt6826s\read_mt6826s_pair.py --bitrate 1000000 --period 1 --samples 1 --show-status
