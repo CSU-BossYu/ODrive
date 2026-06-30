@@ -7,7 +7,7 @@ from odrive.enums import *
 
 msgList = []
 nodes = [can.Node('Master')]
-buses = [can.Bus('ODrive', None, 100000)]
+buses = [can.Bus('ODrive', None, 1000000)]
 
 if 'choices' not in inspect.signature(can.Signal.__init__).parameters:
     _CanSignal = can.Signal
@@ -42,7 +42,7 @@ if 'choices' not in inspect.signature(can.Signal.__init__).parameters:
 
     can.Signal = _compat_signal
 
-for axisID in range(0, 8):
+for axisID in range(0, 1):
     newNode = can.Node(f"ODrive_Axis{axisID}")
     nodes.append(newNode)
 
@@ -81,11 +81,7 @@ for axisID in range(0, 8):
         0x004, "Get_Encoder_Error", 8, [encoderError], senders=[newNode.name]
     )
 
-    # 0x005 - Sensorless Error
-    sensorlessError = can.Signal("Sensorless_Error", 0, 32, receivers=['Master'], choices={error.value: error.name for error in SensorlessEstimatorError})
-    sensorlessErrorMsg = can.Message(
-        0x005, "Get_Sensorless_Error", 8, [sensorlessError], senders=[newNode.name]
-    )
+    # 0x005 - Reserved (sensorless removed from the production firmware)
 
     # 0x006 - Axis Node ID
     axisNodeID = can.Signal("Axis_Node_ID", 0, 32, receivers=[newNode.name])
@@ -175,10 +171,7 @@ for axisID in range(0, 8):
     iqMeasured = can.Signal("Iq_Measured", 32, 32, is_float=True, receivers=['Master'], unit='A')
     getIqMsg = can.Message(0x014, "Get_Iq", 8, [iqSetpoint, iqMeasured], senders=[newNode.name])
 
-    # 0x015 - Get Sensorless Estimates
-    sensorlessPosEstimate = can.Signal("Sensorless_Pos_Estimate", 0, 32, is_float=True, receivers=['Master'], unit='rev')
-    sensorlessVelEstimate = can.Signal("Sensorless_Vel_Estimate", 32, 32, is_float=True, receivers=['Master'], unit='rev/s')
-    getSensorlessEstMsg = can.Message(0x015, "Get_Sensorless_Estimates", 8, [sensorlessPosEstimate, sensorlessVelEstimate], senders=[newNode.name])
+    # 0x015 - Reserved (sensorless removed from the production firmware)
 
     # 0x016 - Reboot ODrive
     rebootMsg = can.Message(0x016, "Reboot", 0, [], senders=['Master'])
@@ -263,7 +256,6 @@ for axisID in range(0, 8):
         heartbeatMsg,
         motorErrorMsg,
         encoderErrorMsg,
-        sensorlessErrorMsg,
         axisNodeMsg,
         setAxisState,
         encoderEstimates,
@@ -278,7 +270,6 @@ for axisID in range(0, 8):
         setTrajAccelMsg,
         trajInertiaMsg,
         getIqMsg,
-        getSensorlessEstMsg,
         rebootMsg,
         getVbusVCMsg,
         clearErrorsMsg,

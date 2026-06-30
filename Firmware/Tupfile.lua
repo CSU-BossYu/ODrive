@@ -352,6 +352,9 @@ CFLAGS += '-Wno-psabi' -- suppress unimportant note about ABI compatibility in G
 CFLAGS += { '-Wall', '-Wdouble-promotion', '-Wfloat-conversion', '-fdata-sections', '-ffunction-sections'}
 CFLAGS += '-g'
 CFLAGS += '-DFIBRE_ENABLE_SERVER'
+CFLAGS += '-DODRIVE_PRODUCTION_SINGLE_AXIS=1'
+CFLAGS += '-DODRIVE_PRODUCTION_CAN_BAUD=1000000UL'
+CFLAGS += '-DODRIVE_PRODUCTION_CAN_NODE_ID=0UL'
 CFLAGS += '-Wno-nonnull'
 
 -- linker flags

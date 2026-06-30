@@ -13,8 +13,8 @@
 
 bool ODriveCAN::apply_config() {
     config_.parent = this;
-    // Force 1M baud rate regardless of saved config
-    config_.baud_rate = CAN_BAUD_1M;
+    // Force the production CAN baud rate regardless of saved config.
+    config_.baud_rate = ODRIVE_PRODUCTION_CAN_BAUD;
     set_baud_rate(config_.baud_rate);
     return true;
 }

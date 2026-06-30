@@ -6,6 +6,7 @@
 #define __BOARD_CONFIG_H
 
 #include <stdbool.h>
+#include <production_config.h>
 
 // STM specific includes
 #include <stm32f4xx_hal.h>
@@ -28,7 +29,11 @@
 #define SHUNT_RESISTANCE (500e-6f)
 #endif
 
+#if ODRIVE_PRODUCTION_SINGLE_AXIS
 #define AXIS_COUNT (1)
+#else
+#error "This production firmware profile only supports a single M0 axis."
+#endif
 
 // Total count of GPIOs, including encoder pins, CAN pins and a dummy GPIO0.
 // ODrive v3.4 and earlier don't have GPIOs 6, 7 and 8 but to keep the numbering

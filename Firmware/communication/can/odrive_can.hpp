@@ -3,6 +3,7 @@
 
 #include <cmsis_os.h>
 
+#include <production_config.h>
 #include "canbus.hpp"
 #include "can_simple.hpp"
 #include <autogen/interfaces.hpp>
@@ -22,7 +23,7 @@ enum {
 class ODriveCAN : public CanBusBase, public ODriveIntf::CanIntf {
 public:
     struct Config_t {
-        uint32_t baud_rate = CAN_BAUD_1M;
+        uint32_t baud_rate = ODRIVE_PRODUCTION_CAN_BAUD;
         Protocol protocol = PROTOCOL_SIMPLE;
 
         ODriveCAN* parent = nullptr; // set in apply_config()

@@ -41,7 +41,7 @@ Axis::Axis(int axis_num,
 
 Axis::LockinConfig_t Axis::default_calibration() {
     Axis::LockinConfig_t config;
-    config.current = 10.0f;           // [A]
+    config.current = ODRIVE_PRODUCTION_AXIS_CALIBRATION_CURRENT;           // [A]
     config.ramp_time = 0.4f;          // [s]
     config.ramp_distance = 1 * M_PI;  // [rad]
     config.accel = 20.0f;     // [rad/s^2]
@@ -67,7 +67,7 @@ void Axis::clear_config() {
     config_ = {};
     config_.step_gpio_pin = default_step_gpio_pin_;
     config_.dir_gpio_pin = default_dir_gpio_pin_;
-    config_.can.node_id = axis_num_;
+    config_.can.node_id = ODRIVE_PRODUCTION_CAN_NODE_ID + axis_num_;
 }
 
 static void run_state_machine_loop_wrapper(void* ctx) {

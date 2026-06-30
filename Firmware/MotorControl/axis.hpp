@@ -13,13 +13,14 @@ class Axis;
 #include "low_level.h"
 #include "utils.hpp"
 #include "task_timer.hpp"
+#include <production_config.h>
 
 #include <array>
 
 class Axis : public ODriveIntf::AxisIntf {
 public:
     struct LockinConfig_t {
-        float current = 10.0f;           // [A]
+        float current = ODRIVE_PRODUCTION_AXIS_CALIBRATION_CURRENT;           // [A]
         float ramp_time = 0.4f;          // [s]
         float ramp_distance = 1 * M_PI;  // [rad]
         float accel = 20.0f;     // [rad/s^2]
@@ -48,7 +49,7 @@ public:
     static LockinConfig_t default_lockin();
 
     struct CANConfig_t {
-        uint32_t node_id = 0;
+        uint32_t node_id = ODRIVE_PRODUCTION_CAN_NODE_ID;
         bool is_extended = false;
         uint32_t heartbeat_rate_ms = 100;
         uint32_t encoder_rate_ms = 10;
