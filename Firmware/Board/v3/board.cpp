@@ -79,8 +79,6 @@ Motor motors[AXIS_COUNT] = {
 
 Encoder encoders[AXIS_COUNT] = {
     {
-        &htim3, // timer
-        {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // index_gpio
         &spi3_arbiter // spi_arbiter
     }
 };
@@ -197,11 +195,11 @@ std::array<GpioFunction, 3> alternate_functions[GPIO_COUNT] = {
     /* GPIO6: */ {{}},
     /* GPIO7: */ {{}},
     /* GPIO8: */ {{}},
-    /* ENC0_A: */ {{{ODrive::GPIO_MODE_ENC0, GPIO_AF2_TIM3}}},
-    /* ENC0_B: */ {{{ODrive::GPIO_MODE_ENC0, GPIO_AF2_TIM3}}},
+    /* ENC0_A: */ {{}},
+    /* ENC0_B: */ {{}},
     /* ENC0_Z: */ {{}},
-    /* ENC1_A: */ {{{ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}, {ODrive::GPIO_MODE_ENC1, GPIO_AF2_TIM4}}},
-    /* ENC1_B: */ {{{ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}, {ODrive::GPIO_MODE_ENC1, GPIO_AF2_TIM4}}},
+    /* ENC1_A: */ {{{ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},
+    /* ENC1_B: */ {{{ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},
     /* ENC1_Z: */ {{}},
     /* CAN_R: */ {{{ODrive::GPIO_MODE_CAN_A, GPIO_AF9_CAN1}, {ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},
     /* CAN_D: */ {{{ODrive::GPIO_MODE_CAN_A, GPIO_AF9_CAN1}, {ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},

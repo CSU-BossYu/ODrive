@@ -4,15 +4,9 @@
 #include <Drivers/STM32/stm32_system.h>
 #include <algorithm>
 
-Encoder::Encoder(TIM_HandleTypeDef* timer, Stm32Gpio index_gpio,
-                 Stm32SpiArbiter* spi_arbiter) :
-        timer_(timer), index_gpio_(index_gpio),
+Encoder::Encoder(Stm32SpiArbiter* spi_arbiter) :
         spi_arbiter_(spi_arbiter)
 {
-}
-
-static void enc_index_cb_wrapper(void* ctx) {
-    reinterpret_cast<Encoder*>(ctx)->enc_index_cb();
 }
 
 static uint32_t spi_prescaler_from_divisor(uint16_t divisor) {
@@ -45,9 +39,6 @@ bool Encoder::apply_config(ODriveIntf::MotorIntf::MotorType motor_type) {
 }
 
 void Encoder::setup() {
-    HAL_TIM_Encoder_Start(timer_, TIM_CHANNEL_ALL);
-    set_idx_subscribe();
-
     mode_ = config_.mode;
 
     spi_task_.config = {
@@ -100,46 +91,6 @@ bool Encoder::do_checks(){
     return error_ == ERROR_NONE;
 }
 
-//--------------------
-// Hardware Dependent
-//--------------------
-
-// Triggered when an encoder passes over the "Index" pin
-// TODO: only arm index edge interrupt when we know encoder has powered up
-// (maybe by attaching the interrupt on start search, synergistic with following)
-void Encoder::enc_index_cb() {
-    if (config_.use_index) {
-        set_circular_count(0, false);
-        if (config_.use_index_offset)
-            set_linear_count((int32_t)(config_.index_offset * config_.cpr));
-        if (config_.pre_calibrated) {
-            is_ready_ = true;
-            if(axis_->controller_.config_.anticogging.pre_calibrated){
-                axis_->controller_.anticogging_valid_ = true;
-            }
-        } else {
-            // We can't use the update_offset facility in set_circular_count because
-            // we also set the linear count before there is a chance to update. Therefore:
-            // Invalidate offset calibration that may have happened before idx search
-            is_ready_ = false;
-        }
-        index_found_ = true;
-    }
-
-    // Disable interrupt
-    index_gpio_.unsubscribe();
-}
-
-void Encoder::set_idx_subscribe(bool override_enable) {
-    if (config_.use_index && (override_enable || !config_.find_idx_on_lockin_only)) {
-        if (!index_gpio_.subscribe(true, false, enc_index_cb_wrapper, this)) {
-            odrv.misconfigured_ = true;
-        }
-    } else if (!config_.use_index || config_.find_idx_on_lockin_only) {
-        index_gpio_.unsubscribe();
-    }
-}
-
 void Encoder::update_pll_gains() {
     pll_kp_ = 2.0f * config_.bandwidth;  // basic conversion to discrete time
     pll_ki_ = 0.25f * (pll_kp_ * pll_kp_); // Critically damped
@@ -155,8 +106,6 @@ void Encoder::check_pre_calibrated() {
     if (axis_->motor_.config_.motor_type != Motor::MOTOR_TYPE_ACIM) {
         if (!is_ready_)
             config_.pre_calibrated = false;
-        if (mode_ == MODE_INCREMENTAL && !index_found_)
-            config_.pre_calibrated = false;
     }
 }
 
@@ -168,10 +117,6 @@ void Encoder::set_linear_count(int32_t count) {
     // Update states
     shadow_count_ = count;
     pos_estimate_counts_ = (float)count;
-    tim_cnt_sample_ = count;
-
-    //Write hardware last
-    timer_->Instance->CNT = count;
 
     cpu_exit_critical(prim);
 }
@@ -194,53 +139,11 @@ void Encoder::set_circular_count(int32_t count, bool update_offset) {
     cpu_exit_critical(prim);
 }
 
-bool Encoder::run_index_search() {
-    config_.use_index = true;
-    index_found_ = false;
-    set_idx_subscribe();
-
-    bool success = axis_->run_lockin_spin(axis_->config_.calibration_lockin, false);
-    return success;
-}
-
-bool Encoder::run_direction_find() {
-    int32_t init_enc_val = shadow_count_;
-
-    Axis::LockinConfig_t lockin_config = axis_->config_.calibration_lockin;
-    lockin_config.finish_distance = lockin_config.vel * 3.0f; // run for 3 seconds
-    lockin_config.finish_on_distance = true;
-    lockin_config.finish_on_enc_idx = false;
-    lockin_config.finish_on_vel = false;
-    bool success = axis_->run_lockin_spin(lockin_config, false);
-
-    if (success) {
-        // Check response and direction
-        if (shadow_count_ > init_enc_val + 8) {
-            // motor same dir as encoder
-            config_.direction = 1;
-        } else if (shadow_count_ < init_enc_val - 8) {
-            // motor opposite dir as encoder
-            config_.direction = -1;
-        } else {
-            config_.direction = 0;
-        }
-    }
-
-    return success;
-}
-
-
 // @brief Turns the motor in one direction for a bit and then in the other
 // direction in order to find the offset between the electrical phase 0
 // and the encoder state 0.
 bool Encoder::run_offset_calibration() {
     const float start_lock_duration = 1.0f;
-
-    // Require index found if enabled
-    if (config_.use_index && !index_found_) {
-        set_error(ERROR_INDEX_NOT_FOUND_YET);
-        return false;
-    }
 
     // We use shadow_count_ to do the calibration, but the offset is used by count_in_cpr_
     // Therefore we have to sync them for calibration
@@ -367,10 +270,6 @@ bool Encoder::run_offset_calibration() {
 
 void Encoder::sample_now() {
     switch (mode_) {
-        case MODE_INCREMENTAL: {
-            tim_cnt_sample_ = (int16_t)timer_->Instance->CNT;
-        } break;
-
         case MODE_SINCOS: {
             sincos_sample_s_ = get_adc_relative_voltage(get_gpio(config_.sincos_gpio_pin_sin)) - 0.5f;
             sincos_sample_c_ = get_adc_relative_voltage(get_gpio(config_.sincos_gpio_pin_cos)) - 0.5f;
@@ -737,13 +636,6 @@ bool Encoder::update() {
     int32_t pos_abs_latched = pos_abs_; //LATCH
 
     switch (mode_) {
-        case MODE_INCREMENTAL: {
-            //TODO: use count_in_cpr_ instead as shadow_count_ can overflow
-            //or use 64 bit
-            int16_t delta_enc_16 = (int16_t)tim_cnt_sample_ - (int16_t)shadow_count_;
-            delta_enc = (int32_t)delta_enc_16; //sign extend
-        } break;
-
         case MODE_SINCOS: {
             float phase = fast_atan2(sincos_sample_s_, sincos_sample_c_);
             int fake_count = (int)(1000.0f * phase);

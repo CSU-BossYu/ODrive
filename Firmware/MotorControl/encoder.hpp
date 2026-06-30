@@ -16,25 +16,19 @@ class Encoder : public ODriveIntf::EncoderIntf {
 public:
     static constexpr uint32_t MODE_FLAG_ABS = 0x100;
     struct Config_t {
-        Mode mode = MODE_INCREMENTAL;
+        Mode mode = MODE_SPI_ABS_MT6826S_VERNIER;
         float calib_range = 0.02f; // Accuracy required to pass encoder cpr check
         float calib_scan_distance = 16.0f * M_PI; // rad electrical
         float calib_scan_omega = 4.0f * M_PI; // rad/s electrical
         float bandwidth = 1000.0f;
         int32_t phase_offset = 0;        // Offset between encoder count and rotor electrical phase
         float phase_offset_float = 0.0f; // Sub-count phase alignment offset
-        int32_t cpr = (2048 * 4);   // Default resolution of CUI-AMT102 encoder,
-        float index_offset = 0.0f;
-        bool use_index = false;
+        int32_t cpr = 32768;
         bool pre_calibrated = false; // If true, this means the offset stored in
                                     // configuration is valid and does not need
                                     // be determined by run_offset_calibration.
-                                    // In this case the encoder will enter ready
-                                    // state as soon as the index is found.
         int32_t direction = 0; // direction with respect to motor
-        bool use_index_offset = true;
         bool enable_phase_interpolation = true; // Use velocity to interpolate inside the count state
-        bool find_idx_on_lockin_only = false; // Only be sensitive during lockin scan constant vel state
         uint16_t abs_spi_cs_gpio_pin = 1;
         uint16_t abs_spi_aux_cs_gpio_pin = 4;
         uint16_t sincos_gpio_pin_sin = 3;
@@ -55,8 +49,6 @@ public:
 
         // custom setters
         Encoder* parent = nullptr;
-        void set_use_index(bool value) { use_index = value; parent->set_idx_subscribe(); }
-        void set_find_idx_on_lockin_only(bool value) { find_idx_on_lockin_only = value; parent->set_idx_subscribe(); }
         void set_abs_spi_cs_gpio_pin(uint16_t value) { abs_spi_cs_gpio_pin = value; parent->abs_spi_cs_pin_init(); }
         void set_abs_spi_aux_cs_gpio_pin(uint16_t value) { abs_spi_aux_cs_gpio_pin = value; parent->abs_spi_aux_cs_pin_init(); }
         void set_vernier_main_ratio(float value) { vernier_main_ratio = value; parent->apply_vernier_resolver_config(); }
@@ -73,16 +65,13 @@ public:
         void set_bandwidth(float value) { bandwidth = value; parent->update_pll_gains(); }
     };
 
-    Encoder(TIM_HandleTypeDef* timer, Stm32Gpio index_gpio,
-            Stm32SpiArbiter* spi_arbiter);
+    Encoder(Stm32SpiArbiter* spi_arbiter);
     
     bool apply_config(ODriveIntf::MotorIntf::MotorType motor_type);
     void setup();
     void set_error(Error error);
     bool do_checks();
 
-    void enc_index_cb();
-    void set_idx_subscribe(bool override_enable = false);
     void update_pll_gains();
     void check_pre_calibrated();
 
@@ -90,21 +79,16 @@ public:
     void set_circular_count(int32_t count, bool update_offset);
     bool calib_enc_offset(float voltage_magnitude);
 
-    bool run_index_search();
-    bool run_direction_find();
     bool run_offset_calibration();
     void sample_now();
     bool update();
 
-    TIM_HandleTypeDef* timer_;
-    Stm32Gpio index_gpio_;
     Stm32SpiArbiter* spi_arbiter_;
     Axis* axis_ = nullptr; // set by Axis constructor
 
     Config_t config_;
 
     Error error_ = ERROR_NONE;
-    bool index_found_ = false;
     bool is_ready_ = false;
     int32_t shadow_count_ = 0;
     int32_t count_in_cpr_ = 0;
@@ -127,8 +111,6 @@ public:
     bool pos_estimate_valid_ = false;
     bool vel_estimate_valid_ = false;
 
-    int16_t tim_cnt_sample_ = 0; // 
-
     float sincos_sample_s_ = 0.0f;
     float sincos_sample_c_ = 0.0f;
 
@@ -148,7 +130,7 @@ public:
     bool start_mt6826s_main_sample();
     bool start_mt6826s_pair_sample();
     bool abs_spi_pos_updated_ = false;
-    Mode mode_ = MODE_INCREMENTAL;
+    Mode mode_ = MODE_SPI_ABS_MT6826S_VERNIER;
     Stm32Gpio abs_spi_cs_gpio_;
     Stm32Gpio abs_spi_aux_cs_gpio_;
     uint32_t abs_spi_cr1;

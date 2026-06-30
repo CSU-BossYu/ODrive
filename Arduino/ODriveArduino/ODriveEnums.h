@@ -20,9 +20,6 @@ enum GpioMode {
     GPIO_MODE_I2C_A                          = 8,
     GPIO_MODE_SPI_A                          = 9,
     GPIO_MODE_PWM                            = 10,
-    GPIO_MODE_ENC0                           = 11,
-    GPIO_MODE_ENC1                           = 12,
-    GPIO_MODE_ENC2                           = 13,
     GPIO_MODE_MECH_BRAKE                     = 14,
     GPIO_MODE_STATUS                         = 15,
 };
@@ -47,17 +44,14 @@ enum AxisState {
     AXIS_STATE_STARTUP_SEQUENCE              = 2,
     AXIS_STATE_FULL_CALIBRATION_SEQUENCE     = 3,
     AXIS_STATE_MOTOR_CALIBRATION             = 4,
-    AXIS_STATE_ENCODER_INDEX_SEARCH          = 6,
     AXIS_STATE_ENCODER_OFFSET_CALIBRATION    = 7,
     AXIS_STATE_CLOSED_LOOP_CONTROL           = 8,
     AXIS_STATE_LOCKIN_SPIN                   = 9,
-    AXIS_STATE_ENCODER_DIR_FIND              = 10,
     AXIS_STATE_HOMING                        = 11,
 };
 
 // ODrive.Encoder.Mode
 enum EncoderMode {
-    ENCODER_MODE_INCREMENTAL                 = 0,
     ENCODER_MODE_SINCOS                      = 2,
     ENCODER_MODE_SPI_ABS_CUI                 = 256,
     ENCODER_MODE_SPI_ABS_AMS                 = 257,
@@ -184,7 +178,6 @@ enum EncoderError {
     ENCODER_ERROR_CPR_POLEPAIRS_MISMATCH     = 0x00000002,
     ENCODER_ERROR_NO_RESPONSE                = 0x00000004,
     ENCODER_ERROR_UNSUPPORTED_ENCODER_MODE   = 0x00000008,
-    ENCODER_ERROR_INDEX_NOT_FOUND_YET        = 0x00000020,
     ENCODER_ERROR_ABS_SPI_TIMEOUT            = 0x00000040,
     ENCODER_ERROR_ABS_SPI_COM_FAIL           = 0x00000080,
     ENCODER_ERROR_ABS_SPI_NOT_READY          = 0x00000100,

@@ -497,9 +497,6 @@ interfaces:
           startup_motor_calibration:
             type: bool
             doc: Run motor calibration at startup, skip otherwise
-          startup_encoder_index_search:
-            type: bool
-            doc: Run encoder index search after startup, skip otherwise this only has an effect if encoder.config.use_index is also true
           startup_encoder_offset_calibration:
             type: bool
             doc: Run encoder offset calibration after startup, skip otherwise
@@ -587,7 +584,6 @@ interfaces:
         unit: rad
       finish_on_vel: bool
       finish_on_distance: bool
-      finish_on_enc_idx: bool
 
   ODrive.Axis.CanConfig:
     c_is_class: False
@@ -1225,17 +1221,11 @@ interfaces:
               Confirm that your encoder is plugged into the right pins on the
               ODrive board.
           UNSUPPORTED_ENCODER_MODE:
-          INDEX_NOT_FOUND_YET:
-            bit: 5
-            doc: |
-              Check that your encoder is a model that has an index pulse. If
-              your encoder does not have a wire connected to pin Z on your
-              ODrive then it does not output an index pulse.
           ABS_SPI_TIMEOUT:
+            bit: 6
           ABS_SPI_COM_FAIL:
           ABS_SPI_NOT_READY:
       is_ready: readonly bool
-      index_found: readonly bool
       shadow_count: 
         type: readonly int32
         unit: counts
@@ -1285,19 +1275,6 @@ interfaces:
         c_is_class: False
         attributes:
           mode: Mode
-          use_index: 
-            type: bool
-            c_setter: set_use_index
-            doc: Set this to `True` when using an encoder with an index pin to allow pre-calibration of the encoder and encoder index search.
-          index_offset:
-            type: float32
-            doc: When the index is found, the linear position of the axis will be set to this value if `use_index_offset` is set to `True`.
-          use_index_offset: 
-            type: bool
-            doc: Set this to `True` to have the axis set the linear position of the axis to `index_offset` when the index is found during encoder index search
-          find_idx_on_lockin_only: 
-            type: bool
-            c_setter: set_find_idx_on_lockin_only
           abs_spi_cs_gpio_pin: 
             type: uint16
             c_setter: set_abs_spi_cs_gpio_pin
@@ -1476,7 +1453,7 @@ valuetypes:
       DIGITAL:
         doc: |
           The pin can be used for one or more of these functions:
-          Step, dir, enable, encoder index, hall effect encoder, SPI encoder nCS (this one is exclusive).
+          Step, dir, enable, SPI encoder nCS (this one is exclusive).
       DIGITAL_PULL_UP:
         doc: Same as `DIGITAL` but with the internal pull-up resistor enabled.
       DIGITAL_PULL_DOWN:
@@ -1494,11 +1471,12 @@ valuetypes:
         cannot be configured through software. Consequently, even though SPI_A
         is exposed, this mode is of no use on ODrive v3.x.}
       PWM: {doc: See `config.gpio1_pwm_mapping`.}
-      ENC0: {doc: The pin is used by quadrature encoder 0.}
-      ENC1: {doc: The pin is used by quadrature encoder 1.}
-      ENC2: {doc: This mode is not supported on ODrive v3.x.}
-      MECH_BRAKE: {doc: This is to support external mechanical brakes.}
-      STATUS: {doc: The pin is used for status output (see `config.error_gpio_pin`)}
+      MECH_BRAKE:
+        value: 14
+        doc: This is to support external mechanical brakes.
+      STATUS:
+        value: 15
+        doc: The pin is used for status output (see `config.error_gpio_pin`)
 
   ODrive.StreamProtocolType:
     values:
@@ -1532,8 +1510,7 @@ valuetypes:
         brief: Run the startup procedure.
         doc: the actual sequence is defined by the `config`.startup... flags
       FULL_CALIBRATION_SEQUENCE:
-        doc: Run motor calibration and then encoder offset calibration (or encoder
-          index search if `<axis>.encoder.config.use_index` is `True`).
+        doc: Run motor calibration and then encoder offset calibration.
       MOTOR_CALIBRATION:
         brief: Measure phase resistance and phase inductance of the motor.
         doc: |
@@ -1542,11 +1519,8 @@ valuetypes:
            don't have to run the motor calibration on the next start up.
            * This modifies the variables `motor.config.phase_resistance` and
            `motor.config.phase_inductance`.
-      ENCODER_INDEX_SEARCH:
-        brief: Turn the motor in one direction until the encoder index is traversed.
-        doc: This state can only be entered if `encoder.config.use_index` is `True`.
-        value: 6
       ENCODER_OFFSET_CALIBRATION:
+        value: 7
         brief: Turn the motor in one direction for a few seconds and then back to measure the offset between the encoder position and the electrical phase.
         doc: |
            * Can only be entered if the motor is calibrated (`motor.is_calibrated`).
@@ -1563,17 +1537,13 @@ valuetypes:
         doc: |
           Can only be entered if the motor is calibrated (`motor.is_calibrated`)
           or the motor direction is unspecified (`encoder.config.direction` == 1)
-      ENCODER_DIR_FIND:
-        brief: Run encoder direction search.
-        doc: |
-          Can only be entered if the motor is calibrated (`motor.is_calibrated`).
       HOMING:
+        value: 11
         brief: Run axis homing function.
         doc:
           Endstops must be enabled to use this feature.
   ODrive.Encoder.Mode:
     values:
-      INCREMENTAL:
       SINCOS:
         value: 2
       SPI_ABS_CUI:

@@ -56,11 +56,11 @@
     ODriveIntf::GPIO_MODE_DIGITAL, \
     ODriveIntf::GPIO_MODE_DIGITAL, \
     ODriveIntf::GPIO_MODE_DIGITAL, \
-    ODriveIntf::GPIO_MODE_ENC0, \
-    ODriveIntf::GPIO_MODE_ENC0, \
     ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
-    ODriveIntf::GPIO_MODE_ENC1, \
-    ODriveIntf::GPIO_MODE_ENC1, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
     ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
     ODriveIntf::GPIO_MODE_CAN_A, \
     ODriveIntf::GPIO_MODE_CAN_A,

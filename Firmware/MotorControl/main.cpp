@@ -745,21 +745,6 @@ extern "C" int main(void) {
                 GPIO_InitStruct.Pull = GPIO_PULLDOWN;
                 GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
             } break;
-            case ODriveIntf::GPIO_MODE_ENC0: {
-                GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-                GPIO_InitStruct.Pull = GPIO_NOPULL;
-                GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-            } break;
-            case ODriveIntf::GPIO_MODE_ENC1: {
-                GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-                GPIO_InitStruct.Pull = GPIO_NOPULL;
-                GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-            } break;
-            case ODriveIntf::GPIO_MODE_ENC2: {
-                GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-                GPIO_InitStruct.Pull = GPIO_NOPULL;
-                GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-            } break;
             case ODriveIntf::GPIO_MODE_MECH_BRAKE: {
                 GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
                 GPIO_InitStruct.Pull = GPIO_NOPULL;

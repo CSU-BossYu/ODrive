@@ -27,7 +27,6 @@ public:
         float finish_distance = 100.0f;  // [rad]
         bool finish_on_vel = false;
         bool finish_on_distance = false;
-        bool finish_on_enc_idx = false;
     };
 
     struct TaskTimes {
@@ -63,8 +62,6 @@ public:
 
     struct Config_t {
         bool startup_motor_calibration = false;   //<! run motor calibration at startup, skip otherwise
-        bool startup_encoder_index_search = false; //<! run encoder index search after startup, skip otherwise
-                                                // this only has an effect if encoder.config.use_index is also true
         bool startup_encoder_offset_calibration = false; //<! run encoder offset calibration after startup, skip otherwise
         bool startup_closed_loop_control = false; //<! enable closed loop control after calibration/startup
         bool startup_homing = false; //<! enable homing after calibration/startup

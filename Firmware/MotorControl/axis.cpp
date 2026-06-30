@@ -49,7 +49,6 @@ Axis::LockinConfig_t Axis::default_calibration() {
     config.finish_distance = 100.0f * 2.0f * M_PI;  // [rad]
     config.finish_on_vel = false;
     config.finish_on_distance = true;
-    config.finish_on_enc_idx = true;
     return config;
 }
 
@@ -196,7 +195,6 @@ bool Axis::run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_arme
 
     motor_.arm(&motor_.current_control_);
 
-    bool subscribed_to_idx_once = false;
     bool success = false;
     float dir = lockin_config.vel >= 0.0f ? 1.0f : -1.0f;
 
@@ -206,18 +204,10 @@ bool Axis::run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_arme
 
         // Check if terminal condition is reached
         bool terminal_condition = (reached_target_vel && lockin_config.finish_on_vel)
-                               || (reached_target_dist && lockin_config.finish_on_distance)
-                               || (encoder_.index_found_ && lockin_config.finish_on_enc_idx);
+                               || (reached_target_dist && lockin_config.finish_on_distance);
         if (terminal_condition) {
             success = true;
             break;
-        }
-
-        // Activate index pin as soon as target velocity was reached. This is
-        // to avoid hitting the index from the wrong direction.
-        if (reached_target_vel && !encoder_.index_found_ && !subscribed_to_idx_once) {
-            encoder_.set_idx_subscribe(true);
-            subscribed_to_idx_once = true;
         }
 
         if (loop_cb)
@@ -420,8 +410,6 @@ void Axis::run_state_machine_loop() {
             if (requested_state_ == AXIS_STATE_STARTUP_SEQUENCE) {
                 if (config_.startup_motor_calibration)
                     task_chain_[pos++] = AXIS_STATE_MOTOR_CALIBRATION;
-                if (config_.startup_encoder_index_search && encoder_.config_.use_index)
-                    task_chain_[pos++] = AXIS_STATE_ENCODER_INDEX_SEARCH;
                 if (config_.startup_encoder_offset_calibration)
                     task_chain_[pos++] = AXIS_STATE_ENCODER_OFFSET_CALIBRATION;
                 if (config_.startup_homing)
@@ -431,8 +419,6 @@ void Axis::run_state_machine_loop() {
                 task_chain_[pos++] = AXIS_STATE_IDLE;
             } else if (requested_state_ == AXIS_STATE_FULL_CALIBRATION_SEQUENCE) {
                 task_chain_[pos++] = AXIS_STATE_MOTOR_CALIBRATION;
-                if (encoder_.config_.use_index)
-                    task_chain_[pos++] = AXIS_STATE_ENCODER_INDEX_SEARCH;
                 task_chain_[pos++] = AXIS_STATE_ENCODER_OFFSET_CALIBRATION;
                 task_chain_[pos++] = AXIS_STATE_IDLE;
             } else if (requested_state_ != AXIS_STATE_UNDEFINED) {
@@ -459,27 +445,6 @@ void Axis::run_state_machine_loop() {
                 //if (odrv.any_error())
                 //    goto invalid_state_label;
                 status = motor_.run_calibration();
-            } break;
-
-            case AXIS_STATE_ENCODER_INDEX_SEARCH: {
-                //if (odrv.any_error())
-                //    goto invalid_state_label;
-                if (!motor_.is_calibrated_)
-                    goto invalid_state_label;
-
-                status = encoder_.run_index_search();
-            } break;
-
-            case AXIS_STATE_ENCODER_DIR_FIND: {
-                //if (odrv.any_error())
-                //    goto invalid_state_label;
-                if (!motor_.is_calibrated_)
-                    goto invalid_state_label;
-
-                status = encoder_.run_direction_find();
-                // Help facilitate encoder.is_ready without reboot
-                if (status)
-                    encoder_.apply_config(motor_.config_.motor_type);
             } break;
 
             case AXIS_STATE_HOMING: {
