@@ -1538,21 +1538,6 @@ valuetypes:
           Endstops must be enabled to use this feature.
   ODrive.Encoder.Mode:
     values:
-      SPI_ABS_CUI:
-        value: 0x100
-        doc: Compatible with CUI AMT23xx
-      SPI_ABS_AMS:
-        value: 0x101
-        doc: Compatible with AMS AS5047P, AS5048A/AS5048B (no daisy chain support)
-      SPI_ABS_AEAT:
-        value: 0x102
-        doc: Supports AEAT-8800
-      SPI_ABS_RLS:
-        value: 0x103
-        doc: Supports RLS Orbis Encoders
-      SPI_ABS_MA732:
-        value: 0x104
-        doc: MagAlpha MA732 magnetic encoder
       SPI_ABS_MT6826S:
         value: 0x105
         doc: MT6826S 15-bit magnetic encoder over SPI

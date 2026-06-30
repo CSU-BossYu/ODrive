@@ -108,8 +108,6 @@ public:
     bool pos_estimate_valid_ = false;
     bool vel_estimate_valid_ = false;
 
-    bool abs_spi_start_transaction();
-    void abs_spi_cb(bool success);
     static void mt6826s_spi_cb(void* ctx, const Mt6826sSpi::Sample& sample, bool success);
     void handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool success);
     static void mt6826s_spi_pair_cb(void* ctx, const Mt6826sSpiPair::PairSample& sample, bool success);
@@ -127,11 +125,6 @@ public:
     Mode mode_ = MODE_SPI_ABS_MT6826S_VERNIER;
     Stm32Gpio abs_spi_cs_gpio_;
     Stm32Gpio abs_spi_aux_cs_gpio_;
-    uint32_t abs_spi_cr1;
-    uint32_t abs_spi_cr2;
-    uint16_t abs_spi_dma_tx_[1] = {0xFFFF};
-    uint16_t abs_spi_dma_rx_[1];
-    Stm32SpiArbiter::SpiTask spi_task_;
     Mt6826sSpi mt6826s_spi_;
     Mt6826sSpi mt6826s_aux_spi_;
     Mt6826sSpiPair mt6826s_spi_pair_;
