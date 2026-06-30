@@ -41,7 +41,6 @@ AXIS_STATE_LOCKIN_SPIN                   = 9
 AXIS_STATE_HOMING                        = 11
 
 # ODrive.Encoder.Mode
-ENCODER_MODE_SINCOS                      = 2
 ENCODER_MODE_SPI_ABS_CUI                 = 256
 ENCODER_MODE_SPI_ABS_AMS                 = 257
 ENCODER_MODE_SPI_ABS_AEAT                = 258
@@ -184,7 +183,6 @@ class AxisState(enum.Enum):
     LOCKIN_SPIN                              = 9
     HOMING                                   = 11
 class EncoderMode(enum.Enum):
-    SINCOS                                   = 2
     SPI_ABS_CUI                              = 256
     SPI_ABS_AMS                              = 257
     SPI_ABS_AEAT                             = 258

@@ -531,7 +531,6 @@ static bool is_valid_motor_type(uint32_t value) {
 
 static bool is_valid_encoder_mode(uint32_t value) {
     switch (value) {
-        case Encoder::MODE_SINCOS:
         case Encoder::MODE_SPI_ABS_CUI:
         case Encoder::MODE_SPI_ABS_AMS:
         case Encoder::MODE_SPI_ABS_AEAT:

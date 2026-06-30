@@ -29,8 +29,6 @@ bool Encoder::apply_config(ODriveIntf::MotorIntf::MotorType motor_type) {
     update_pll_gains();
 
     if (config_.pre_calibrated) {
-        if (config_.mode == Encoder::MODE_SINCOS)
-            is_ready_ = true;
         if (motor_type == Motor::MOTOR_TYPE_ACIM)
             is_ready_ = true;
     }
@@ -270,11 +268,6 @@ bool Encoder::run_offset_calibration() {
 
 void Encoder::sample_now() {
     switch (mode_) {
-        case MODE_SINCOS: {
-            sincos_sample_s_ = get_adc_relative_voltage(get_gpio(config_.sincos_gpio_pin_sin)) - 0.5f;
-            sincos_sample_c_ = get_adc_relative_voltage(get_gpio(config_.sincos_gpio_pin_cos)) - 0.5f;
-        } break;
-
         case MODE_SPI_ABS_AMS:
         case MODE_SPI_ABS_CUI:
         case MODE_SPI_ABS_AEAT:
@@ -636,17 +629,6 @@ bool Encoder::update() {
     int32_t pos_abs_latched = pos_abs_; //LATCH
 
     switch (mode_) {
-        case MODE_SINCOS: {
-            float phase = fast_atan2(sincos_sample_s_, sincos_sample_c_);
-            int fake_count = (int)(1000.0f * phase);
-            //CPR = 6283 = 2pi * 1k
-
-            delta_enc = fake_count - count_in_cpr_;
-            delta_enc = mod(delta_enc, 6283);
-            if (delta_enc > 6283/2)
-                delta_enc -= 6283;
-        } break;
-        
         case MODE_SPI_ABS_RLS:
         case MODE_SPI_ABS_AMS:
         case MODE_SPI_ABS_CUI: 

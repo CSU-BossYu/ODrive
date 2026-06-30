@@ -122,30 +122,6 @@ std::tuple<float, float, float, bool> SVM(float alpha, float beta) {
     return {tA, tB, tC, result_valid};
 }
 
-// based on https://math.stackexchange.com/a/1105038/81278
-float fast_atan2(float y, float x) {
-    // a := min (|x|, |y|) / max (|x|, |y|)
-    float abs_y = std::abs(y);
-    float abs_x = std::abs(x);
-    // inject FLT_MIN in denominator to avoid division by zero
-    float a = std::min(abs_x, abs_y) / (std::max(abs_x, abs_y) + std::numeric_limits<float>::min());
-    // s := a * a
-    float s = a * a;
-    // r := ((-0.0464964749 * s + 0.15931422) * s - 0.327622764) * s * a + a
-    float r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a;
-    // if |y| > |x| then r := 1.57079637 - r
-    if (abs_y > abs_x)
-        r = 1.57079637f - r;
-    // if x < 0 then r := 3.14159274 - r
-    if (x < 0.0f)
-        r = 3.14159274f - r;
-    // if y < 0 then r := -r
-    if (y < 0.0f)
-        r = -r;
-
-    return r;
-}
-
 // @brief: Returns how much time is left until the deadline is reached.
 // If the deadline has already passed, the return value is 0 (except if
 // the deadline is very far in the past)

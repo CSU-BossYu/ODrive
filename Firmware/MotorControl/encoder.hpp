@@ -31,9 +31,6 @@ public:
         bool enable_phase_interpolation = true; // Use velocity to interpolate inside the count state
         uint16_t abs_spi_cs_gpio_pin = 1;
         uint16_t abs_spi_aux_cs_gpio_pin = 4;
-        uint16_t sincos_gpio_pin_sin = 3;
-        uint16_t sincos_gpio_pin_cos = 4;
-
         float vernier_main_ratio = 1.0f;
         float vernier_aux_ratio = 1.0f;
         float vernier_main_offset = 0.0f;
@@ -110,9 +107,6 @@ public:
 
     bool pos_estimate_valid_ = false;
     bool vel_estimate_valid_ = false;
-
-    float sincos_sample_s_ = 0.0f;
-    float sincos_sample_c_ = 0.0f;
 
     bool abs_spi_start_transaction();
     void abs_spi_cb(bool success);

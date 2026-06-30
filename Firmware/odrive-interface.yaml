@@ -1354,12 +1354,6 @@ interfaces:
               The speed the motor turns during encoder offset calibration.
               This is in the electrical frame, so a 7pp motor rotating 1 mechanical revolution in 2 sec would be set to `(7 * 2*pi) / 2`
             default: 4pi rad/s
-          sincos_gpio_pin_sin:
-            type: uint16
-            doc: Analog sine signal of a sin/cos encoder. The corresponding GPIO must be in `GPIO_MODE_ANALOG_IN`.
-          sincos_gpio_pin_cos:
-            type: uint16
-            doc: Analog cosine signal of a sin/cos encoder. The corresponding GPIO must be in `GPIO_MODE_ANALOG_IN`.
     functions:
       set_linear_count:
         in:
@@ -1544,8 +1538,6 @@ valuetypes:
           Endstops must be enabled to use this feature.
   ODrive.Encoder.Mode:
     values:
-      SINCOS:
-        value: 2
       SPI_ABS_CUI:
         value: 0x100
         doc: Compatible with CUI AMT23xx

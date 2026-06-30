@@ -65,7 +65,6 @@ constexpr float sqrt3_by_2 = 0.86602540378f;
 
 // Function prototypes for implementations in utils.cpp
 std::tuple<float, float, float, bool> SVM(float alpha, float beta);
-float fast_atan2(float y, float x);
 uint32_t deadline_to_timeout(uint32_t deadline_ms);
 uint32_t timeout_to_deadline(uint32_t timeout_ms);
 int is_in_the_future(uint32_t time_ms);
