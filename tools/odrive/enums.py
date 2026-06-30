@@ -58,7 +58,6 @@ INPUT_MODE_POS_FILTER                    = 3
 INPUT_MODE_MIX_CHANNELS                  = 4
 INPUT_MODE_TRAP_TRAJ                     = 5
 INPUT_MODE_TORQUE_RAMP                   = 6
-INPUT_MODE_MIRROR                        = 7
 INPUT_MODE_TUNING                        = 8
 INPUT_MODE_MIT                           = 9
 
@@ -131,8 +130,8 @@ CONTROLLER_ERROR_NONE                    = 0x00000000
 CONTROLLER_ERROR_OVERSPEED               = 0x00000001
 CONTROLLER_ERROR_INVALID_INPUT_MODE      = 0x00000002
 CONTROLLER_ERROR_UNSTABLE_GAIN           = 0x00000004
-CONTROLLER_ERROR_INVALID_MIRROR_AXIS     = 0x00000008
-CONTROLLER_ERROR_INVALID_LOAD_ENCODER    = 0x00000010
+CONTROLLER_ERROR_RESERVED_0X08           = 0x00000008
+CONTROLLER_ERROR_RESERVED_0X10           = 0x00000010
 CONTROLLER_ERROR_INVALID_ESTIMATE        = 0x00000020
 CONTROLLER_ERROR_INVALID_CIRCULAR_RANGE  = 0x00000040
 CONTROLLER_ERROR_SPINOUT_DETECTED        = 0x00000080
@@ -193,7 +192,6 @@ class InputMode(enum.Enum):
     MIX_CHANNELS                             = 4
     TRAP_TRAJ                                = 5
     TORQUE_RAMP                              = 6
-    MIRROR                                   = 7
     TUNING                                   = 8
     MIT                                      = 9
 class MotorType(enum.Enum):
@@ -260,8 +258,8 @@ class ControllerError(enum.IntFlag):
     OVERSPEED                                = 0x00000001
     INVALID_INPUT_MODE                       = 0x00000002
     UNSTABLE_GAIN                            = 0x00000004
-    INVALID_MIRROR_AXIS                      = 0x00000008
-    INVALID_LOAD_ENCODER                     = 0x00000010
+    RESERVED_0X08                            = 0x00000008
+    RESERVED_0X10                            = 0x00000010
     INVALID_ESTIMATE                         = 0x00000020
     INVALID_CIRCULAR_RANGE                   = 0x00000040
     SPINOUT_DETECTED                         = 0x00000080

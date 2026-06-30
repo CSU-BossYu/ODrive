@@ -230,20 +230,10 @@ bool Axis::run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_arme
 bool Axis::start_closed_loop_control() {
     // Hook up the data paths between the components
     CRITICAL_SECTION() {
-        if (controller_.config_.load_encoder_axis < AXIS_COUNT) {
-            Axis* ax = &axes[controller_.config_.load_encoder_axis];
-            controller_.pos_estimate_circular_src_.connect_to(&ax->encoder_.pos_circular_);
-            controller_.pos_wrap_src_.connect_to(&controller_.config_.circular_setpoint_range);
-            controller_.pos_estimate_linear_src_.connect_to(&ax->encoder_.pos_estimate_);
-            controller_.vel_estimate_src_.connect_to(&ax->encoder_.vel_estimate_);
-        } else {
-            controller_.pos_estimate_circular_src_.disconnect();
-            controller_.pos_estimate_linear_src_.disconnect();
-            controller_.pos_wrap_src_.disconnect();
-            controller_.vel_estimate_src_.disconnect();
-            controller_.set_error(Controller::ERROR_INVALID_LOAD_ENCODER);
-            return false;
-        }
+        controller_.pos_estimate_circular_src_.connect_to(&encoder_.pos_circular_);
+        controller_.pos_wrap_src_.connect_to(&controller_.config_.circular_setpoint_range);
+        controller_.pos_estimate_linear_src_.connect_to(&encoder_.pos_estimate_);
+        controller_.vel_estimate_src_.connect_to(&encoder_.vel_estimate_);
 
         // To avoid any transient on startup, we intialize the setpoint to be the current position
         controller_.control_mode_updated();
@@ -373,10 +363,6 @@ bool Axis::run_homing() {
 
     // Set the current position to 0, the target to zero, and make sure we're path planning from 0 to 0
     encoder_.set_linear_count(0); 
-    const auto load_encoder_axis = controller_.config_.load_encoder_axis;
-    if(load_encoder_axis != axis_num_ && load_encoder_axis < AXIS_COUNT) {
-        axes[load_encoder_axis].encoder_.set_linear_count(0);
-    }
     controller_.input_pos_ = 0.0f;
     controller_.pos_setpoint_ = 0.0f;
     controller_.vel_setpoint_ = 0.0f;

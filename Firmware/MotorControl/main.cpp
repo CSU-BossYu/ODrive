@@ -127,7 +127,6 @@ static void config_clear_all() {
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         encoders[i].config_ = {};
         axes[i].controller_.config_ = {};
-        axes[i].controller_.config_.load_encoder_axis = i;
         axes[i].trap_traj_.config_ = {};
         axes[i].min_endstop_.config_ = {};
         axes[i].max_endstop_.config_ = {};

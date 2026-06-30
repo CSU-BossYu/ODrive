@@ -220,17 +220,6 @@ interfaces:
               bits 7:0:   priority (0 is highest priority)
               0xffffffff if the specified number is not a valid interrupt number.
         doc: Returns information about the specified interrupt number.
-      get_dma_status:
-        in: {stream_num: {type: uint8, doc: '0...7: DMA1 streams, 8...15: DMA2 streams'}}
-        out:
-          status:
-            type: uint32
-            doc: |
-              bit 31:     zero if the stream's configuration is equal to the reset state
-              bits 4:2:   channel
-              bits 1:0:   priority (3 is highest priority)
-              0xffffffff if the specified number is not a valid DMA stream number.
-        doc: Returns information about the specified DMA stream.
       get_gpio_states:
         out: {status: {type: uint32}}
         doc: Returns the logic states of all GPIOs. Bit i represents the state of GPIOi.
@@ -989,10 +978,10 @@ interfaces:
               smooth out `input_pos` commands to give smoother motion.
           UNSTABLE_GAIN:
             doc: "`motor.config.bandwidth` was set too high to create a stable controller."
-          INVALID_MIRROR_AXIS:
-            doc: An invalid `axis_to_mirror` was selected
-          INVALID_LOAD_ENCODER:
-            doc: An invalid `load_encoder_axis` was selected
+          RESERVED_0X08:
+            doc: Reserved legacy controller error bit.
+          RESERVED_0X10:
+            doc: Reserved legacy controller error bit.
           INVALID_ESTIMATE:
             doc: Indicates the encoder estimation module declined to output a linear position or velocity value and the exception was caught.
           INVALID_CIRCULAR_RANGE:
@@ -1114,19 +1103,6 @@ interfaces:
           inertia:
             type: float32
             unit: N·m/(turn/s^2)
-          axis_to_mirror: 
-            type: uint8
-            doc: The axis used for mirroring when in `INPUT_MODE_MIRROR`
-          mirror_ratio: 
-            type: float32
-            doc: The ratio applied to position and velocity movements of the mirrored axis.  To reverse movements, use a negative value
-          torque_mirror_ratio: 
-            type: float32
-            doc: The ratio applied to torque values of the mirrored axis.
-          load_encoder_axis:
-            type: uint8
-            # TODO: this is meaningless for a user. Should there be a separate developer note?
-            doc: Default depends on Axis number and is set in load_configuration()
           input_filter_bandwidth:
             type: float32
             unit: rad/s
@@ -1643,32 +1619,15 @@ valuetypes:
 
           ### Valid Control Modes:
           * `CONTROL_MODE_TORQUE_CONTROL`
-      MIRROR:
-        brief: Implements "electronic mirroring".
-        doc: |
-          This is like electronic camming, but you can only mirror exactly the
-          movements of the other motor, according to a fixed ratio.
-
-          [![](http://img.youtube.com/vi/D4_vBtyVVzM/0.jpg)](http://www.youtube.com/watch?v=D4_vBtyVVzM "Example Mirroring Video")
-
-          ### Configuration Values
-          * `config.axis_to_mirror`
-          * `config.mirror_ratio`
-
-          ### Valid Inputs
-          * None.  Inputs are taken directly from the other axis encoder estimates
-
-          ### Valid Control modes
-          * `CONTROL_MODE_POSITION_CONTROL`
-          * `CONTROL_MODE_VELOCITY_CONTROL`
-          * `CONTROL_MODE_TORQUE_CONTROL`
       TUNING:
+        value: 8
         brief: Implements a tuning mode
         doc: |
           Used for tuning your odrive, this mode allows the user to set different frequencies.
           Set control_mode for the loop you want to tune, then set the frequency desired.
           The ODrive will send a 1 turn amplitude sine wave to the controller with the given frequency and phase.
       MIT:
+        value: 9
         brief: MIT-style packed position/velocity/torque control (per-frame kp/kd).
         doc: |
           Accepts a single 8-byte MIT-style packed frame (compatible with the
