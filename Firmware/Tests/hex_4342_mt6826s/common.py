@@ -14,6 +14,7 @@ CMD_GET_ENCODER_ESTIMATES = 0x009
 CMD_SET_CONTROLLER_MODES = 0x00B
 CMD_SET_INPUT_POS = 0x00C
 CMD_SET_INPUT_VEL = 0x00D
+CMD_SET_INPUT_TORQUE = 0x00E
 CMD_SET_LIMITS = 0x00F
 CMD_START_ANTICOGGING = 0x010
 CMD_GET_IQ = 0x014
@@ -33,6 +34,7 @@ AXIS_STATE_CLOSED_LOOP_CONTROL = 8
 
 CONTROL_MODE_VELOCITY_CONTROL = 2
 CONTROL_MODE_POSITION_CONTROL = 3
+CONTROL_MODE_TORQUE_CONTROL = 1
 INPUT_MODE_PASSTHROUGH = 1
 
 EXT_TYPE_FLOAT32 = 1
@@ -241,6 +243,10 @@ def set_controller_modes(bus, node_id, control_mode, input_mode, extended_id=Fal
 
 def set_input_vel(bus, node_id, vel_turns_per_s, torque_ff=0.0, extended_id=False):
     send(bus, node_id, CMD_SET_INPUT_VEL, struct.pack("<ff", vel_turns_per_s, torque_ff), extended_id)
+
+
+def set_input_torque(bus, node_id, torque_nm, extended_id=False):
+    send(bus, node_id, CMD_SET_INPUT_TORQUE, struct.pack("<f", torque_nm), extended_id)
 
 
 def set_input_pos(bus, node_id, pos_turns, vel_ff_turns_per_s=0.0, torque_ff=0.0, extended_id=False):
