@@ -72,3 +72,45 @@ Run with a current-limited 24 V bus supply.
 
 Position mode is not part of this gate until the vernier false-wrap issue is
 closed.
+
+## Algorithm link gates
+
+These gates are intentionally narrower than the production hardware gate above.
+They prove that the retained control algorithms and CAN command surfaces are
+still reachable after trimming. Keep the limits conservative and return to
+IDLE after each test.
+
+### Stage A: torque mode
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_torque_mode_test.py --bitrate 1000000 --torque 0.005 --duration 1.0 --current-limit 3.0 --clear-at-end
+```
+
+### Stage C: position passthrough
+
+Position mode is currently a link/entry test only. Do not use it as an
+anticogging or production-position gate until the vernier position-following
+issue is closed.
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_position_passthrough_test.py --bitrate 1000000 --step 0 --pos-gain 0 --duration 0.5 --settle-duration 0.5 --current-limit 3.0 --clear-at-end
+```
+
+### Stage D: anticogging CAN link
+
+This gate checks the anticogging CAN status/configuration surface without
+starting a full cogging-map calibration sweep. Full calibration depends on
+qualified position following and should remain a separate hardware test.
+
+Read-only link test:
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_anticogging_link_test.py --bitrate 1000000 --clear-at-end
+```
+
+Optional setter echo test while IDLE. This writes the current anticogging enable
+and threshold values back unchanged, then verifies that they did not change:
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_anticogging_link_test.py --bitrate 1000000 --write-same-config --clear-at-end
+```
