@@ -86,6 +86,24 @@ IDLE after each test.
 python Firmware\Tests\hex_4342_mt6826s\run_torque_mode_test.py --bitrate 1000000 --torque 0.005 --duration 1.0 --current-limit 3.0 --clear-at-end
 ```
 
+### Stage B: MIT packed-control mode
+
+This gate streams conservative neutral `0x01F Set_MIT_Control` frames in
+`TORQUE_CONTROL + INPUT_MODE_MIT`, then returns to IDLE.
+It requires valid runtime motor calibration and encoder direction. If the board
+was reset and calibration values read back as zero, rerun the low-current motor
+and encoder offset calibration gates first.
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_mit_mode_link_test.py --bitrate 1000000 --set-precalibrated-if-needed --clear-at-start --clear-at-end
+```
+
+Optional tiny torque-feedforward link test:
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_mit_mode_link_test.py --bitrate 1000000 --set-precalibrated-if-needed --torque-ff 0.005 --clear-at-start --clear-at-end
+```
+
 ### Stage C: position passthrough
 
 Position mode is currently a link/entry test only. Do not use it as an
