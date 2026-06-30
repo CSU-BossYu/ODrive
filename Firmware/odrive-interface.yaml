@@ -1225,13 +1225,8 @@ interfaces:
               Confirm that your encoder is plugged into the right pins on the
               ODrive board.
           UNSUPPORTED_ENCODER_MODE:
-          ILLEGAL_HALL_STATE:
-            doc: |
-              Hall effect encoder only have 6 valid states out of 8 (2^3) possible states.
-              An invalid state can be caused by noise or a hardware fault. If you get this
-              error and you are sure that your electrical connections are correct, add
-              22nF capacitors between the encoder A,B,Z pins and ground to filter out noise.
           INDEX_NOT_FOUND_YET:
+            bit: 5
             doc: |
               Check that your encoder is a model that has an index pulse. If
               your encoder does not have a wire connected to pin Z on your
@@ -1239,7 +1234,6 @@ interfaces:
           ABS_SPI_TIMEOUT:
           ABS_SPI_COM_FAIL:
           ABS_SPI_NOT_READY:
-          HALL_NOT_CALIBRATED_YET:
       is_ready: readonly bool
       index_found: readonly bool
       shadow_count: 
@@ -1274,7 +1268,6 @@ interfaces:
         type: readonly float32
         unit: counts
         doc: Circular position delta of the encoder in the most recent loop. Primarily for debug purposes, it indicates much the encoder changed since the last time it was checked.
-      hall_state: readonly uint8
       vel_estimate: 
         type: readonly float32
         c_getter: vel_estimate_.any().value_or(0.0f)
@@ -1384,11 +1377,6 @@ interfaces:
               The speed the motor turns during encoder offset calibration.
               This is in the electrical frame, so a 7pp motor rotating 1 mechanical revolution in 2 sec would be set to `(7 * 2*pi) / 2`
             default: 4pi rad/s
-          ignore_illegal_hall_state: 
-            type: bool
-            doc: Ignore the error "Illegal Hall State"
-          hall_polarity: uint8
-          hall_polarity_calibrated: bool
           sincos_gpio_pin_sin:
             type: uint16
             doc: Analog sine signal of a sin/cos encoder. The corresponding GPIO must be in `GPIO_MODE_ANALOG_IN`.
@@ -1583,21 +1571,11 @@ valuetypes:
         brief: Run axis homing function.
         doc:
           Endstops must be enabled to use this feature.
-      ENCODER_HALL_POLARITY_CALIBRATION:
-        brief: Rotate the motor in lockin and calibrate hall polarity
-        doc:
-          ODrive assumes 120 degree electrical hall spacing. This routine determines if that
-          is the case and sets the polarity if the halls are on 60 degree electrical spacing
-      ENCODER_HALL_PHASE_CALIBRATION:
-        brief: Rotate the motor for 30s to calibrate hall sensor edge offsets
-        doc:
-          The phase offset is not calibrated at this time, so the map is only relative
-
   ODrive.Encoder.Mode:
     values:
       INCREMENTAL:
-      HALL:
       SINCOS:
+        value: 2
       SPI_ABS_CUI:
         value: 0x100
         doc: Compatible with CUI AMT23xx

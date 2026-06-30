@@ -81,9 +81,6 @@ Encoder encoders[AXIS_COUNT] = {
     {
         &htim3, // timer
         {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // index_gpio
-        {M0_ENC_A_GPIO_Port, M0_ENC_A_Pin}, // hallA_gpio
-        {M0_ENC_B_GPIO_Port, M0_ENC_B_Pin}, // hallB_gpio
-        {M0_ENC_Z_GPIO_Port, M0_ENC_Z_Pin}, // hallC_gpio
         &spi3_arbiter // spi_arbiter
     }
 };

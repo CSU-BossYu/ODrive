@@ -44,12 +44,9 @@ AXIS_STATE_CLOSED_LOOP_CONTROL           = 8
 AXIS_STATE_LOCKIN_SPIN                   = 9
 AXIS_STATE_ENCODER_DIR_FIND              = 10
 AXIS_STATE_HOMING                        = 11
-AXIS_STATE_ENCODER_HALL_POLARITY_CALIBRATION = 12
-AXIS_STATE_ENCODER_HALL_PHASE_CALIBRATION = 13
 
 # ODrive.Encoder.Mode
 ENCODER_MODE_INCREMENTAL                 = 0
-ENCODER_MODE_HALL                        = 1
 ENCODER_MODE_SINCOS                      = 2
 ENCODER_MODE_SPI_ABS_CUI                 = 256
 ENCODER_MODE_SPI_ABS_AMS                 = 257
@@ -158,12 +155,10 @@ ENCODER_ERROR_UNSTABLE_GAIN              = 0x00000001
 ENCODER_ERROR_CPR_POLEPAIRS_MISMATCH     = 0x00000002
 ENCODER_ERROR_NO_RESPONSE                = 0x00000004
 ENCODER_ERROR_UNSUPPORTED_ENCODER_MODE   = 0x00000008
-ENCODER_ERROR_ILLEGAL_HALL_STATE         = 0x00000010
 ENCODER_ERROR_INDEX_NOT_FOUND_YET        = 0x00000020
 ENCODER_ERROR_ABS_SPI_TIMEOUT            = 0x00000040
 ENCODER_ERROR_ABS_SPI_COM_FAIL           = 0x00000080
 ENCODER_ERROR_ABS_SPI_NOT_READY          = 0x00000100
-ENCODER_ERROR_HALL_NOT_CALIBRATED_YET    = 0x00000200
 class GpioMode(enum.Enum):
     DIGITAL                                  = 0
     DIGITAL_PULL_UP                          = 1
@@ -200,11 +195,8 @@ class AxisState(enum.Enum):
     LOCKIN_SPIN                              = 9
     ENCODER_DIR_FIND                         = 10
     HOMING                                   = 11
-    ENCODER_HALL_POLARITY_CALIBRATION        = 12
-    ENCODER_HALL_PHASE_CALIBRATION           = 13
 class EncoderMode(enum.Enum):
     INCREMENTAL                              = 0
-    HALL                                     = 1
     SINCOS                                   = 2
     SPI_ABS_CUI                              = 256
     SPI_ABS_AMS                              = 257
@@ -304,9 +296,7 @@ class EncoderError(enum.IntFlag):
     CPR_POLEPAIRS_MISMATCH                   = 0x00000002
     NO_RESPONSE                              = 0x00000004
     UNSUPPORTED_ENCODER_MODE                 = 0x00000008
-    ILLEGAL_HALL_STATE                       = 0x00000010
     INDEX_NOT_FOUND_YET                      = 0x00000020
     ABS_SPI_TIMEOUT                          = 0x00000040
     ABS_SPI_COM_FAIL                         = 0x00000080
     ABS_SPI_NOT_READY                        = 0x00000100
-    HALL_NOT_CALIBRATED_YET                  = 0x00000200
