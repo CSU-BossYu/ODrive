@@ -102,6 +102,10 @@ Frame length: 8 bytes. Big-endian AK/T-Motor-compatible bit packing.
 | `kd` | 12 | `0 .. 5` | Nm/(rad/s) |
 | `t_ff` | 12 | `-18 .. +18` | Nm |
 
+In MT6826S Vernier mode these position, velocity, gain, and torque units refer
+to the output shaft. Firmware converts the resulting torque to motor-side
+torque by the configured main ratio before FOC.
+
 Layout:
 
 ```text
@@ -203,6 +207,7 @@ Vernier encoder items:
 | `0x2D` | float32 | vernier_err_accept |
 | `0x2E` | float32 | vernier_err_reject |
 | `0x33` | uint32 | vernier_output_reversed, bool |
+| `0x34` | uint32 | vernier_use_phase_difference, bool |
 
 ## Anticogging extended items
 

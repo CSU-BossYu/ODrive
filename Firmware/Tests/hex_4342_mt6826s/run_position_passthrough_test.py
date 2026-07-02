@@ -21,6 +21,7 @@ from common import (
     set_limits,
     set_pos_gain,
     set_requested_state,
+    set_vel_gains,
     wait_heartbeat,
 )
 
@@ -154,9 +155,11 @@ def main():
     parser.add_argument("--duration", type=float, default=1.2, help="Duration at each nonzero target.")
     parser.add_argument("--settle-duration", type=float, default=0.8, help="Duration at home/current target.")
     parser.add_argument("--pos-gain", type=float, default=2.0)
-    parser.add_argument("--vel-limit", type=float, default=0.3)
+    parser.add_argument("--vel-gain", type=float, default=42.0, help="Output-shaft torque per output turn/s.")
+    parser.add_argument("--vel-integrator-gain", type=float, default=2.1, help="Output-shaft torque per output turn/s/s.")
+    parser.add_argument("--vel-limit", type=float, default=0.1)
     parser.add_argument("--current-limit", type=float, default=3.0)
-    parser.add_argument("--max-velocity", type=float, default=0.6)
+    parser.add_argument("--max-velocity", type=float, default=0.2)
     parser.add_argument("--max-position-error", type=float, default=0.05)
     parser.add_argument("--max-iq-set", type=float, default=2.0)
     parser.add_argument("--min-bus-voltage", type=float, default=20.0)
@@ -181,6 +184,7 @@ def main():
         time.sleep(0.1)
         set_limits(bus, args.node_id, args.vel_limit, args.current_limit, args.extended_id)
         set_pos_gain(bus, args.node_id, args.pos_gain, args.extended_id)
+        set_vel_gains(bus, args.node_id, args.vel_gain, args.vel_integrator_gain, args.extended_id)
         set_controller_modes(bus, args.node_id, CONTROL_MODE_POSITION_CONTROL, INPUT_MODE_PASSTHROUGH, args.extended_id)
         set_input_pos(bus, args.node_id, home, 0.0, 0.0, args.extended_id)
 
@@ -212,7 +216,7 @@ def main():
             raise RuntimeError("Final status reports axis error")
         print("PASS: position passthrough test completed")
         return 0
-    except Exception:
+    except BaseException:
         print("Stopping motor due to failure...")
         set_requested_state(bus, args.node_id, AXIS_STATE_IDLE, args.extended_id)
         if args.clear_at_end:

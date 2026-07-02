@@ -90,6 +90,27 @@ def get_encoder(bus, args, timeout=1.0):
     return data, values[0], values[1]
 
 
+def get_stable_encoder(bus, args, label, samples=12, period=0.1):
+    readings = []
+    for _ in range(samples):
+        _, pos, vel = get_encoder(bus, args, timeout=1.0)
+        if not math.isfinite(pos) or not math.isfinite(vel):
+            raise RuntimeError(f"{label}: non-finite encoder estimate pos={pos} vel={vel}")
+        readings.append((pos, vel))
+        time.sleep(period)
+
+    recent = readings[-5:]
+    pos_span = max(pos for pos, _ in recent) - min(pos for pos, _ in recent)
+    pos, vel = recent[-1]
+    print(
+        f"{label}: pos={pos:.6f} turn vel={vel:.6f} turn/s "
+        f"recent_span={pos_span:.6f} turn"
+    )
+    if pos_span > 0.002:
+        raise RuntimeError(f"{label}: encoder position is not stationary")
+    return pos, vel
+
+
 def read_anticogging_snapshot(bus, args):
     flags_resp = get_anticogging_status(bus, args.node_id, 0x01, extended_id=args.extended_id, timeout=1.0)
     index_resp = get_anticogging_status(bus, args.node_id, 0x02, extended_id=args.extended_id, timeout=1.0)
@@ -129,6 +150,8 @@ def monitor_anticogging(bus, args):
     max_abs_iq = 0.0
     sample_count = 0
     max_index = 0
+    last_index = None
+    last_index_change = start
 
     while time.monotonic() - start < args.max_duration:
         now = time.monotonic()
@@ -145,6 +168,15 @@ def monitor_anticogging(bus, args):
             max_abs_iq = max(max_abs_iq, abs(iq_set))
 
         index = snapshot["index"]
+        if index != last_index:
+            last_index = index
+            last_index_change = now
+        elif now - last_index_change > args.stall_timeout:
+            raise RuntimeError(
+                f"Anticogging stalled at index {index} for "
+                f"{now - last_index_change:.1f}s; pos={pos:.6f}, vel={vel:.6f}, "
+                f"Iq_set={iq_set:.3f}, Iq_meas={iq_meas:.3f}"
+            )
         max_index = max(max_index, index)
         progress = min(100.0, index / 3600.0 * 100.0)
 
@@ -198,6 +230,7 @@ def main():
     parser.add_argument("--max-duration", type=float, default=900.0)
     parser.add_argument("--sample-period", type=float, default=0.10)
     parser.add_argument("--print-period", type=float, default=1.0)
+    parser.add_argument("--stall-timeout", type=float, default=15.0)
     parser.add_argument("--zero-linear-count", action="store_true", help="Set encoder linear count to 0 before entering position control.")
     parser.add_argument("--set-precalibrated-if-needed", action="store_true")
     parser.add_argument("--leave-closed-loop", action="store_true")
@@ -218,14 +251,12 @@ def main():
         if bus_vi[1] is not None:
             print(f"Bus: voltage={bus_vi[1][0]:.3f} V current={bus_vi[1][1]:.3f} A raw={bus_vi[0].hex(' ')}")
 
-        _, pos, vel = get_encoder(bus, args, timeout=1.0)
-        print(f"Initial encoder: pos={pos:.6f} turn vel={vel:.6f} turn/s")
+        pos, vel = get_stable_encoder(bus, args, "Initial encoder")
         if args.zero_linear_count:
             print("Setting encoder linear count to 0 before position-control entry...")
             set_linear_count(bus, args.node_id, 0, args.extended_id)
             time.sleep(0.2)
-            _, pos, vel = get_encoder(bus, args, timeout=1.0)
-            print(f"Encoder after zero: pos={pos:.6f} turn vel={vel:.6f} turn/s")
+            pos, vel = get_stable_encoder(bus, args, "Encoder after zero")
 
         print("Configuring anticogging thresholds and resetting calibration state...")
         set_anticogging_param(bus, args, 0x03, EXT_TYPE_FLOAT32, value_float=args.calib_pos_threshold)
@@ -254,8 +285,9 @@ def main():
         print("Requesting CLOSED_LOOP_CONTROL...")
         set_requested_state(bus, args.node_id, AXIS_STATE_CLOSED_LOOP_CONTROL, args.extended_id)
         wait_for_state(bus, args, AXIS_STATE_CLOSED_LOOP_CONTROL, args.enter_timeout)
+        pos, vel = get_stable_encoder(bus, args, "Closed-loop hold")
         set_input_pos(bus, args.node_id, pos, 0.0, 0.0, args.extended_id)
-        time.sleep(0.5)
+        wait_for_state(bus, args, AXIS_STATE_CLOSED_LOOP_CONTROL, 1.5)
 
         print("Sending START_ANTICOGGING and monitoring calibration sweep...")
         start_anticogging(bus, args.node_id, args.extended_id)
@@ -274,7 +306,7 @@ def main():
             return 0
         print("WARN: anticogging calibration was triggered, but completion could not be confirmed over CAN.")
         return 2
-    except Exception:
+    except BaseException:
         print("Stopping motor due to failure...")
         set_requested_state(bus, args.node_id, AXIS_STATE_IDLE, args.extended_id)
         if args.clear_at_end:

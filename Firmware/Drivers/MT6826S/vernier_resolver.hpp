@@ -17,9 +17,9 @@
 //   main_corr = frac(main_phase - main_offset) = frac(main_ratio * x)
 //   aux_corr  = frac(aux_phase  - aux_offset)  = frac(aux_ratio  * x)
 //
-// For gear pairs where aux_ratio - main_ratio = 1, the direct phase-difference
+// For gear pairs where abs(aux_ratio - main_ratio) = 1, the direct phase-difference
 // path can be used:
-//   output_phase = frac(aux_corr - main_corr) = frac(x)
+//   output_phase = frac((aux_corr - main_corr) / (aux_ratio - main_ratio)) = frac(x)
 // This is the preferred path for the 41:42 / 42:1 reduction MT6826S layout.
 //
 // Output:
@@ -102,10 +102,10 @@ public:
         // This is a sanity guard against choosing an impossible Vernier branch.
         float max_abs_position_turns = 0.0f;
 
-        // If true, compute output position from the encoder phase difference
-        // and unwrap it over time. By default the output phase is
-        // frac(aux - main), matching a 41:42 gear pair where the phase
-        // difference is exactly the output shaft phase.
+        // If true, use the encoder phase difference to select the absolute
+        // output branch, then refine within that branch with the main phase.
+        // Runtime updates select the main-compatible branch nearest the
+        // main-phase prediction, preventing one-motor-turn branch jumps.
         bool use_phase_difference = false;
 
         // Reverse only the resolved output coordinate in phase-difference mode.

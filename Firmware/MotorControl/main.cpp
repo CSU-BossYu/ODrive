@@ -232,6 +232,7 @@ void ODrive::clear_errors() {
     for (auto& axis: axes) {
         axis.motor_.error_ = Motor::ERROR_NONE;
         axis.controller_.error_ = Controller::ERROR_NONE;
+        axis.controller_.clear_overspeed_snapshot();
         axis.encoder_.error_ = Encoder::ERROR_NONE;
         axis.encoder_.spi_error_rate_ = 0.0f;
         axis.error_ = Axis::ERROR_NONE;
@@ -411,23 +412,47 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
         axis.motor_.motor_thermistor_.update();
     }
 
+    bool encoder_update_ok = true;
     MEASURE_TIME(axis.task_times_.encoder_update)
-        axis.encoder_.update();
+        encoder_update_ok = axis.encoder_.update();
 
+    bool controller_update_ok = true;
     MEASURE_TIME(axis.task_times_.controller_update) {
-        if (!axis.controller_.update()) { // uses position and velocity from encoder
+        if (encoder_update_ok) {
+            controller_update_ok = axis.controller_.update(); // uses position and velocity from encoder
+        } else {
+            controller_update_ok = false;
+        }
+
+        if (!controller_update_ok) {
             axis.error_ |= Axis::ERROR_CONTROLLER_FAILED;
         }
+    }
+
+    const bool closed_loop_pipeline_ok =
+        encoder_update_ok && controller_update_ok &&
+        axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
+    if (axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL &&
+        !closed_loop_pipeline_ok) {
+        axis.motor_.disarm();
     }
 
     MEASURE_TIME(axis.task_times_.open_loop_controller_update)
         axis.open_loop_controller_.update(timestamp);
 
-    MEASURE_TIME(axis.task_times_.motor_update)
-        axis.motor_.update(timestamp); // uses torque from controller and phase_vel from encoder
+    MEASURE_TIME(axis.task_times_.motor_update) {
+        if (axis.current_state_ != Axis::AXIS_STATE_CLOSED_LOOP_CONTROL ||
+            closed_loop_pipeline_ok) {
+            axis.motor_.update(timestamp); // uses torque from controller and phase_vel from encoder
+        }
+    }
 
-    MEASURE_TIME(axis.task_times_.current_controller_update)
-        axis.motor_.current_control_.update(timestamp); // uses the output of controller_ or open_loop_contoller_ and encoder_ or acim_estimator_
+    MEASURE_TIME(axis.task_times_.current_controller_update) {
+        if (axis.current_state_ != Axis::AXIS_STATE_CLOSED_LOOP_CONTROL ||
+            closed_loop_pipeline_ok) {
+            axis.motor_.current_control_.update(timestamp); // uses the output of controller_ or open_loop_contoller_ and encoder_ or acim_estimator_
+        }
+    }
 
     // Tell the axis threads that the control loop has finished
     if (axis.thread_id_) {

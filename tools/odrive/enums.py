@@ -145,6 +145,7 @@ ENCODER_ERROR_UNSUPPORTED_ENCODER_MODE   = 0x00000008
 ENCODER_ERROR_ABS_SPI_TIMEOUT            = 0x00000040
 ENCODER_ERROR_ABS_SPI_COM_FAIL           = 0x00000080
 ENCODER_ERROR_ABS_SPI_NOT_READY          = 0x00000100
+ENCODER_ERROR_VERNIER_RESOLVER_FAIL      = 0x00000200
 class GpioMode(enum.Enum):
     DIGITAL                                  = 0
     DIGITAL_PULL_UP                          = 1
@@ -272,3 +273,4 @@ class EncoderError(enum.IntFlag):
     ABS_SPI_TIMEOUT                          = 0x00000040
     ABS_SPI_COM_FAIL                         = 0x00000080
     ABS_SPI_NOT_READY                        = 0x00000100
+    VERNIER_RESOLVER_FAIL                    = 0x00000200

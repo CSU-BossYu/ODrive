@@ -31,12 +31,13 @@ public:
         bool enable_phase_interpolation = true; // Use velocity to interpolate inside the count state
         uint16_t abs_spi_cs_gpio_pin = 1;
         uint16_t abs_spi_aux_cs_gpio_pin = 4;
-        float vernier_main_ratio = 1.0f;
-        float vernier_aux_ratio = 1.0f;
+        float vernier_main_ratio = 42.0f;
+        float vernier_aux_ratio = 41.0f;
         float vernier_main_offset = 0.0f;
         float vernier_aux_offset = 0.0f;
-        bool vernier_main_reversed = false;
+        bool vernier_main_reversed = true;
         bool vernier_aux_reversed = false;
+        bool vernier_use_phase_difference = true;
         bool vernier_output_reversed = false;
         int32_t vernier_virtual_cpr = 32768;
         float vernier_err_accept = 0.02f;
@@ -55,6 +56,7 @@ public:
         void set_vernier_aux_offset(float value) { vernier_aux_offset = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_main_reversed(bool value) { vernier_main_reversed = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_aux_reversed(bool value) { vernier_aux_reversed = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_use_phase_difference(bool value) { vernier_use_phase_difference = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_output_reversed(bool value) { vernier_output_reversed = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_err_accept(float value) { vernier_err_accept = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_err_reject(float value) { vernier_err_reject = value; parent->apply_vernier_resolver_config(); }
@@ -120,7 +122,17 @@ public:
     void apply_mt6826s_spi_config();
     VernierResolver::Config make_vernier_resolver_config() const;
     void apply_vernier_resolver_config();
-    void publish_vernier_output_estimate(float dt);
+    float controller_to_motor_direction() const;
+    float controller_torque_to_motor_torque_scale() const;
+    bool controller_feedback_ready() const;
+    float vernier_motor_turns_per_output_turn() const;
+    float vernier_output_direction_sign() const;
+    float vernier_output_position_from_main(float main_position_turns) const;
+    float vernier_output_velocity_from_main(float main_velocity_turns) const;
+    float normalized_main_phase_from_raw_phase(float raw_phase) const;
+    float normalized_main_velocity_from_raw_velocity(float raw_velocity) const;
+    void publish_vernier_output_estimate(float dt, float motor_vel_estimate_turns);
+    void reset_vernier_output_velocity_estimate();
     bool start_mt6826s_main_sample();
     bool start_mt6826s_pair_sample();
     bool abs_spi_pos_updated_ = false;
@@ -144,6 +156,15 @@ public:
         float encoder_vel_estimate = 0.0f;
         float encoder_pos_circular = 0.0f;
         uint32_t state = 0;
+        bool resolver_valid = false;
+        bool resolver_locked = false;
+        bool resolver_accepted_aux = false;
+        bool resolver_degraded = false;
+        bool output_estimate_valid = false;
+        float output_pos_estimate = 0.0f;
+        float output_vel_estimate = 0.0f;
+        float output_sample_dt = 0.0f;
+        uint32_t output_pair_sequence = 0;
         uint32_t main_error_count = 0;
         uint32_t aux_error_count = 0;
         uint32_t pair_error_count = 0;
@@ -168,12 +189,19 @@ public:
     float vernier_output_sample_dt_ = 0.0f;
     uint32_t vernier_output_pair_sequence_ = 0;
     bool vernier_output_estimate_valid_ = false;
+    float vernier_main_continuous_pos_ = 0.0f;
+    float vernier_last_main_phase_corr_ = 0.0f;
+    bool vernier_main_continuous_valid_ = false;
     uint32_t mt6826s_pair_sequence_ = 0;
     uint32_t mt6826s_vernier_sample_counter_ = 0;
     bool mt6826s_pair_valid_ = false;
 
-    constexpr float getCoggingRatio(){
-        return 1.0f / 3600.0f;
+    float getCoggingRatio() const {
+        return 1.0f / (3600.0f * vernier_motor_turns_per_output_turn());
+    }
+
+    float getCoggingCalibrationCpr() const {
+        return (float)config_.cpr * vernier_motor_turns_per_output_turn();
     }
 
 };

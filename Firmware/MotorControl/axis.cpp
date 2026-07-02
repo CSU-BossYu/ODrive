@@ -235,15 +235,26 @@ bool Axis::start_closed_loop_control() {
         controller_.pos_estimate_linear_src_.connect_to(&encoder_.pos_estimate_);
         controller_.vel_estimate_src_.connect_to(&encoder_.vel_estimate_);
 
+        encoder_.reset_vernier_output_velocity_estimate();
+        if (!encoder_.controller_feedback_ready()) {
+            encoder_.set_error(Encoder::ERROR_VERNIER_RESOLVER_FAIL);
+            error_ |= ERROR_ENCODER_FAILED;
+            return false;
+        }
+
         // To avoid any transient on startup, we intialize the setpoint to be the current position
-        controller_.control_mode_updated();
+        if (!controller_.control_mode_updated()) {
+            return false;
+        }
         controller_.input_pos_updated();
 
         // Avoid integrator windup issues
         controller_.vel_integrator_torque_ = 0.0f;
+        controller_.mechanical_power_ = 0.0f;
+        controller_.electrical_power_ = 0.0f;
 
         motor_.torque_setpoint_src_.connect_to(&controller_.torque_output_);
-        motor_.direction_ = encoder_.config_.direction;
+        motor_.direction_ = encoder_.controller_to_motor_direction();
 
         motor_.current_control_.enable_current_control_src_ = motor_.config_.motor_type != Motor::MOTOR_TYPE_GIMBAL;
         motor_.current_control_.Idq_setpoint_src_.connect_to(&motor_.Idq_setpoint_);
@@ -277,7 +288,9 @@ bool Axis::stop_closed_loop_control() {
 }
 
 bool Axis::run_closed_loop_control_loop() {
-    start_closed_loop_control();
+    if (!start_closed_loop_control()) {
+        return false;
+    }
     set_step_dir_active(config_.enable_step_dir);
 
     while ((requested_state_ == AXIS_STATE_UNDEFINED) && motor_.is_armed_) {
@@ -294,6 +307,10 @@ bool Axis::run_closed_loop_control_loop() {
 // Slowly drive in the negative direction at homing_speed until the min endstop is pressed
 // When pressed, set the linear count to the offset (default 0), and then go to position 0
 bool Axis::run_homing() {
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        return error_ |= ERROR_INVALID_STATE, false;
+    }
+
     // TODO: theoretically this check should be inside the update loop,
     // otherwise someone could disable the endstop while homing is in progress.
     if (!min_endstop_.config_.enabled) {
@@ -314,7 +331,9 @@ bool Axis::run_homing() {
 
     bool done = false;
 
-    start_closed_loop_control();
+    if (!start_closed_loop_control()) {
+        return false;
+    }
 
     // Driving toward the endstop
     while ((requested_state_ == AXIS_STATE_UNDEFINED) && motor_.is_armed_ && !(done = min_endstop_.get_state())) {
@@ -340,7 +359,9 @@ bool Axis::run_homing() {
     controller_.config_.input_mode = Controller::INPUT_MODE_TRAP_TRAJ;
 
     // Initialize closed loop control, and then set the desired location.
-    start_closed_loop_control();
+    if (!start_closed_loop_control()) {
+        return false;
+    }
     
     controller_.input_pos_ = pos_estimate_local.value() + min_endstop_.config_.offset;
     controller_.pos_setpoint_ = pos_estimate_local.value();

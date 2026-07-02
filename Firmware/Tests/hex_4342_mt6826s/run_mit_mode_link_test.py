@@ -377,7 +377,7 @@ def main():
         final_check(bus, args)
         print("PASS: MIT mode link test completed")
         return 0
-    except Exception:
+    except BaseException:
         print("Stopping motor due to failure...")
         for i in range(10):
             send_mit_frame(bus, args, pack_neutral_mit_frame(i))

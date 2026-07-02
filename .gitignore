@@ -72,3 +72,5 @@ tools/odrive-cansimple.ini
 
 # Stray duplicate of tools/odrive-cansimple.dbc
 /odrive-cansimple.dbc
+
+foc_ui/

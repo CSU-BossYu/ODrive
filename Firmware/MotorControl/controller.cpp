@@ -17,11 +17,64 @@ void Controller::reset() {
     torque_setpoint_ = 0.0f;
     mechanical_power_ = 0.0f;
     electrical_power_ = 0.0f;
+    overspeed_time_ = 0.0f;
+    clear_overspeed_snapshot();
 }
 
 void Controller::set_error(Error error) {
     error_ |= error;
     last_error_time_ = odrv.n_evt_control_loop_ * current_meas_period;
+}
+
+void Controller::clear_overspeed_snapshot() {
+    overspeed_snapshot_ = {};
+}
+
+void Controller::capture_overspeed_snapshot(float vel_estimate,
+                                            const std::optional<float>& pos_estimate_linear,
+                                            const std::optional<float>& pos_estimate_circular,
+                                            const std::optional<float>& pos_wrap) {
+    if (overspeed_snapshot_.valid) {
+        return;
+    }
+
+    Encoder::VernierDiagnosticsSnapshot vernier = {};
+    axis_->encoder_.get_vernier_diagnostics_snapshot(&vernier);
+
+    overspeed_snapshot_.valid = true;
+    overspeed_snapshot_.control_loop_count = odrv.n_evt_control_loop_;
+    overspeed_snapshot_.timestamp = odrv.n_evt_control_loop_ * current_meas_period;
+    overspeed_snapshot_.vel_estimate = vel_estimate;
+    overspeed_snapshot_.vel_limit = config_.vel_limit;
+    overspeed_snapshot_.vel_limit_tolerance = config_.vel_limit_tolerance;
+    overspeed_snapshot_.pos_estimate_linear = pos_estimate_linear.value_or(0.0f);
+    overspeed_snapshot_.pos_estimate_circular = pos_estimate_circular.value_or(0.0f);
+    overspeed_snapshot_.pos_wrap = pos_wrap.value_or(0.0f);
+    overspeed_snapshot_.pos_setpoint = pos_setpoint_;
+    overspeed_snapshot_.vel_setpoint = vel_setpoint_;
+    overspeed_snapshot_.torque_setpoint = torque_setpoint_;
+    overspeed_snapshot_.input_pos = input_pos_;
+    overspeed_snapshot_.input_vel = input_vel_;
+    overspeed_snapshot_.input_torque = input_torque_;
+    overspeed_snapshot_.input_mode = static_cast<uint32_t>(config_.input_mode);
+    overspeed_snapshot_.control_mode = static_cast<uint32_t>(config_.control_mode);
+    overspeed_snapshot_.resolver_state = vernier.state;
+    overspeed_snapshot_.resolver_valid = vernier.resolver_valid ? 1u : 0u;
+    overspeed_snapshot_.resolver_locked = vernier.resolver_locked ? 1u : 0u;
+    overspeed_snapshot_.resolver_accepted_aux = vernier.resolver_accepted_aux ? 1u : 0u;
+    overspeed_snapshot_.resolver_degraded = vernier.resolver_degraded ? 1u : 0u;
+    overspeed_snapshot_.resolver_position_turns = vernier.position_turns;
+    overspeed_snapshot_.resolver_residual = vernier.residual;
+    overspeed_snapshot_.encoder_pos_estimate = vernier.encoder_pos_estimate;
+    overspeed_snapshot_.encoder_vel_estimate = vernier.encoder_vel_estimate;
+    overspeed_snapshot_.encoder_pos_circular = vernier.encoder_pos_circular;
+    overspeed_snapshot_.pair_sequence = vernier.pair_count;
+    overspeed_snapshot_.pair_valid = vernier.pair_valid ? 1u : 0u;
+    overspeed_snapshot_.output_estimate_valid = vernier.output_estimate_valid ? 1u : 0u;
+    overspeed_snapshot_.output_pos_estimate = vernier.output_pos_estimate;
+    overspeed_snapshot_.output_vel_estimate = vernier.output_vel_estimate;
+    overspeed_snapshot_.output_sample_dt = vernier.output_sample_dt;
+    overspeed_snapshot_.output_pair_sequence = vernier.output_pair_sequence;
 }
 
 //--------------------------------
@@ -51,6 +104,9 @@ void Controller::move_incremental(float displacement, bool from_input_pos = true
 void Controller::start_anticogging_calibration() {
     // Ensure the cogging map was correctly allocated earlier and that the motor is capable of calibrating
     if (axis_->error_ == Axis::ERROR_NONE) {
+        config_.anticogging.index = 0;
+        anticogging_calibration_initialized_ = false;
+        anticogging_valid_ = false;
         config_.anticogging.calib_anticogging = true;
     }
 }
@@ -78,14 +134,32 @@ float Controller::remove_anticogging_bias()
  * This holding current is added as a feedforward term in the control loop.
  */
 bool Controller::anticogging_calibration(float pos_estimate, float vel_estimate) {
+    const float cogging_ratio = axis_->encoder_.getCoggingRatio();
+    const float calibration_cpr = axis_->encoder_.getCoggingCalibrationCpr();
+
+    if (!anticogging_calibration_initialized_) {
+        const float grid_position = floorf(pos_estimate / cogging_ratio);
+        const int32_t grid_index = (int32_t)grid_position;
+        anticogging_start_index_ = (uint32_t)mod(grid_index, 3600);
+        anticogging_start_pos_ = grid_position * cogging_ratio;
+        anticogging_calibration_initialized_ = true;
+        input_pos_ = anticogging_start_pos_;
+        input_vel_ = 0.0f;
+        input_torque_ = 0.0f;
+        input_pos_updated();
+        return false;
+    }
+
     float pos_err = input_pos_ - pos_estimate;
-    if (std::abs(pos_err) <= config_.anticogging.calib_pos_threshold / (float)axis_->encoder_.config_.cpr &&
-        std::abs(vel_estimate) < config_.anticogging.calib_vel_threshold / (float)axis_->encoder_.config_.cpr) {
-        config_.anticogging.cogging_map[std::clamp<uint32_t>(config_.anticogging.index++, 0, 3600)] = vel_integrator_torque_;
+    if (std::abs(pos_err) <= config_.anticogging.calib_pos_threshold / calibration_cpr &&
+        std::abs(vel_estimate) < config_.anticogging.calib_vel_threshold / calibration_cpr) {
+        const uint32_t map_index = (anticogging_start_index_ + config_.anticogging.index) % 3600;
+        config_.anticogging.cogging_map[map_index] = vel_integrator_torque_;
+        ++config_.anticogging.index;
     }
     if (config_.anticogging.index < 3600) {
         config_.control_mode = CONTROL_MODE_POSITION_CONTROL;
-        input_pos_ = config_.anticogging.index * axis_->encoder_.getCoggingRatio();
+        input_pos_ = anticogging_start_pos_ + config_.anticogging.index * cogging_ratio;
         input_vel_ = 0.0f;
         input_torque_ = 0.0f;
         input_pos_updated();
@@ -93,11 +167,12 @@ bool Controller::anticogging_calibration(float pos_estimate, float vel_estimate)
     } else {
         config_.anticogging.index = 0;
         config_.control_mode = CONTROL_MODE_POSITION_CONTROL;
-        input_pos_ = 0.0f;  // Send the motor home
+        input_pos_ = anticogging_start_pos_;
         input_vel_ = 0.0f;
         input_torque_ = 0.0f;
         input_pos_updated();
         anticogging_valid_ = true;
+        anticogging_calibration_initialized_ = false;
         config_.anticogging.calib_anticogging = false;
         return true;
     }
@@ -129,10 +204,15 @@ void Controller::set_mit_input(float pos_rad, float vel_rad_per_s, float kp, flo
 
 bool Controller::control_mode_updated() {
     if (config_.control_mode >= CONTROL_MODE_POSITION_CONTROL) {
-        std::optional<float> estimate = (config_.circular_setpoints ?
+        InputPort<float>& estimate_src = config_.circular_setpoints ?
                                 pos_estimate_circular_src_ :
-                                pos_estimate_linear_src_).any();
+                                pos_estimate_linear_src_;
+        std::optional<float> estimate =
+            axis_->encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER ?
+            estimate_src.present() :
+            estimate_src.any();
         if (!estimate.has_value()) {
+            set_error(ERROR_INVALID_ESTIMATE);
             return false;
         }
 
@@ -312,7 +392,8 @@ bool Controller::update() {
     if(config_.enable_vel_limit) {
         vel_setpoint_ = std::clamp(vel_setpoint_, -config_.vel_limit, config_.vel_limit);
     }
-    const float Tlim = axis_->motor_.max_available_torque();
+    const float controller_to_motor_torque = axis_->encoder_.controller_torque_to_motor_torque_scale();
+    const float Tlim = axis_->motor_.max_available_torque() / controller_to_motor_torque;
     torque_setpoint_ = std::clamp(torque_setpoint_, -Tlim, Tlim);
 
     // Position control
@@ -361,6 +442,17 @@ bool Controller::update() {
             return false;
         }
         if (std::abs(*vel_estimate) > config_.vel_limit_tolerance * vel_lim) {
+            overspeed_time_ += current_meas_period;
+        } else {
+            overspeed_time_ = 0.0f;
+        }
+
+        // Require a short, continuous violation before latching OVERSPEED. This
+        // filters one-sample estimator/controller handoff transients without
+        // changing the configured velocity limit.
+        if (overspeed_time_ >= 0.002f) {
+            capture_overspeed_snapshot(*vel_estimate, pos_estimate_linear,
+                                       pos_estimate_circular, pos_wrap);
             set_error(ERROR_OVERSPEED);
             return false;
         }
@@ -393,7 +485,8 @@ bool Controller::update() {
             return false;
         }
         float anticogging_pos = *anticogging_pos_estimate / axis_->encoder_.getCoggingRatio();
-        torque += config_.anticogging.cogging_map[std::clamp(mod((int)anticogging_pos, 3600), 0, 3600)];
+        const int32_t anticogging_index = (int32_t)floorf(anticogging_pos);
+        torque += config_.anticogging.cogging_map[mod(anticogging_index, 3600)];
     }
 
     float v_err = 0.0f;
@@ -461,12 +554,16 @@ bool Controller::update() {
     // If mechanical power is negative (braking) and measured power is positive, something is wrong
     // This indicates that the controller is trying to stop, but torque is being produced.
     // Usually caused by an incorrect encoder offset
-    if (mechanical_power_ < config_.spinout_mechanical_power_threshold && electrical_power_ > config_.spinout_electrical_power_threshold) {
+    const bool spinout_check_valid =
+        axis_->encoder_.mode_ != Encoder::MODE_SPI_ABS_MT6826S_VERNIER;
+    if (spinout_check_valid &&
+        mechanical_power_ < config_.spinout_mechanical_power_threshold &&
+        electrical_power_ > config_.spinout_electrical_power_threshold) {
         set_error(ERROR_SPINOUT_DETECTED);
         return false;
     }
 
-    torque_output_ = torque;
+    torque_output_ = torque * controller_to_motor_torque;
 
     // TODO: this is inconsistent with the other errors which are sticky.
     // However if we make ERROR_INVALID_ESTIMATE sticky then it will be

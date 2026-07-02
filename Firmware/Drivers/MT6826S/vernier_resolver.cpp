@@ -1,5 +1,6 @@
 #include "vernier_resolver.hpp"
 
+#include <algorithm>
 #include <math.h>
 
 void VernierResolver::init(const Config& config) {
@@ -67,6 +68,11 @@ bool VernierResolver::validate_config() const {
     }
 
     if (config_.max_mismatch_frames < 1 || config_.max_aux_miss_frames < 1) {
+        return false;
+    }
+
+    if (config_.use_phase_difference &&
+        absf(config_.aux_ratio - config_.main_ratio) < 1.0e-6f) {
         return false;
     }
 
@@ -408,16 +414,23 @@ VernierResolver::Result VernierResolver::update(uint16_t main_angle,
     Candidate best = {};
 
     if (state_ == STATE_UNINITIALIZED || state_ == STATE_ACQUIRING || !has_last_phase_) {
-        best = search_candidates(-config_.max_main_cycle_index,
-                                  config_.max_main_cycle_index,
+        // The two single-turn sensors resolve the output phase modulo one
+        // output revolution. At startup select that canonical [0, 1) branch;
+        // runtime main-phase tracking can then unwrap continuously beyond it.
+        const int32_t startup_k_max =
+            std::max<int32_t>(0, static_cast<int32_t>(ceilf(absf(config_.main_ratio))) - 1);
+        best = search_candidates(0,
+                                  std::min(config_.max_main_cycle_index, startup_k_max),
                                   main_phase_corr,
                                   aux_phase_corr);
     } else {
         const int32_t predicted_k = predict_main_cycle_from_phase(main_phase_corr);
-        best = search_candidates(predicted_k - config_.runtime_search_radius,
-                                  predicted_k + config_.runtime_search_radius,
-                                  main_phase_corr,
-                                  aux_phase_corr);
+        // Once locked, the main encoder phase provides the continuous branch.
+        // The auxiliary encoder is only a plausibility check here. Searching
+        // adjacent branches by lowest aux residual can create one-main-cycle
+        // output jumps (1 / main_ratio turns) from eccentricity/noise, which
+        // appears to the controller as a false overspeed spike.
+        best = evaluate_candidate(predicted_k, main_phase_corr, aux_phase_corr);
     }
 
     if (!best.valid) {
@@ -482,8 +495,9 @@ VernierResolver::Result VernierResolver::update_phase_difference(uint16_t main_a
         error_ |= ERROR_AUX_INVALID;
 
         if ((state_ == STATE_LOCKED || state_ == STATE_SUSPECT) && has_last_phase_) {
+            const float output_sign = config_.output_reversed ? -1.0f : 1.0f;
             const float delta_main = wrap_pm_half(main_phase_corr - last_main_phase_corr_);
-            position_turns_ += delta_main / config_.main_ratio;
+            position_turns_ += output_sign * delta_main / config_.main_ratio;
             last_main_phase_corr_ = main_phase_corr;
             state_ = STATE_SUSPECT;
 
@@ -509,7 +523,8 @@ VernierResolver::Result VernierResolver::update_phase_difference(uint16_t main_a
         result.locked = false;
         result.accepted_aux = false;
         result.degraded = result.valid;
-        result.main_unwrapped = config_.main_ratio * position_turns_;
+        const float output_sign = config_.output_reversed ? -1.0f : 1.0f;
+        result.main_unwrapped = output_sign * config_.main_ratio * position_turns_;
         result.main_cycle_index = static_cast<int32_t>(floorf(result.main_unwrapped));
         result.position_turns = position_turns_;
         result.confidence = 0.0f;
@@ -522,14 +537,31 @@ VernierResolver::Result VernierResolver::update_phase_difference(uint16_t main_a
 
     const float aux_phase = normalize_raw_angle(aux_angle, config_.aux_reversed);
     const float aux_phase_corr = wrap01(aux_phase - config_.aux_offset);
+    const float ratio_delta = config_.aux_ratio - config_.main_ratio;
+    const float coarse_output_phase =
+        wrap01(wrap_pm_half(aux_phase_corr - main_phase_corr) / ratio_delta);
+    const float predicted_main_phase = wrap01(config_.main_ratio * coarse_output_phase);
+    const float main_phase_residual = wrap_pm_half(main_phase_corr - predicted_main_phase);
+    const float refined_output_phase =
+        wrap01(coarse_output_phase + main_phase_residual / config_.main_ratio);
     const float output_phase = config_.output_reversed
-        ? wrap01(main_phase_corr - aux_phase_corr)
-        : wrap01(aux_phase_corr - main_phase_corr);
+        ? wrap01(-refined_output_phase)
+        : refined_output_phase;
 
-    if (!has_last_output_phase_) {
+    if (!has_last_output_phase_ || !has_last_phase_) {
         position_turns_ = output_phase;
     } else {
-        position_turns_ += wrap_pm_half(output_phase - last_output_phase_);
+        const float output_sign = config_.output_reversed ? -1.0f : 1.0f;
+        const float delta_main = wrap_pm_half(main_phase_corr - last_main_phase_corr_);
+        const float predicted_position =
+            position_turns_ + output_sign * delta_main / config_.main_ratio;
+
+        float candidate_position =
+            predicted_position + wrap_pm_half(output_phase - wrap01(predicted_position));
+        candidate_position += roundf(
+            (predicted_position - candidate_position) * config_.main_ratio
+        ) / config_.main_ratio;
+        position_turns_ = candidate_position;
     }
 
     if (!position_within_limit(position_turns_)) {
@@ -543,7 +575,10 @@ VernierResolver::Result VernierResolver::update_phase_difference(uint16_t main_a
     last_output_phase_ = output_phase;
     has_last_phase_ = true;
     last_main_phase_corr_ = main_phase_corr;
-    main_cycle_index_ = static_cast<int32_t>(floorf(config_.main_ratio * position_turns_));
+    const float output_sign = config_.output_reversed ? -1.0f : 1.0f;
+    const float physical_main_unwrapped =
+        output_sign * config_.main_ratio * position_turns_;
+    main_cycle_index_ = static_cast<int32_t>(floorf(physical_main_unwrapped));
 
     consecutive_aux_miss_ = 0;
     consecutive_mismatch_ = 0;
@@ -560,11 +595,11 @@ VernierResolver::Result VernierResolver::update_phase_difference(uint16_t main_a
     result.accepted_aux = (state_ == STATE_LOCKED);
     result.degraded = false;
     result.main_cycle_index = main_cycle_index_;
-    result.main_unwrapped = config_.main_ratio * position_turns_;
+    result.main_unwrapped = physical_main_unwrapped;
     result.position_turns = position_turns_;
     result.aux_pred_phase = aux_phase_corr;
-    result.residual_turns = 0.0f;
-    result.abs_residual_turns = 0.0f;
+    result.residual_turns = main_phase_residual;
+    result.abs_residual_turns = std::abs(main_phase_residual);
     result.confidence = result.valid ? 1.0f : 0.0f;
     result.consecutive_good = consecutive_good_;
     result.consecutive_mismatch = consecutive_mismatch_;

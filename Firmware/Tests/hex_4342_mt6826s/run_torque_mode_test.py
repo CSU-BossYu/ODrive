@@ -147,7 +147,12 @@ def main():
     parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--node-id", type=int, default=0)
     parser.add_argument("--extended-id", action="store_true")
-    parser.add_argument("--torque", type=float, default=0.02, help="Positive/negative torque command in Nm.")
+    parser.add_argument(
+        "--torque",
+        type=float,
+        default=0.84,
+        help="Positive/negative output-shaft torque command in Nm. Vernier firmware converts this to motor torque internally.",
+    )
     parser.add_argument("--duration", type=float, default=1.5, help="Duration of each torque phase.")
     parser.add_argument("--settle-duration", type=float, default=1.0, help="Duration of each zero-torque phase.")
     parser.add_argument("--vel-limit", type=float, default=0.5)
@@ -202,7 +207,7 @@ def main():
             raise RuntimeError("Final status reports axis error")
         print("PASS: torque mode test completed")
         return 0
-    except Exception:
+    except BaseException:
         print("Stopping motor due to failure...")
         set_input_torque(bus, args.node_id, 0.0, args.extended_id)
         set_requested_state(bus, args.node_id, AXIS_STATE_IDLE, args.extended_id)

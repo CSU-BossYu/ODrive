@@ -747,6 +747,7 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
         case 0x2E: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_err_reject, 32, 32, true); break;
         case 0x2F: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.mt6826s_spi_prescaler, 32, 32, true); break;
         case 0x33: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_output_reversed ? 1u : 0u, 32, 32, true); break;
+        case 0x34: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_use_phase_difference ? 1u : 0u, 32, 32, true); break;
         // --- controller ---
         case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
         case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
@@ -938,6 +939,11 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             axis.encoder_.config_.set_vernier_output_reversed(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
             break;
         }
+        case 0x34: {  // vernier_use_phase_difference (uint32 as bool)
+            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.encoder_.config_.set_vernier_use_phase_difference(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            break;
+        }
         // --- controller ---
         case 0x30: {  // pos_gain (float32)
             if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
@@ -1018,6 +1024,7 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
 // item 0x20: encoder_pos_estimate (float32)
 // item 0x21: encoder_vel_estimate (float32)
 // item 0x22: encoder_pos_circular (float32)
+// item 0x40..0x5F: controller OVERSPEED snapshot captured at fault time
 // =====================================================================
 static uint32_t pack_mt6826s_raw(const Mt6826sSpi::Sample& sample) {
     return static_cast<uint32_t>(sample.raw[0])
@@ -1037,6 +1044,7 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
     uint8_t type = EXT_TYPE_UINT32;
     Encoder::VernierDiagnosticsSnapshot snapshot = {};
     axis.encoder_.get_vernier_diagnostics_snapshot(&snapshot);
+    const Controller::OverspeedSnapshot& overspeed = axis.controller_.get_overspeed_snapshot();
 
     txmsg.buf[0] = 0x0A;
     txmsg.buf[1] = item_id;
@@ -1169,6 +1177,170 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
         case 0x22:
             type = EXT_TYPE_FLOAT32;
             can_setSignal<float>(txmsg, snapshot.encoder_pos_circular, 32, 32, true);
+            break;
+        case 0x23:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.resolver_valid ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x24:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.resolver_locked ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x25:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.resolver_accepted_aux ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x26:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.resolver_degraded ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x27:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.output_estimate_valid ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x28:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.output_pos_estimate, 32, 32, true);
+            break;
+        case 0x29:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.output_vel_estimate, 32, 32, true);
+            break;
+        case 0x2A:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.output_sample_dt, 32, 32, true);
+            break;
+        case 0x2B:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.output_pair_sequence, 32, 32, true);
+            break;
+        case 0x40:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.valid ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x41:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.control_loop_count, 32, 32, true);
+            break;
+        case 0x42:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.timestamp, 32, 32, true);
+            break;
+        case 0x43:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.vel_estimate, 32, 32, true);
+            break;
+        case 0x44:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.vel_limit, 32, 32, true);
+            break;
+        case 0x45:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.vel_limit_tolerance, 32, 32, true);
+            break;
+        case 0x46:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.pos_estimate_linear, 32, 32, true);
+            break;
+        case 0x47:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.pos_setpoint, 32, 32, true);
+            break;
+        case 0x48:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.vel_setpoint, 32, 32, true);
+            break;
+        case 0x49:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.input_pos, 32, 32, true);
+            break;
+        case 0x4A:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.input_vel, 32, 32, true);
+            break;
+        case 0x4B:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.input_mode, 32, 32, true);
+            break;
+        case 0x4C:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.control_mode, 32, 32, true);
+            break;
+        case 0x4D:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.resolver_state, 32, 32, true);
+            break;
+        case 0x4E:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.resolver_valid, 32, 32, true);
+            break;
+        case 0x4F:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.resolver_locked, 32, 32, true);
+            break;
+        case 0x50:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.resolver_accepted_aux, 32, 32, true);
+            break;
+        case 0x51:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.resolver_degraded, 32, 32, true);
+            break;
+        case 0x52:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.resolver_position_turns, 32, 32, true);
+            break;
+        case 0x53:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.resolver_residual, 32, 32, true);
+            break;
+        case 0x54:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.encoder_vel_estimate, 32, 32, true);
+            break;
+        case 0x55:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.pair_sequence, 32, 32, true);
+            break;
+        case 0x56:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.pair_valid, 32, 32, true);
+            break;
+        case 0x57:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.output_estimate_valid, 32, 32, true);
+            break;
+        case 0x58:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.output_pos_estimate, 32, 32, true);
+            break;
+        case 0x59:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.output_vel_estimate, 32, 32, true);
+            break;
+        case 0x5A:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.output_sample_dt, 32, 32, true);
+            break;
+        case 0x5B:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, overspeed.output_pair_sequence, 32, 32, true);
+            break;
+        case 0x5C:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.encoder_pos_estimate, 32, 32, true);
+            break;
+        case 0x5D:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.pos_estimate_circular, 32, 32, true);
+            break;
+        case 0x5E:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.torque_setpoint, 32, 32, true);
+            break;
+        case 0x5F:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, overspeed.input_torque, 32, 32, true);
             break;
         // Debug counters (0x30-0x39)
         case 0x30: {

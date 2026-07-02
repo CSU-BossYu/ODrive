@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""
+Velocity loop test with main/aux encoder angle tracing.
+
+This script adds per-sample main/aux angle deltas to the standard velocity
+loop output so you can see how each sensor's phase evolves during motion
+and how d(aux-main) correlates with the Vernier output position.
+"""
+
 import argparse
 import math
 import time
@@ -40,6 +48,7 @@ from common import (
 PARAM_DC_MAX_NEGATIVE_CURRENT = 0x40
 PARAM_DC_MAX_POSITIVE_CURRENT = 0x41
 SUB_CMD_VERNIER_DIAG = 0x0A
+CPR = 32768
 
 
 MOTOR_ERROR_BITS = [
@@ -159,106 +168,19 @@ def read_vernier_diag_item(bus, args, item_id, want_float=False, timeout=0.08):
 
 def read_vernier_diag(bus, args):
     return {
+        "main_angle": read_vernier_diag_item(bus, args, 0x00),
+        "aux_angle": read_vernier_diag_item(bus, args, 0x01),
+        "main_valid": read_vernier_diag_item(bus, args, 0x02),
+        "aux_valid": read_vernier_diag_item(bus, args, 0x03),
         "pair_seq": read_vernier_diag_item(bus, args, 0x04),
         "pair_valid": read_vernier_diag_item(bus, args, 0x05),
         "resolver_state": read_vernier_diag_item(bus, args, 0x0B),
-        "resolver_valid": read_vernier_diag_item(bus, args, 0x23),
-        "resolver_locked": read_vernier_diag_item(bus, args, 0x24),
-        "resolver_accepted_aux": read_vernier_diag_item(bus, args, 0x25),
-        "resolver_degraded": read_vernier_diag_item(bus, args, 0x26),
         "vernier_pos": read_vernier_diag_item(bus, args, 0x08, want_float=True),
         "diag_pos": read_vernier_diag_item(bus, args, 0x20, want_float=True),
         "diag_vel": read_vernier_diag_item(bus, args, 0x21, want_float=True),
-        "output_valid": read_vernier_diag_item(bus, args, 0x27),
-        "output_pos": read_vernier_diag_item(bus, args, 0x28, want_float=True),
-        "output_vel": read_vernier_diag_item(bus, args, 0x29, want_float=True),
-        "output_dt": read_vernier_diag_item(bus, args, 0x2A, want_float=True),
-        "output_pair_seq": read_vernier_diag_item(bus, args, 0x2B),
         "pair_busy": read_vernier_diag_item(bus, args, 0x37),
         "pair_ok": read_vernier_diag_item(bus, args, 0x38),
     }
-
-
-OVERSPEED_SNAPSHOT_ITEMS = [
-    (0x40, "valid", False),
-    (0x41, "loop", False),
-    (0x42, "time", True),
-    (0x43, "vel", True),
-    (0x44, "vel_limit", True),
-    (0x45, "vel_tol", True),
-    (0x46, "pos_est", True),
-    (0x47, "pos_sp", True),
-    (0x48, "vel_sp", True),
-    (0x49, "input_pos", True),
-    (0x4A, "input_vel", True),
-    (0x4B, "input_mode", False),
-    (0x4C, "control_mode", False),
-    (0x4D, "resolver_state", False),
-    (0x4E, "resolver_valid", False),
-    (0x4F, "resolver_locked", False),
-    (0x50, "resolver_accepted_aux", False),
-    (0x51, "resolver_degraded", False),
-    (0x52, "resolver_pos", True),
-    (0x53, "resolver_residual", True),
-    (0x54, "encoder_vel", True),
-    (0x55, "pair_seq", False),
-    (0x56, "pair_valid", False),
-    (0x57, "output_valid", False),
-    (0x58, "output_pos", True),
-    (0x59, "output_vel", True),
-    (0x5A, "output_dt", True),
-    (0x5B, "output_pair_seq", False),
-    (0x5C, "encoder_pos", True),
-    (0x5D, "pos_circular", True),
-    (0x5E, "torque_sp", True),
-    (0x5F, "input_torque", True),
-]
-
-
-def read_overspeed_snapshot(bus, args):
-    data = {}
-    for item_id, name, want_float in OVERSPEED_SNAPSHOT_ITEMS:
-        data[name] = read_vernier_diag_item(bus, args, item_id, want_float=want_float, timeout=0.12)
-    return data
-
-
-def print_overspeed_snapshot(title, data):
-    if not data or not data.get("valid"):
-        print(f"{title}: no controller OVERSPEED snapshot captured")
-        return
-    print(
-        f"{title}: loop={data['loop']} t={fmt_diag_value(data['time'], '.6f')} "
-        f"vel={fmt_diag_value(data['vel'], '.6f')} "
-        f"limit={fmt_diag_value(data['vel_limit'], '.6f')}*{fmt_diag_value(data['vel_tol'], '.3f')}"
-    )
-    print(
-        "  setpoints "
-        f"pos_est={fmt_diag_value(data['pos_est'], '.6f')} "
-        f"pos_sp={fmt_diag_value(data['pos_sp'], '.6f')} "
-        f"vel_sp={fmt_diag_value(data['vel_sp'], '.6f')} "
-        f"input_pos={fmt_diag_value(data['input_pos'], '.6f')} "
-        f"input_vel={fmt_diag_value(data['input_vel'], '.6f')} "
-        f"mode={data['control_mode']}/{data['input_mode']}"
-    )
-    print(
-        "  resolver "
-        f"state={data['resolver_state']} valid={data['resolver_valid']} "
-        f"locked={data['resolver_locked']} accepted_aux={data['resolver_accepted_aux']} "
-        f"degraded={data['resolver_degraded']} "
-        f"pos={fmt_diag_value(data['resolver_pos'], '.6f')} "
-        f"res={fmt_diag_value(data['resolver_residual'], '.6f')} "
-        f"pair={data['pair_seq']} valid={data['pair_valid']}"
-    )
-    print(
-        "  output "
-        f"valid={data['output_valid']} "
-        f"pos={fmt_diag_value(data['output_pos'], '.6f')} "
-        f"vel={fmt_diag_value(data['output_vel'], '.6f')} "
-        f"dt={fmt_diag_value(data['output_dt'], '.6f')} "
-        f"pair={data['output_pair_seq']} "
-        f"encoder_pos={fmt_diag_value(data['encoder_pos'], '.6f')} "
-        f"encoder_vel={fmt_diag_value(data['encoder_vel'], '.6f')}"
-    )
 
 
 def fmt_diag_value(value, fmt):
@@ -317,6 +239,25 @@ def fmt_error(value, bits):
     return f"0x{value:0{width}X}"
 
 
+def phase(angle):
+    """Convert raw encoder angle to phase in turns [0, 1)."""
+    if angle is None:
+        return float("nan")
+    return (angle % CPR) / float(CPR)
+
+
+def wrap_pm_half(value):
+    """Wrap a phase difference to [-0.5, 0.5)."""
+    wrapped = (value + 0.5) % 1.0 - 0.5
+    if wrapped >= 0.5:
+        wrapped -= 1.0
+    return wrapped
+
+
+def turns_to_deg(turns):
+    return turns * 360.0
+
+
 def require_ready(bus, args):
     status = get_status_ex(bus, args.node_id, args.extended_id, timeout=2.0)
     if status is None:
@@ -361,21 +302,21 @@ def enter_closed_loop(bus, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run MT6826S velocity loop over CANSimple.")
+    parser = argparse.ArgumentParser(description="Run MT6826S velocity loop with angle tracing over CANSimple.")
     parser.add_argument("--channel", default="PCAN_USBBUS1")
     parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--node-id", type=int, default=0)
     parser.add_argument("--extended-id", action="store_true")
-    parser.add_argument("--velocity", type=float, default=0.02, help="Output-shaft velocity in turns/s.")
-    parser.add_argument("--duration", type=float, default=10.0)
+    parser.add_argument("--velocity", type=float, default=0.3, help="Output-shaft velocity in turns/s.")
+    parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--ramp-time", type=float, default=1.5)
     parser.add_argument("--sample-period", type=float, default=0.25)
-    parser.add_argument("--vel-limit", type=float, default=0.1)
+    parser.add_argument("--vel-limit", type=float, default=0.3)
     parser.add_argument("--current-limit", type=float, default=3.0)
     parser.add_argument("--dc-max-negative-current", type=float, default=-0.5)
     parser.add_argument("--stop-negative-ibus", type=float, default=-0.35)
-    parser.add_argument("--vel-gain", type=float, default=42.0, help="Output-shaft torque per output turn/s.")
-    parser.add_argument("--vel-integrator-gain", type=float, default=2.1, help="Output-shaft torque per output turn/s/s.")
+    parser.add_argument("--vel-gain", type=float, default=1.0)
+    parser.add_argument("--vel-integrator-gain", type=float, default=0.05)
     parser.add_argument("--enter-timeout", type=float, default=3.0)
     parser.add_argument("--clear-at-end", action="store_true")
     args = parser.parse_args()
@@ -429,7 +370,16 @@ def main():
             f"(vel_gain={args.vel_gain:.2f}, vel_integrator_gain={args.vel_integrator_gain:.3f}, "
             f"current_limit={args.current_limit:.3f}A)..."
         )
+        print(
+            f"{'':>6s} {'t':>6s} {'cmd':>7s} {'pos':>10s} {'vel':>8s} "
+            f"{'main':>6s} {'dmain':>8s} {'aux':>6s} {'daux':>8s} "
+            f"{'A-M':>8s} {'d(A-M)':>8s} {'vern':>10s} {'enc':>10s} "
+            f"{'Iq_set':>7s} {'Iq_meas':>7s} {'state':>5s}"
+        )
+
         start = time.monotonic()
+        first_diag = None
+        last_diag = None
         missed_telemetry = 0
         while time.monotonic() - start < args.duration:
             t = time.monotonic() - start
@@ -457,43 +407,57 @@ def main():
             ibus = bus_vi[1] if bus_vi else float("nan")
             samples.append((t, pos, vel, vbus, ibus, iq_set, iq_meas))
 
+            # --- angle trace computation ---
+            if first_diag is None:
+                first_diag = diag
+            last_diag = diag
+
+            def _delta_phase(now_val, base_val):
+                if now_val is None or base_val is None:
+                    return float("nan")
+                return wrap_pm_half(phase(now_val) - phase(base_val))
+
+            if first_diag is not None:
+                dmain = _delta_phase(diag["main_angle"], first_diag["main_angle"])
+                daux = _delta_phase(diag["aux_angle"], first_diag["aux_angle"])
+                d_am = turns_to_deg(wrap_pm_half(
+                    wrap_pm_half(phase(diag["aux_angle"]) - phase(diag["main_angle"]))
+                    - wrap_pm_half(phase(first_diag["aux_angle"]) - phase(first_diag["main_angle"]))
+                )) if (diag["main_angle"] is not None and diag["aux_angle"] is not None
+                       and first_diag["main_angle"] is not None and first_diag["aux_angle"] is not None) else float("nan")
+            else:
+                dmain = daux = d_am = float("nan")
+
+            main_phase_val = phase(diag["main_angle"])
+            aux_phase_val = phase(diag["aux_angle"])
+            am = wrap_pm_half(aux_phase_val - main_phase_val) if (
+                diag["main_angle"] is not None and diag["aux_angle"] is not None
+            ) else float("nan")
+
             if enc is None and iq is None and bus_vi is None and hb is None:
                 missed_telemetry += 1
             else:
                 missed_telemetry = 0
 
-            hb_tail = ""
-            if hb is not None:
-                hb_tail = (
-                    f" state={hb['axis_state']} err=0x{hb['axis_error']:08X} "
-                    f"flags=0x{hb['motor_flags']:02X}/0x{hb['encoder_flags']:02X}/0x{hb['controller_flags']:02X}"
-                )
+            hb_state = hb["axis_state"] if hb else "?"
+
             print(
-                f"  t={t:5.2f}s cmd={cmd: .4f} pos={pos: .5f} vel={vel: .5f} "
-                f"vbus={vbus: .2f} ibus={ibus: .4f} Iq={iq_set: .3f}/{iq_meas: .3f}{hb_tail}"
-            )
-            print(
-                "      diag "
-                f"pair={fmt_diag_value(diag['pair_seq'], 'd')} "
-                f"valid={fmt_diag_value(diag['pair_valid'], 'd')} "
-                f"state={fmt_diag_value(diag['resolver_state'], 'd')} "
-                f"vern={fmt_diag_value(diag['vernier_pos'], '.5f')} "
-                f"enc={fmt_diag_value(diag['diag_pos'], '.5f')} "
-                f"v={fmt_diag_value(diag['diag_vel'], '.5f')} "
-                f"busy/ok={fmt_diag_value(diag['pair_busy'], 'd')}/{fmt_diag_value(diag['pair_ok'], 'd')}"
+                f"{'':>6s} {t:5.2f}s {cmd: .4f} {pos: 10.5f} {vel: 8.5f} "
+                f"{fmt_diag_value(diag['main_angle'], '5d'):>6s} {turns_to_deg(dmain): 7.1f}° "
+                f"{fmt_diag_value(diag['aux_angle'], '5d'):>6s} {turns_to_deg(daux): 7.1f}° "
+                f"{turns_to_deg(am): 7.2f}° {d_am: 7.2f}° "
+                f"{fmt_diag_value(diag['vernier_pos'], '10.5f'):>10s} "
+                f"{fmt_diag_value(diag['diag_pos'], '10.5f'):>10s} "
+                f"{iq_set: 7.3f} {iq_meas: 7.3f} {str(hb_state):>5s}"
             )
 
             if hb and (hb["axis_error"] or hb["motor_error_flag"] or hb["encoder_error_flag"] or hb["controller_error_flag"]):
-                print(
-                    "Vernier diag at error: "
-                    f"pair={fmt_diag_value(diag['pair_seq'], 'd')} "
-                    f"valid={fmt_diag_value(diag['pair_valid'], 'd')} "
-                    f"state={fmt_diag_value(diag['resolver_state'], 'd')} "
-                    f"vern={fmt_diag_value(diag['vernier_pos'], '.6f')} "
-                    f"enc={fmt_diag_value(diag['diag_pos'], '.6f')} "
-                    f"v={fmt_diag_value(diag['diag_vel'], '.6f')} "
-                    f"busy/ok={fmt_diag_value(diag['pair_busy'], 'd')}/{fmt_diag_value(diag['pair_ok'], 'd')}"
-                )
+                print("Vernier diag at error:")
+                print(f"  main={diag['main_angle']} aux={diag['aux_angle']} "
+                      f"pair={diag['pair_seq']} valid={diag['pair_valid']} "
+                      f"state={diag['resolver_state']} "
+                      f"vern={diag['vernier_pos']} enc={diag['diag_pos']} "
+                      f"v={diag['diag_vel']} busy/ok={diag['pair_busy']}/{diag['pair_ok']}")
                 print_error_summary("Errors:", read_error_summary(bus, args))
                 raise RuntimeError("Error observed during velocity loop")
             if missed_telemetry >= 3:
@@ -502,7 +466,36 @@ def main():
                 raise RuntimeError(f"Stopping due to ibus={ibus:.4f}A below threshold")
             time.sleep(args.sample_period)
 
-        print("Stopping motor and returning to IDLE...")
+        # --- summary ---
+        print("\n=== Angle Trace Summary ===")
+        if first_diag and last_diag:
+            def _fmt_phase_change(diag, key, first):
+                n = diag[key]
+                f = first[key]
+                if n is None or f is None:
+                    return "NA"
+                delta = wrap_pm_half(phase(n) - phase(f))
+                return f"{turns_to_deg(delta):+.2f}° ({delta:+.6f} turns)"
+
+            print(f"  main angle delta:       {_fmt_phase_change(last_diag, 'main_angle', first_diag)}")
+            print(f"  aux angle delta:        {_fmt_phase_change(last_diag, 'aux_angle', first_diag)}")
+
+            first_am = wrap_pm_half(phase(first_diag["aux_angle"]) - phase(first_diag["main_angle"]))
+            last_am = wrap_pm_half(phase(last_diag["aux_angle"]) - phase(last_diag["main_angle"]))
+            am_delta = wrap_pm_half(last_am - first_am)
+            print(f"  d(aux-main) delta:      {turns_to_deg(am_delta):+.2f}° ({am_delta:+.6f} turns)")
+
+            if last_diag["vernier_pos"] is not None and first_diag["vernier_pos"] is not None:
+                vd = last_diag["vernier_pos"] - first_diag["vernier_pos"]
+                print(f"  vernier pos delta:      {turns_to_deg(vd):+.2f}° ({vd:+.6f} turns)")
+            if last_diag["diag_pos"] is not None and first_diag["diag_pos"] is not None:
+                ed = last_diag["diag_pos"] - first_diag["diag_pos"]
+                print(f"  encoder pos delta:      {turns_to_deg(ed):+.2f}° ({ed:+.6f} turns)")
+
+            print(f"  first main_angle={first_diag['main_angle']} aux_angle={first_diag['aux_angle']}")
+            print(f"  last  main_angle={last_diag['main_angle']} aux_angle={last_diag['aux_angle']}")
+
+        print("\nStopping motor and returning to IDLE...")
         set_input_vel(bus, args.node_id, 0.0, 0.0, args.extended_id)
         time.sleep(0.6)
         set_requested_state(bus, args.node_id, AXIS_STATE_IDLE, args.extended_id)
@@ -520,7 +513,7 @@ def main():
             finite_vbus = [s[3] for s in samples if math.isfinite(s[3])]
             finite_ibus = [s[4] for s in samples if math.isfinite(s[4])]
             print(
-                f"Output position delta: {output_turns:.5f} turns = {output_turns * 360.0:.2f} deg"
+                f"Output position delta (controller): {output_turns:.5f} turns = {output_turns * 360.0:.2f} deg"
             )
             if finite_vel:
                 print(f"Max |velocity|: {max(abs(v) for v in finite_vel):.5f} turns/s")
@@ -532,7 +525,7 @@ def main():
 
         if final is None or final["axis_state"] != AXIS_STATE_IDLE or final["axis_error"]:
             raise RuntimeError("Axis did not return cleanly to IDLE")
-        print("PASS: velocity loop completed")
+        print("PASS: velocity loop with angle trace completed")
         return 0
     except BaseException:
         print("Stopping motor due to failure...")

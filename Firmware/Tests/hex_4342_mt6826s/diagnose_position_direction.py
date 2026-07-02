@@ -283,7 +283,7 @@ def main():
             time.sleep(0.2)
         print("PASS: direction diagnostic completed without final fault")
         return 0
-    except Exception:
+    except BaseException:
         print("Stopping motor due to failure...")
         set_input_vel(bus, args.node_id, 0.0, 0.0, args.extended_id)
         set_requested_state(bus, args.node_id, AXIS_STATE_IDLE, args.extended_id)

@@ -84,6 +84,7 @@ def read_all(bus, args):
     read_and_print(bus, args, 0x2A, "  vernier_main_reversed")
     read_and_print(bus, args, 0x2B, "  vernier_aux_reversed")
     read_and_print(bus, args, 0x33, "  vernier_output_reversed")
+    read_and_print(bus, args, 0x34, "  vernier_use_phase_difference")
     read_and_print(bus, args, 0x2C, "  mt6826s_spi_mode")
     read_and_print(bus, args, 0x2D, "  vernier_err_accept")
     read_and_print(bus, args, 0x2E, "  vernier_err_reject")
@@ -106,13 +107,34 @@ def main():
     parser.add_argument("--main-cs", type=int, default=2)
     parser.add_argument("--aux-cs", type=int, default=4)
     parser.add_argument("--virtual-cpr", type=int, default=32768)
-    parser.add_argument("--main-ratio", type=float, default=41.0)
-    parser.add_argument("--aux-ratio", type=float, default=42.0)
+    parser.add_argument(
+        "--main-ratio", type=float, default=42.0,
+        help="main encoder turns per output turn (NOT tooth count). For two meshing "
+             "gears the speed ratio is the inverse of the tooth count, so a 41-tooth "
+             "main gear meshing with a 42-tooth aux gear gives main_ratio=42.",
+    )
+    parser.add_argument(
+        "--aux-ratio", type=float, default=41.0,
+        help="aux encoder turns per output turn (NOT tooth count). See --main-ratio.",
+    )
     parser.add_argument("--main-offset", type=float)
     parser.add_argument("--aux-offset", type=float)
-    parser.add_argument("--main-reversed", type=int, choices=[0, 1])
-    parser.add_argument("--aux-reversed", type=int, choices=[0, 1])
-    parser.add_argument("--output-reversed", type=int, choices=[0, 1])
+    parser.add_argument(
+        "--main-reversed", type=int, choices=[0, 1], default=1,
+        help="reverse the main sensor into the output-positive coordinate (default: 1)",
+    )
+    parser.add_argument(
+        "--aux-reversed", type=int, choices=[0, 1], default=0,
+        help="reverse the auxiliary sensor into the output-positive coordinate (default: 0)",
+    )
+    parser.add_argument(
+        "--output-reversed", type=int, choices=[0, 1], default=0,
+        help="reverse the final resolved output coordinate (default: 0)",
+    )
+    parser.add_argument(
+        "--use-phase-difference", type=int, choices=[0, 1], default=1,
+        help="use direct Vernier phase-difference startup resolver independent of output reversal (default: 1)",
+    )
     parser.add_argument("--spi-mode", type=int, choices=[0, 1, 2, 3], default=3)
     parser.add_argument("--spi-prescaler", type=int, choices=[2, 4, 8, 16, 32, 64, 128, 256], default=8)
     parser.add_argument("--err-accept", type=float)
@@ -134,6 +156,12 @@ def main():
         if args.read_only:
             read_all(bus, args)
             return 0
+
+        if args.main_reversed == args.aux_reversed:
+            print(
+                "WARNING: main and auxiliary reversal flags are equal. "
+                "The observed external gear mesh requires exactly one sensor reversed."
+            )
 
         ok = True
         ok &= set_i32(bus, args, 0x11, "motor.pole_pairs", args.pole_pairs)
@@ -164,6 +192,8 @@ def main():
             ok &= set_u32(bus, args, 0x2B, "encoder.vernier_aux_reversed", args.aux_reversed)
         if args.output_reversed is not None:
             ok &= set_u32(bus, args, 0x33, "encoder.vernier_output_reversed", args.output_reversed)
+        if args.use_phase_difference is not None:
+            ok &= set_u32(bus, args, 0x34, "encoder.vernier_use_phase_difference", args.use_phase_difference)
 
         if args.save:
             resp = save_configuration(bus, args.node_id, args.extended_id, timeout=2.0)

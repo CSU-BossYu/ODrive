@@ -408,18 +408,98 @@ VernierResolver::Config Encoder::make_vernier_resolver_config() const {
     vernier_config.err_accept = config_.vernier_err_accept;
     vernier_config.err_reject = config_.vernier_err_reject;
     vernier_config.max_main_cycle_index = 64;
-    vernier_config.use_phase_difference = true;
+    vernier_config.use_phase_difference = config_.vernier_use_phase_difference;
     return vernier_config;
 }
 
 void Encoder::apply_vernier_resolver_config() {
     vernier_resolver_.init(make_vernier_resolver_config());
     vernier_output_estimate_valid_ = false;
+    vernier_main_continuous_valid_ = false;
     vernier_output_sample_dt_ = 0.0f;
     vernier_output_pair_sequence_ = 0;
 }
 
-void Encoder::publish_vernier_output_estimate(float dt) {
+float Encoder::vernier_motor_turns_per_output_turn() const {
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
+        return 1.0f;
+    }
+
+    if (std::abs(config_.vernier_main_ratio) < 1.0e-6f) {
+        return 1.0f;
+    }
+
+    return config_.vernier_main_ratio;
+}
+
+float Encoder::vernier_output_direction_sign() const {
+    return config_.vernier_output_reversed ? -1.0f : 1.0f;
+}
+
+float Encoder::vernier_output_position_from_main(float main_position_turns) const {
+    return vernier_output_direction_sign()
+           * main_position_turns
+           / vernier_motor_turns_per_output_turn();
+}
+
+float Encoder::vernier_output_velocity_from_main(float main_velocity_turns) const {
+    return vernier_output_direction_sign()
+           * main_velocity_turns
+           / vernier_motor_turns_per_output_turn();
+}
+
+float Encoder::normalized_main_phase_from_raw_phase(float raw_phase) const {
+    float phase = VernierResolver::wrap01(raw_phase);
+    if (config_.vernier_main_reversed) {
+        phase = VernierResolver::wrap01(-phase);
+    }
+    return VernierResolver::wrap01(phase - config_.vernier_main_offset);
+}
+
+float Encoder::normalized_main_velocity_from_raw_velocity(float raw_velocity) const {
+    return config_.vernier_main_reversed ? -raw_velocity : raw_velocity;
+}
+
+float Encoder::controller_to_motor_direction() const {
+    float output_direction = 1.0f;
+    if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
+        if (config_.vernier_main_reversed) {
+            output_direction = -output_direction;
+        }
+        if (config_.vernier_output_reversed) {
+            output_direction = -output_direction;
+        }
+    }
+
+    return (float)config_.direction * output_direction;
+}
+
+float Encoder::controller_torque_to_motor_torque_scale() const {
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
+        return 1.0f;
+    }
+
+    const float ratio = std::abs(vernier_motor_turns_per_output_turn());
+    return ratio > 1.0e-6f ? 1.0f / ratio : 1.0f;
+}
+
+bool Encoder::controller_feedback_ready() const {
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
+        return is_ready_;
+    }
+
+    return is_ready_ &&
+           vernier_output_estimate_valid_ &&
+           vernier_main_continuous_valid_ &&
+           vernier_result_.valid &&
+           vernier_result_.locked;
+}
+
+void Encoder::reset_vernier_output_velocity_estimate() {
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
+        return;
+    }
+
     VernierResolver::Result result = {};
     uint32_t pair_sequence = 0;
     uint32_t prim = cpu_enter_critical();
@@ -427,29 +507,86 @@ void Encoder::publish_vernier_output_estimate(float dt) {
     pair_sequence = mt6826s_pair_sequence_;
     cpu_exit_critical(prim);
 
-    if (!result.valid || dt <= 0.0f) {
+    // Use the auxiliary encoder only to determine the initial main-encoder
+    // unwrap branch. Runtime controller feedback is derived from the main PLL.
+    if (result.valid) {
+        vernier_main_continuous_pos_ = result.main_unwrapped;
+        vernier_last_main_phase_corr_ = result.main_phase_corr;
+        vernier_main_continuous_valid_ = true;
+        vernier_output_pos_estimate_ =
+            vernier_output_position_from_main(vernier_main_continuous_pos_);
+        pos_estimate_ = vernier_output_pos_estimate_;
+        pos_circular_ = fmodf_pos(vernier_output_pos_estimate_,
+                                  axis_->controller_.config_.circular_setpoint_range);
+        vernier_output_estimate_valid_ = true;
+    } else {
+        vernier_output_estimate_valid_ = false;
+        vernier_main_continuous_valid_ = false;
+    }
+
+    vernier_output_vel_estimate_ = 0.0f;
+    vernier_output_sample_dt_ = 0.0f;
+    vernier_output_pair_sequence_ = pair_sequence;
+    vel_estimate_ = 0.0f;
+}
+
+void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate_turns) {
+    VernierResolver::Result result = {};
+    uint32_t pair_sequence = 0;
+    uint32_t prim = cpu_enter_critical();
+    result = vernier_result_;
+    pair_sequence = mt6826s_pair_sequence_;
+    cpu_exit_critical(prim);
+
+    if (dt <= 0.0f) {
         return;
     }
 
     vernier_output_sample_dt_ += dt;
 
-    if (!vernier_output_estimate_valid_) {
-        vernier_output_pos_estimate_ = result.position_turns;
+    const float raw_main_pll_phase =
+        VernierResolver::wrap01(pos_cpr_counts_ / (float)config_.cpr);
+    const float main_phase_corr =
+        normalized_main_phase_from_raw_phase(raw_main_pll_phase);
+
+    if (!vernier_main_continuous_valid_) {
+        if (!result.valid) {
+            return;
+        }
+        // Initial absolute branch q is from the Vernier/Nonius pair. After this
+        // point, the continuous controller coordinate follows main PLL deltas.
+        vernier_main_continuous_pos_ = result.main_unwrapped;
+        vernier_last_main_phase_corr_ = result.main_phase_corr;
+        vernier_main_continuous_valid_ = true;
+        vernier_output_pos_estimate_ =
+            vernier_output_position_from_main(vernier_main_continuous_pos_);
         vernier_output_vel_estimate_ = 0.0f;
         vernier_output_estimate_valid_ = true;
         vernier_output_pair_sequence_ = pair_sequence;
         vernier_output_sample_dt_ = 0.0f;
-    } else if (pair_sequence != vernier_output_pair_sequence_ && vernier_output_sample_dt_ > 0.0f) {
-        const float measured_vel = (result.position_turns - vernier_output_pos_estimate_) / vernier_output_sample_dt_;
-        const float alpha = std::min(1.0f, vernier_output_sample_dt_ * config_.bandwidth);
-        vernier_output_vel_estimate_ += alpha * (measured_vel - vernier_output_vel_estimate_);
-        vernier_output_pos_estimate_ = result.position_turns;
+    } else {
+        const float delta_main =
+            VernierResolver::wrap_pm_half(main_phase_corr - vernier_last_main_phase_corr_);
+        vernier_main_continuous_pos_ += delta_main;
+        vernier_last_main_phase_corr_ = main_phase_corr;
+        vernier_output_pos_estimate_ =
+            vernier_output_position_from_main(vernier_main_continuous_pos_);
+        vernier_output_vel_estimate_ =
+            vernier_output_velocity_from_main(
+                normalized_main_velocity_from_raw_velocity(motor_vel_estimate_turns));
+        vernier_output_estimate_valid_ = true;
+    }
+
+    if (pair_sequence != vernier_output_pair_sequence_) {
         vernier_output_pair_sequence_ = pair_sequence;
         vernier_output_sample_dt_ = 0.0f;
     }
 
     pos_estimate_ = vernier_output_pos_estimate_;
-    // vel_estimate_ is now always sourced from the motor-side PLL (see update()).
+    // In vernier mode the controller coordinate is the output shaft, so publish
+    // the output-shaft velocity together with the output-shaft position.  The
+    // motor-side PLL velocity remains used below for FOC phase velocity.
+    vel_estimate_ = vernier_output_vel_estimate_;
     pos_circular_ = fmodf_pos(vernier_output_pos_estimate_,
                               axis_->controller_.config_.circular_setpoint_range);
 }
@@ -485,6 +622,15 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
     out->encoder_vel_estimate = vel_estimate_.any().value_or(0.0f);
     out->encoder_pos_circular = pos_circular_.any().value_or(0.0f);
     out->state = static_cast<uint32_t>(resolver_result.state);
+    out->resolver_valid = resolver_result.valid;
+    out->resolver_locked = resolver_result.locked;
+    out->resolver_accepted_aux = resolver_result.accepted_aux;
+    out->resolver_degraded = resolver_result.degraded;
+    out->output_estimate_valid = vernier_output_estimate_valid_;
+    out->output_pos_estimate = vernier_output_pos_estimate_;
+    out->output_vel_estimate = vernier_output_vel_estimate_;
+    out->output_sample_dt = vernier_output_sample_dt_;
+    out->output_pair_sequence = vernier_output_pair_sequence_;
     out->main_spi_dma_error_count = mt6826s_spi_.spi_dma_error_count();
     out->main_crc_error_count = mt6826s_spi_.crc_error_count();
     out->main_fixed_bit_error_count = mt6826s_spi_.fixed_bit_error_count();
@@ -575,15 +721,12 @@ bool Encoder::update() {
     const float motor_pos_estimate_turns = pos_estimate_counts_ / (float)config_.cpr;
     const float motor_vel_estimate_turns = vel_estimate_counts_ / (float)config_.cpr;
 
-    // Motor-side velocity from PLL is always used for controller feedback.
-    // It is fast, low-noise, and correct for commutation scale.
-    vel_estimate_ = motor_vel_estimate_turns;
-
-    // In vernier mode the pos_estimate_ comes from the output-shaft resolver
-    // (absolute multi-turn).  For all other modes the motor-side PLL position
-    // is used.
+    // For non-vernier modes, controller position and velocity are sourced from
+    // the motor-side PLL. In vernier mode, publish_vernier_output_estimate()
+    // overrides both pos_estimate_ and vel_estimate_ with output-shaft values.
     if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
         pos_estimate_ = motor_pos_estimate_turns;
+        vel_estimate_ = motor_vel_estimate_turns;
     }
     
     // TODO: we should strictly require that this value is from the previous iteration
@@ -627,7 +770,7 @@ bool Encoder::update() {
     }
 
     if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
-        publish_vernier_output_estimate(current_meas_period);
+        publish_vernier_output_estimate(current_meas_period, motor_vel_estimate_turns);
     }
 
     return true;

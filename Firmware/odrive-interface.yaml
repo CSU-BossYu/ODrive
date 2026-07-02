@@ -1016,6 +1016,7 @@ interfaces:
           In `CONTROL_MODE_TORQUE_CONTROL`, sets the desired output torque of the axis.
           In `CONTROL_MODE_VELOCITY_CONTROL` and `CONTROL_MODE_POSITION_CONTROL`, sets the feed-forward torque of the torque controller.
           In `INPUT_MODE_TUNING`, this acts as a DC offset for the torque sine wave.
+          In `MODE_SPI_ABS_MT6826S_VERNIER`, this is output-shaft torque; firmware converts it to motor-side torque by the configured main ratio before FOC.
       pos_setpoint:
         type: readonly float32
         unit: turn
@@ -1027,7 +1028,7 @@ interfaces:
       torque_setpoint: 
         type: readonly float32
         unit: N·m
-        doc: The torque reference actually being used by the torque controller.  This is the same as `input_vel` in `INPUT_MODE_PASSTHROUGH`, but may vary according to `InputMode`.
+        doc: The torque reference actually being used by the torque controller. In `MODE_SPI_ABS_MT6826S_VERNIER`, this is output-shaft torque before gearbox-ratio conversion to motor-side torque.
       trajectory_done: 
         type: readonly bool
         doc: Indicates the last commanded Trapezoidal Trajectory movement is complete.
@@ -1201,6 +1202,7 @@ interfaces:
             bit: 6
           ABS_SPI_COM_FAIL:
           ABS_SPI_NOT_READY:
+          VERNIER_RESOLVER_FAIL:
       is_ready: readonly bool
       shadow_count: 
         type: readonly int32
@@ -1284,6 +1286,10 @@ interfaces:
           vernier_aux_reversed:
             type: bool
             c_setter: set_vernier_aux_reversed
+          vernier_use_phase_difference:
+            type: bool
+            c_setter: set_vernier_use_phase_difference
+            doc: Use the direct Vernier phase-difference resolver independently of output coordinate reversal.
           vernier_output_reversed:
             type: bool
             c_setter: set_vernier_output_reversed
@@ -1641,6 +1647,9 @@ valuetypes:
           which evaluates `torque = kp*(p_des - pos) + kd*(v_des - vel) + t_ff`
           directly into `torque_setpoint_`. Because kp and kd travel per-frame,
           this mode does not touch `config.pos_gain` / `config.vel_gain`.
+          In `MODE_SPI_ABS_MT6826S_VERNIER`, p_des/v_des and torque terms use
+          output-shaft coordinates/torque; firmware converts the final torque to
+          motor-side torque by the configured main ratio before FOC.
 
           ### Valid Inputs:
           * MIT packed frame (CMD 0x01F)

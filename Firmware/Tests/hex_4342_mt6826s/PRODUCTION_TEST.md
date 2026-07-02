@@ -149,6 +149,18 @@ and threshold values back unchanged, then verifies that they did not change:
 python Firmware\Tests\hex_4342_mt6826s\run_anticogging_link_test.py --bitrate 1000000 --write-same-config --clear-at-end
 ```
 
+Experimental unloaded full calibration, after flashing the vernier-aware
+anticogging firmware:
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_mt6826s_anticogging_calibration.py --clear-at-end
+```
+
+The preflight must report a 41:1 sweep of approximately 8.780 degrees. Run
+without `--save` for the first hardware validation. After reviewing the full
+3600-point run and testing the resulting compensation, repeat with `--save`
+to persist the map.
+
 ### Stage E: input modes and trajectory CAN link
 
 This gate checks the retained input-mode and trajectory CAN command surfaces

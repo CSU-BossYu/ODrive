@@ -1,6 +1,8 @@
 #ifndef __CONTROLLER_HPP
 #define __CONTROLLER_HPP
 
+#include <optional>
+
 class Controller : public ODriveIntf::ControllerIntf {
 public:
     struct Anticogging_t {
@@ -92,6 +94,50 @@ public:
     Config_t config_;
     Axis* axis_ = nullptr; // set by Axis constructor
 
+    struct OverspeedSnapshot {
+        bool valid = false;
+        uint32_t control_loop_count = 0;
+        float timestamp = 0.0f;
+        float vel_estimate = 0.0f;
+        float vel_limit = 0.0f;
+        float vel_limit_tolerance = 0.0f;
+        float pos_estimate_linear = 0.0f;
+        float pos_estimate_circular = 0.0f;
+        float pos_wrap = 0.0f;
+        float pos_setpoint = 0.0f;
+        float vel_setpoint = 0.0f;
+        float torque_setpoint = 0.0f;
+        float input_pos = 0.0f;
+        float input_vel = 0.0f;
+        float input_torque = 0.0f;
+        uint32_t input_mode = 0;
+        uint32_t control_mode = 0;
+        uint32_t resolver_state = 0;
+        uint32_t resolver_valid = 0;
+        uint32_t resolver_locked = 0;
+        uint32_t resolver_accepted_aux = 0;
+        uint32_t resolver_degraded = 0;
+        float resolver_position_turns = 0.0f;
+        float resolver_residual = 0.0f;
+        float encoder_pos_estimate = 0.0f;
+        float encoder_vel_estimate = 0.0f;
+        float encoder_pos_circular = 0.0f;
+        uint32_t pair_sequence = 0;
+        uint32_t pair_valid = 0;
+        uint32_t output_estimate_valid = 0;
+        float output_pos_estimate = 0.0f;
+        float output_vel_estimate = 0.0f;
+        float output_sample_dt = 0.0f;
+        uint32_t output_pair_sequence = 0;
+    };
+
+    void clear_overspeed_snapshot();
+    void capture_overspeed_snapshot(float vel_estimate,
+                                    const std::optional<float>& pos_estimate_linear,
+                                    const std::optional<float>& pos_estimate_circular,
+                                    const std::optional<float>& pos_wrap);
+    const OverspeedSnapshot& get_overspeed_snapshot() const { return overspeed_snapshot_; }
+
     Error error_ = ERROR_NONE;
     float last_error_time_ = 0.0f;
 
@@ -104,11 +150,11 @@ public:
     float pos_setpoint_ = 0.0f; // [turns]
     float vel_setpoint_ = 0.0f; // [turn/s]
     float vel_integrator_torque_ = 0.0f;    // [Nm]
-    float torque_setpoint_ = 0.0f;  // [Nm]
+    float torque_setpoint_ = 0.0f;  // [Nm], output-shaft Nm in vernier mode
 
     float input_pos_ = 0.0f;     // [turns]
     float input_vel_ = 0.0f;     // [turn/s]
-    float input_torque_ = 0.0f;  // [Nm]
+    float input_torque_ = 0.0f;  // [Nm], output-shaft Nm in vernier mode
     float input_filter_kp_ = 0.0f;
     float input_filter_ki_ = 0.0f;
 
@@ -129,14 +175,21 @@ public:
     bool trajectory_done_ = true;
 
     bool anticogging_valid_ = false;
+    bool anticogging_calibration_initialized_ = false;
+    uint32_t anticogging_start_index_ = 0;
+    float anticogging_start_pos_ = 0.0f;
     float mechanical_power_ = 0.0f; // [W]
     float electrical_power_ = 0.0f; // [W]
+    float overspeed_time_ = 0.0f; // [s]
 
     // Outputs
     OutputPort<float> torque_output_ = 0.0f;
 
     // custom setters
     void set_input_pos(float value) { set_input_pos_and_steps(value); input_pos_updated(); }
+
+private:
+    OverspeedSnapshot overspeed_snapshot_;
 };
 
 #endif // __CONTROLLER_HPP

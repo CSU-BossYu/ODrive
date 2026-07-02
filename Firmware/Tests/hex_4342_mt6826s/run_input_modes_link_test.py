@@ -280,7 +280,7 @@ def main():
         print(f"Final status: {final_status}")
         print("PASS: input-mode and trajectory CAN link test completed")
         return 0
-    except Exception:
+    except BaseException:
         print("Stopping motor due to failure...")
         set_input_torque(bus, args.node_id, 0.0, args.extended_id)
         set_input_vel(bus, args.node_id, 0.0, 0.0, args.extended_id)
