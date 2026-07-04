@@ -1,5 +1,6 @@
 
 #include "odrive_main.h"
+#include "control_timeout.hpp"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -89,6 +90,7 @@ void Controller::move_to_pos(float goal_point) {
                                  axis_->trap_traj_.config_.decel_limit);
     axis_->trap_traj_.t_ = 0.0f;
     trajectory_done_ = false;
+    ControlTimeout::mark_trajectory_active(*axis_);
 }
 
 void Controller::move_incremental(float displacement, bool from_input_pos = true){
@@ -236,6 +238,8 @@ static float limitVel(const float vel_limit, const float vel_estimate, const flo
 }
 
 bool Controller::update() {
+    ControlTimeout::mark_running(*axis_);
+
     std::optional<float> pos_estimate_linear = pos_estimate_linear_src_.present();
     std::optional<float> pos_estimate_circular = pos_estimate_circular_src_.present();
     std::optional<float> pos_wrap = pos_wrap_src_.present();
@@ -285,12 +289,23 @@ bool Controller::update() {
             torque_setpoint_ = input_torque_; 
         } break;
         case INPUT_MODE_VEL_RAMP: {
-            float max_step_size = std::abs(current_meas_period * config_.vel_ramp_rate);
-            float full_step = input_vel_ - vel_setpoint_;
+            const auto& timeout_config = ControlTimeout::config(*axis_);
+            float target_vel = ControlTimeout::quick_stop_active(*axis_) ? 0.0f : input_vel_;
+            float rate = ControlTimeout::quick_stop_active(*axis_)
+                ? timeout_config.quick_stop_decel_limit
+                : (std::abs(target_vel) < std::abs(vel_setpoint_)
+                       ? timeout_config.velocity_decel_limit
+                       : timeout_config.velocity_accel_limit);
+            float max_step_size = std::abs(current_meas_period * rate);
+            float full_step = target_vel - vel_setpoint_;
             float step = std::clamp(full_step, -max_step_size, max_step_size);
 
             vel_setpoint_ += step;
             torque_setpoint_ = (step / current_meas_period) * config_.inertia;
+            if (ControlTimeout::quick_stop_active(*axis_) && std::abs(vel_setpoint_) < 1e-3f) {
+                vel_setpoint_ = 0.0f;
+                ControlTimeout::mark_holding(*axis_);
+            }
         } break;
         case INPUT_MODE_TORQUE_RAMP: {
             float max_step_size = std::abs(current_meas_period * config_.torque_ramp_rate);
@@ -331,6 +346,7 @@ bool Controller::update() {
                 vel_setpoint_ = 0.0f;
                 torque_setpoint_ = 0.0f;
                 trajectory_done_ = true;
+                ControlTimeout::mark_trajectory_done(*axis_);
             } else {
                 TrapezoidalTrajectory::Step_t traj_step = axis_->trap_traj_.eval(axis_->trap_traj_.t_);
                 pos_setpoint_ = traj_step.Y;

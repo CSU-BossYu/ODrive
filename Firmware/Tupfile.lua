@@ -81,6 +81,7 @@ odrive_firmware_pkg = {
         'MotorControl/acim_estimator.cpp',
         'MotorControl/mechanical_brake.cpp',
         'MotorControl/controller.cpp',
+        'MotorControl/control_timeout.cpp',
         'MotorControl/foc.cpp',
         'MotorControl/open_loop_controller.cpp',
         'MotorControl/oscilloscope.cpp',

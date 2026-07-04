@@ -1658,6 +1658,62 @@ valuetypes:
           * `CONTROL_MODE_TORQUE_CONTROL` (recommended; avoids the velocity PI
             and position loop re-processing the MIT-computed torque)
 
+  ODrive.Controller.TimeoutAction:
+    values:
+      HOLD_LAST_POSITION:
+        value: 0
+        doc: |
+          Command-watchdog timeout action: freeze the current position setpoint
+          and hold it. Used by position modes (e.g. TRAP_TRAJ after the
+          trajectory completes). The axis stays armed in closed loop; a new
+          command frame resumes normal control.
+      QUICK_STOP:
+        value: 1
+        doc: |
+          Ramp the velocity setpoint toward zero using
+          `config.quick_stop_decel_limit`. The axis stays armed while
+          decelerating.
+      QUICK_STOP_AND_HOLD:
+        value: 2
+        doc: |
+          Ramp the velocity setpoint toward zero using
+          `config.quick_stop_decel_limit`, then hold the reached position.
+          Default for velocity modes.
+      TORQUE_ZERO:
+        value: 3
+        doc: |
+          Zero `input_torque` / `torque_setpoint` and, for MIT mode, clear the
+          per-frame kp/kd/t_ff so the last received MIT frame does not persist.
+          The axis stays armed. Default for torque and MIT modes.
+      FAULT_DISABLE:
+        value: 4
+        doc: |
+          Latch a controller fault and disarm the motor. Recovery requires
+          `clear_errors` followed by a fresh closed-loop enable.
+
+  ODrive.Controller.ServoControlMode:
+    values:
+      TORQUE:
+        value: 0
+        doc: |
+          Business-layer control mode: TORQUE_CONTROL + PASSTHROUGH. Default
+          timeout action TORQUE_ZERO. Set via extended item 0x5B (sub-cmd 0x0C);
+          the getter derives the current servo mode from the active
+          (ControlMode, InputMode), returning 0xFF for non-canonical pairs.
+      VELOCITY:
+        value: 1
+        doc: |
+          VELOCITY_CONTROL + VEL_RAMP. Default timeout action QUICK_STOP_AND_HOLD.
+      PROFILE_POSITION:
+        value: 2
+        doc: |
+          POSITION_CONTROL + TRAP_TRAJ. Default timeout action HOLD_LAST_POSITION.
+      MIT_REALTIME:
+        value: 3
+        doc: |
+          TORQUE_CONTROL + MIT. Default timeout action TORQUE_ZERO (clears
+          per-frame kp/kd/t_ff on watchdog expiry so a stale frame cannot hold torque).
+
   ODrive.Motor.MotorType:
     values:
       HIGH_CURRENT:

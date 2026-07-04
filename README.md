@@ -1,33 +1,22 @@
-## Important Note
+# ODrive Production Firmware
 
-The firmware in this repository is compatible with the ODrive v3.x (NRND) and is no longer under active development.
+This repository contains a trimmed single-axis ODrive v3 firmware profile for the current production CAN workflow.
 
-Firmware for the new generation of ODrives ([ODrive Pro](https://odriverobotics.com/shop/odrive-pro), [S1](https://odriverobotics.com/shop/odrive-s1), [Micro](https://odriverobotics.com/shop/odrive-micro), etc.) is currently being actively maintained and developed, however its source code is currently not publicly available. Access may be available under NDA, please [reach out to us](mailto:info@odriverobotics.com) for inquiries.
+## Repository Layout
 
-## Overview
+- `Firmware/`: firmware source, board support, CAN protocol, and firmware-side tests
+- `Firmware/communication/can/CAN_PROTOCOL_PRODUCTION.md`: current production CAN protocol notes
+- `tools/`: minimal generation helpers that are still referenced by the firmware build
+- `odrive-cansimple.dbc`: maintained CAN database snapshot
 
-![ODrive Logo](https://static1.squarespace.com/static/58aff26de4fcb53b5efd2f02/t/59bf2a7959cc6872bd68be7e/1505700483663/Odrive+logo+plus+text+black.png?format=1000w)
+The original upstream Arduino library, GUI, docs site, odrivetool package, and broad analysis scripts have been removed from this tree.
 
-This project is all about accurately driving brushless motors, for cheap. The aim is to make it possible to use inexpensive brushless motors in high performance robotics projects, like [this](https://www.youtube.com/watch?v=WT4E5nb3KtY).
+## Build
 
-| Branch | Build Status |
-|--------|--------------|
-| master | [![Build Status](https://travis-ci.org/madcowswe/ODrive.png?branch=master)](https://travis-ci.org/madcowswe/ODrive) |
-| devel  | [![Build Status](https://travis-ci.org/madcowswe/ODrive.png?branch=devel)](https://travis-ci.org/madcowswe/ODrive) |
+The firmware build is driven from `Firmware/` with Tup:
 
-[![pip install odrive (nightly)](https://github.com/madcowswe/ODrive/workflows/pip%20install%20odrive%20(nightly)/badge.svg)](https://github.com/madcowswe/ODrive/actions?query=workflow%3A%22pip+install+odrive+%28nightly%29%22)
+```sh
+make all
+```
 
-Please refer to the [Developer Guide](https://docs.odriverobotics.com/v/latest/developer-guide.html#) to get started with ODrive firmware development.
-
-
-### Repository Structure
- * **Firmware**: ODrive firmware
- * **tools**: Python library & tools
- * **docs**: Documentation
-
-### Other Resources
-
- * [Main Website](https://www.odriverobotics.com/)
- * [User Guide](https://docs.odriverobotics.com/)
- * [Forum](https://discourse.odriverobotics.com/)
- * [Chat](https://discourse.odriverobotics.com/t/come-chat-with-us/281)
+`Firmware/Makefile` now only prepares firmware-local generated files and runs Tup. It no longer regenerates Arduino headers, odrivetool files, GUI assets, or DBC files.

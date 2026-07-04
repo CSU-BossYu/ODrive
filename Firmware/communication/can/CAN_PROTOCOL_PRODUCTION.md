@@ -90,6 +90,32 @@ Input modes:
 `MIX_CHANNELS` is retained in enum space for compatibility but should not be
 used by new single-axis applications.
 
+Timeout actions (item `0x54` of Get/Set_Control_Config, `0x0B`/`0x0C`):
+
+| Value | Name | Default for |
+| --- | --- | --- |
+| `0` | HOLD_LAST_POSITION | position modes (TRAP_TRAJ) |
+| `1` | QUICK_STOP | explicit override |
+| `2` | QUICK_STOP_AND_HOLD | velocity modes (also the auto default value) |
+| `3` | TORQUE_ZERO | torque and MIT modes |
+| `4` | FAULT_DISABLE | explicit override |
+
+When `timeout_action` is left at the default `QUICK_STOP_AND_HOLD` (value `2`),
+the firmware picks a mode-aware action from the table above. Any other value is
+treated as an explicit override.
+
+Servo control modes (item `0x5B` of Get/Set_Control_Config, `0x0B`/`0x0C`)
+map a business-layer mode to a canonical `(ControlMode, InputMode)` pair and a
+default timeout action. The getter derives the current mode from the active
+pair; a non-canonical pair reads back as `0xFF`:
+
+| Value | Name | Maps to | Default timeout action |
+| --- | --- | --- | --- |
+| `0` | TORQUE | TORQUE_CONTROL + PASSTHROUGH | TORQUE_ZERO |
+| `1` | VELOCITY | VELOCITY_CONTROL + VEL_RAMP | QUICK_STOP_AND_HOLD |
+| `2` | PROFILE_POSITION | POSITION_CONTROL + TRAP_TRAJ | HOLD_LAST_POSITION |
+| `3` | MIT_REALTIME | TORQUE_CONTROL + MIT | TORQUE_ZERO |
+
 ## MIT packed control, command `0x01F`
 
 Frame length: 8 bytes. Big-endian AK/T-Motor-compatible bit packing.
@@ -183,7 +209,9 @@ Subcommands:
 | `0x08` | Get_Anticogging_Status | implemented |
 | `0x09` | Set_Anticogging_Config | implemented |
 | `0x0A` | Get_Vernier_Diagnostics | implemented |
-| `0x0B..0x1F` | Reserved | reserved for production protocol growth |
+| `0x0B` | Get_Control_Config | implemented |
+| `0x0C` | Set_Control_Config | implemented |
+| `0x0D..0x1F` | Reserved | reserved for production protocol growth |
 
 The current extended protocol version is returned by subcommand `0x05`, item
 `0x01`, and is `0x00000101`.
@@ -234,6 +262,52 @@ Subcommand `0x09`, Set_Anticogging_Config:
 | `0x05` | uint32 | nonzero resets calibration state/index |
 
 Setters return `BUSY_ARMED` while the motor is armed.
+
+## Control configuration extended items
+
+Subcommands `0x0B` and `0x0C`, Get/Set_Control_Config, use the same item IDs
+(range `0x50`-`0x5C`). These cover the mode-aware command watchdog, heartbeat
+watchdog, velocity/quick-stop ramp limits, and position profile limits. The
+control-timeout fields are runtime configuration held outside `Controller` and
+are not persisted to NVM in this phase. Unlike Set_Basic_Config,
+Set_Control_Config has **no `BUSY_ARMED` guard**; writable fields take effect
+on the next control loop. Items `0x58`-`0x5A` are readonly and return
+`READONLY` on set.
+
+The command watchdog is the motion-control-layer timeout, distinct from the
+legacy axis safety watchdog (`config.enable_watchdog` /
+`config.watchdog_timeout`, which remains a hard-disarm fault layer). It is fed
+only by motion command frames: `0x00B` Set_Controller_Modes, `0x00C`
+Set_Input_Pos, `0x00D` Set_Input_Vel, `0x00E` Set_Input_Torque, and `0x01F`
+Set_MIT_Control. Read/status/config frames do not feed it. On expiry
+(`can_watchdog_timeout_ms` with no motion command), the firmware executes the
+mode-aware timeout action. A fresh motion command clears the timeout state.
+
+A separate heartbeat watchdog (`heartbeat_timeout_ms`, item `0x5C`) is fed only
+by master heartbeat/NMT frames (`0x000`, `0x001`, `0x700`). On expiry the same
+timeout action path runs with `last_timeout_reason = 2`.
+
+| Item | Type | Meaning |
+| --- | --- | --- |
+| `0x50` | float32 | velocity_accel_limit [turn/s²] for VEL_RAMP acceleration |
+| `0x51` | float32 | velocity_decel_limit [turn/s²] for VEL_RAMP deceleration |
+| `0x52` | float32 | quick_stop_decel_limit [turn/s²] for command-timeout quick stop |
+| `0x53` | uint32 | can_watchdog_timeout_ms, 0 = disabled |
+| `0x54` | uint32 | timeout_action enum (TimeoutAction) |
+| `0x55` | float32 | profile_vel_limit [turn/s], mirrors `trap_traj.config.vel_limit` |
+| `0x56` | float32 | profile_accel_limit [turn/s²], mirrors `trap_traj.config.accel_limit` |
+| `0x57` | float32 | profile_decel_limit [turn/s²], mirrors `trap_traj.config.decel_limit` |
+| `0x58` | uint32 | control_runtime_state flags (readonly): bit0 enabled, bit1 running, bit2 holding, bit3 quick_stop_active, bit4 comm_timeout, bit5 command_watchdog_expired, bit6 mit_frame_stale, bit7 trajectory_done, bit8 heartbeat_expired |
+| `0x59` | uint32 | last_timeout_reason (readonly): 0=none, 1=command_watchdog, 2=heartbeat |
+| `0x5A` | uint32 | trajectory_done (readonly), bool |
+| `0x5B` | uint32 | servo_mode enum (ServoControlMode); setter maps to `(ControlMode, InputMode)` plus default timeout_action |
+| `0x5C` | uint32 | heartbeat_timeout_ms, 0 = disabled |
+
+The heartbeat (command `0x001`) controller flags byte (bits 56-63) mirrors a
+subset of `control_runtime_state`: bit0 controller error present, bit1
+comm_timeout, bit2 quick_stop_active, bit3 holding, bit4
+command_watchdog_expired, bit5 mit_frame_stale, bit6 running, bit7
+trajectory_done. Bit0 and bit7 are backward-compatible with older hosts.
 
 ## Vernier diagnostics extended items
 

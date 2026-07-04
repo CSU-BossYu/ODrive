@@ -4,7 +4,6 @@
 
 BUILD_DIR = build
 FIRMWARE = $(BUILD_DIR)/ODriveFirmware.elf
-FIRMWARE_HEX = $(BUILD_DIR)/ODriveFirmware.hex
 PROGRAMMER_CMD=$(if $(value PROGRAMMER),-c 'hla_serial $(PROGRAMMER)',)
 
 include tup.config # source build configuration to get CONFIG_BOARD_VERSION
@@ -31,30 +30,6 @@ all:
 	@$(PY_CMD) -c "import os; os.makedirs('autogen', exist_ok=True)"
 	@$(PY_CMD) ../tools/odrive/version.py --output autogen/version.c
 	@tup --quiet -no-environ-check
-	@$(PY_CMD) interface_generator_stub.py --definitions odrive-interface.yaml --template ../tools/enums_template.j2 --output ../tools/odrive/enums.py
-	@$(PY_CMD) interface_generator_stub.py --definitions odrive-interface.yaml --template ../tools/arduino_enums_template.j2 --output ../Arduino/ODriveArduino/ODriveEnums.h
-	@cd ../tools/ && $(PY_CMD) create_can_dbc.py
-
-# Copy libfibre files to odrivetool if they were built
-	@$(PY_CMD) -c "import os, shutil; dst='../tools/odrive/pyfibre/fibre'; os.makedirs(dst, exist_ok=True); [shutil.copy2(src, dst) for src in ('fibre-cpp/build/libfibre-linux-amd64.so', 'fibre-cpp/build/libfibre-linux-armhf.so', 'fibre-cpp/build/libfibre-linux-aarch64.so', 'fibre-cpp/build/libfibre-macos-x86.dylib', 'fibre-cpp/build/libfibre-windows-amd64.dll') if os.path.isfile(src)]"
-
-libfibre-linux-armhf:
-	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/fibre-linux-armhf-build:/build/build -w /build fibre-compiler configs/linux-armhf.config
-	cp /tmp/fibre-linux-armhf-build/libfibre-*.so ../tools/odrive/pyfibre/fibre/
-
-libfibre-all:
-	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/libfibre-build:/build/build -w /build fibre-compiler configs/linux-amd64.config
-	cp /tmp/libfibre-build/libfibre-linux-amd64.so ../tools/odrive/pyfibre/fibre/
-	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/libfibre-build:/build/build -w /build fibre-compiler configs/linux-armhf.config
-	cp /tmp/libfibre-build/libfibre-linux-armhf.so ../tools/odrive/pyfibre/fibre/
-	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/libfibre-build:/build/build -w /build fibre-compiler configs/linux-aarch64.config
-	cp /tmp/libfibre-build/libfibre-linux-aarch64.so ../tools/odrive/pyfibre/fibre/
-	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/libfibre-build:/build/build -w /build fibre-compiler configs/macos-x86.config
-	cp /tmp/libfibre-build/libfibre-macos-x86.dylib ../tools/odrive/pyfibre/fibre/
-	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/libfibre-build:/build/build -w /build fibre-compiler configs/windows-amd64.config
-	cp /tmp/libfibre-build/libfibre-windows-amd64.dll ../tools/odrive/pyfibre/fibre/
-	docker run -it -v "`pwd`/fibre-cpp":/build -v /tmp/libfibre-build:/build/build -w /build fibre-compiler configs/wasm.config
-	cp /tmp/libfibre-build/libfibre-wasm.* ../GUI/fibre-js/
 
 clean:
 	-rm -fR .dep $(BUILD_DIR)
@@ -92,9 +67,6 @@ gdb-bmp: all
 		--ex 'attach 1' \
 		--ex 'load' $(FIRMWARE)
 
-dfu: all
-	python ../tools/odrivetool $(if $(value SERIAL_NUMBER),--serial-number $(SERIAL_NUMBER),) dfu $(FIRMWARE_HEX)
-
 flash: flash-stlink2
 gdb: gdb-stlink2
 erase: erase-stlink2
@@ -102,4 +74,4 @@ unlock: unlock-stlink2
 
 .PHONY: stlink2-config flash-stlink2 gdb-stlink2 erase-stlink2 unlock-stlink2
 .PHONY: flash-bmp gdb-bmp
-.PHONY: all clean flash gdb erase unlock dfu fibre
+.PHONY: all clean flash gdb erase unlock

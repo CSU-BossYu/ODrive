@@ -1,6 +1,7 @@
 
 #define __MAIN_CPP__
 #include "odrive_main.h"
+#include "control_timeout.hpp"
 #include "nvm_config.hpp"
 
 #include "usart.h"
@@ -233,6 +234,8 @@ void ODrive::clear_errors() {
         axis.motor_.error_ = Motor::ERROR_NONE;
         axis.controller_.error_ = Controller::ERROR_NONE;
         axis.controller_.clear_overspeed_snapshot();
+        ControlTimeout::clear(axis);
+        ControlTimeout::feed_command(axis);
         axis.encoder_.error_ = Encoder::ERROR_NONE;
         axis.encoder_.spi_error_rate_ = 0.0f;
         axis.error_ = Axis::ERROR_NONE;
@@ -404,6 +407,9 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
         if (!checks_ok || !watchdog_ok) {
             axis.motor_.disarm();
         }
+
+        ControlTimeout::check_command(axis);
+        ControlTimeout::check_heartbeat(axis);
     }
 
     // Sub-components should use set_error which will propagate to this error_

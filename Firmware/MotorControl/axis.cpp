@@ -4,6 +4,7 @@
 #include "gpio.h"
 
 #include "odrive_main.h"
+#include "control_timeout.hpp"
 #include "utils.hpp"
 #include "communication/interface_can.hpp"
 
@@ -284,6 +285,7 @@ bool Axis::start_closed_loop_control() {
 
 bool Axis::stop_closed_loop_control() {
     motor_.disarm();
+    ControlTimeout::clear_running(*this);
     return check_for_errors();
 }
 

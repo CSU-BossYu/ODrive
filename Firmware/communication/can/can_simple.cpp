@@ -2,6 +2,7 @@
 #include "can_simple.hpp"
 
 #include "debug_counters.hpp"
+#include "control_timeout.hpp"
 #include <odrive_main.h>
 #include <algorithm>
 #include <cmath>
@@ -56,11 +57,13 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
     axis.watchdog_feed();
     switch (cmd) {
         case MSG_CO_NMT_CTRL:
+            ControlTimeout::feed_heartbeat(axis);
             break;
         case MSG_CO_HEARTBEAT_CMD:
+            ControlTimeout::feed_heartbeat(axis);
             break;
         case MSG_ODRIVE_HEARTBEAT:
-            // We don't currently do anything to respond to ODrive heartbeat messages
+            ControlTimeout::feed_heartbeat(axis);
             break;
         case MSG_ODRIVE_ESTOP:
             estop_callback(axis, msg);
@@ -253,15 +256,18 @@ void CANSimple::set_input_pos_callback(Axis& axis, const can_Message_t& msg) {
     axis.controller_.input_vel_ = can_getSignal<int16_t>(msg, 32, 16, true, 0.001f, 0);
     axis.controller_.input_torque_ = can_getSignal<int16_t>(msg, 48, 16, true, 0.001f, 0);
     axis.controller_.input_pos_updated();
+    ControlTimeout::feed_command(axis);
 }
 
 void CANSimple::set_input_vel_callback(Axis& axis, const can_Message_t& msg) {
     axis.controller_.input_vel_ = can_getSignal<float>(msg, 0, 32, true);
     axis.controller_.input_torque_ = can_getSignal<float>(msg, 32, 32, true);
+    ControlTimeout::feed_command(axis);
 }
 
 void CANSimple::set_input_torque_callback(Axis& axis, const can_Message_t& msg) {
     axis.controller_.input_torque_ = can_getSignal<float>(msg, 0, 32, true);
+    ControlTimeout::feed_command(axis);
 }
 
 void CANSimple::set_controller_modes_callback(Axis& axis, const can_Message_t& msg) {
@@ -269,6 +275,7 @@ void CANSimple::set_controller_modes_callback(Axis& axis, const can_Message_t& m
     axis.controller_.config_.control_mode = static_cast<Controller::ControlMode>(mode);
     axis.controller_.config_.input_mode = static_cast<Controller::InputMode>(can_getSignal<int32_t>(msg, 32, 32, true));
     axis.controller_.control_mode_updated();
+    ControlTimeout::feed_command(axis);
 }
 
 void CANSimple::set_limits_callback(Axis& axis, const can_Message_t& msg) {
@@ -360,6 +367,7 @@ void CANSimple::set_mit_control_callback(Axis& axis, const can_Message_t& msg) {
     // them when input_mode == INPUT_MODE_MIT; otherwise this just updates the
     // stored input and does not drive the motor.
     axis.controller_.set_mit_input(p_des, v_des, kp, kd, t_ff);
+    ControlTimeout::feed_command(axis);
 }
 
 bool CANSimple::get_iq_callback(const Axis& axis) {
@@ -483,10 +491,15 @@ bool CANSimple::send_heartbeat(const Axis& axis) {
     // Encoder flags
     uint8_t encoderFlags = axis.encoder_.error_ != 0;
 
-    // Controller flags
-    uint8_t controllerFlags =axis.controller_.error_ != 0;
-    uint8_t trajDone = uint8_t(axis.controller_.trajectory_done_) << 7;
-    controllerFlags |= trajDone;
+    uint8_t controllerFlags = (axis.controller_.error_ != 0) ? 0x01 : 0;
+    uint32_t control_flags = ControlTimeout::state(axis).flags;
+    if (control_flags & ControlTimeout::FLAG_COMM_TIMEOUT)         controllerFlags |= 0x02;
+    if (control_flags & ControlTimeout::FLAG_QUICK_STOP_ACTIVE)    controllerFlags |= 0x04;
+    if (control_flags & ControlTimeout::FLAG_HOLDING)              controllerFlags |= 0x08;
+    if (control_flags & ControlTimeout::FLAG_CMD_WATCHDOG_EXPIRED) controllerFlags |= 0x10;
+    if (control_flags & ControlTimeout::FLAG_MIT_FRAME_STALE)      controllerFlags |= 0x20;
+    if (control_flags & ControlTimeout::FLAG_RUNNING)              controllerFlags |= 0x40;
+    if (axis.controller_.trajectory_done_)                         controllerFlags |= 0x80;
 
     can_setSignal(txmsg, motorFlags, 40, 8, true);
     can_setSignal(txmsg, encoderFlags, 48, 8, true);
@@ -573,6 +586,8 @@ bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) 
         case 0x08: return handle_get_anticogging_status(axis, msg, txmsg);
         case 0x09: return handle_set_anticogging_config(axis, msg, txmsg);
         case 0x0A: return handle_get_vernier_diagnostics(axis, msg, txmsg);
+        case 0x0B: return handle_get_control_config(axis, msg, txmsg);
+        case 0x0C: return handle_set_control_config(axis, msg, txmsg);
         default:   return false;
     }
 }
@@ -980,6 +995,175 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             odrv.config_.dc_max_positive_current = value;
             break;
         }
+        default:
+            status = EXT_STATUS_UNKNOWN;
+            break;
+    }
+
+    txmsg.buf[2] = status;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x0B/0x0C: CONTROL_CONFIG
+//
+// item 0x50: velocity_accel_limit (float32)
+// item 0x51: velocity_decel_limit (float32)
+// item 0x52: quick_stop_decel_limit (float32)
+// item 0x53: can_watchdog_timeout_ms (uint32)
+// item 0x54: timeout_action (uint32 enum)
+// item 0x55: profile_vel_limit (float32)
+// item 0x56: profile_accel_limit (float32)
+// item 0x57: profile_decel_limit (float32)
+// item 0x58: control_status_flags (uint32, readonly)
+// item 0x59: last_timeout_reason (uint32, readonly)
+// item 0x5A: trajectory_done (uint32, readonly)
+// item 0x5B: servo_mode (uint32 enum)
+// item 0x5C: heartbeat_timeout_ms (uint32)
+// =====================================================================
+bool CANSimple::handle_get_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t param_id = msg.buf[1];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type = EXT_TYPE_UINT32;
+    const auto& cfg = ControlTimeout::config(axis);
+    const auto& st = ControlTimeout::state(axis);
+
+    txmsg.buf[0] = 0x0B;
+    txmsg.buf[1] = param_id;
+
+    switch (param_id) {
+        case 0x50: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, cfg.velocity_accel_limit, 32, 32, true); break;
+        case 0x51: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, cfg.velocity_decel_limit, 32, 32, true); break;
+        case 0x52: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, cfg.quick_stop_decel_limit, 32, 32, true); break;
+        case 0x53: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, cfg.can_watchdog_timeout_ms, 32, 32, true); break;
+        case 0x54: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(cfg.timeout_action), 32, 32, true); break;
+        case 0x55: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.trap_traj_.config_.vel_limit, 32, 32, true); break;
+        case 0x56: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.trap_traj_.config_.accel_limit, 32, 32, true); break;
+        case 0x57: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.trap_traj_.config_.decel_limit, 32, 32, true); break;
+        case 0x58: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, st.flags, 32, 32, true); break;
+        case 0x59: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, st.last_timeout_reason, 32, 32, true); break;
+        case 0x5A: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.controller_.trajectory_done_ ? 1u : 0u, 32, 32, true); break;
+        case 0x5B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(ControlTimeout::derive_servo_mode(axis)), 32, 32, true); break;
+        case 0x5C: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, cfg.heartbeat_timeout_ms, 32, 32, true); break;
+        default:   status = EXT_STATUS_UNKNOWN; can_setSignal<uint32_t>(txmsg, 0, 32, 32, true); break;
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
+    return canbus_->send_message(txmsg);
+}
+
+bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t param_id = msg.buf[1];
+    const uint8_t req_type = msg.buf[2];
+    uint8_t status = EXT_STATUS_OK;
+    auto& cfg = ControlTimeout::config(axis);
+
+    txmsg.buf[0] = 0x0C;
+    txmsg.buf[1] = param_id;
+    txmsg.buf[3] = req_type;
+
+    switch (param_id) {
+        case 0x50: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            cfg.velocity_accel_limit = value;
+            break;
+        }
+        case 0x51: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            cfg.velocity_decel_limit = value;
+            break;
+        }
+        case 0x52: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            cfg.quick_stop_decel_limit = value;
+            break;
+        }
+        case 0x53: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            cfg.can_watchdog_timeout_ms = can_getSignal<uint32_t>(msg, 32, 32, true);
+            ControlTimeout::feed_command(axis);
+            break;
+        }
+        case 0x54: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (value > static_cast<uint32_t>(Controller::TIMEOUT_ACTION_FAULT_DISABLE)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            cfg.timeout_action = static_cast<Controller::TimeoutAction>(value);
+            break;
+        }
+        case 0x55: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.trap_traj_.config_.vel_limit = value;
+            break;
+        }
+        case 0x56: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.trap_traj_.config_.accel_limit = value;
+            break;
+        }
+        case 0x57: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.trap_traj_.config_.decel_limit = value;
+            break;
+        }
+        case 0x5B: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            switch (value) {
+                case Controller::SERVO_CONTROL_MODE_TORQUE:
+                    axis.controller_.config_.control_mode = Controller::CONTROL_MODE_TORQUE_CONTROL;
+                    axis.controller_.config_.input_mode = Controller::INPUT_MODE_PASSTHROUGH;
+                    cfg.timeout_action = Controller::TIMEOUT_ACTION_TORQUE_ZERO;
+                    break;
+                case Controller::SERVO_CONTROL_MODE_VELOCITY:
+                    axis.controller_.config_.control_mode = Controller::CONTROL_MODE_VELOCITY_CONTROL;
+                    axis.controller_.config_.input_mode = Controller::INPUT_MODE_VEL_RAMP;
+                    cfg.timeout_action = Controller::TIMEOUT_ACTION_QUICK_STOP_AND_HOLD;
+                    break;
+                case Controller::SERVO_CONTROL_MODE_PROFILE_POSITION:
+                    axis.controller_.config_.control_mode = Controller::CONTROL_MODE_POSITION_CONTROL;
+                    axis.controller_.config_.input_mode = Controller::INPUT_MODE_TRAP_TRAJ;
+                    cfg.timeout_action = Controller::TIMEOUT_ACTION_HOLD_LAST_POSITION;
+                    break;
+                case Controller::SERVO_CONTROL_MODE_MIT_REALTIME:
+                    axis.controller_.config_.control_mode = Controller::CONTROL_MODE_TORQUE_CONTROL;
+                    axis.controller_.config_.input_mode = Controller::INPUT_MODE_MIT;
+                    cfg.timeout_action = Controller::TIMEOUT_ACTION_TORQUE_ZERO;
+                    break;
+                default:
+                    status = EXT_STATUS_INVALID_VALUE;
+                    break;
+            }
+            if (status == EXT_STATUS_OK) {
+                axis.controller_.control_mode_updated();
+                ControlTimeout::feed_command(axis);
+            }
+            break;
+        }
+        case 0x5C: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            cfg.heartbeat_timeout_ms = can_getSignal<uint32_t>(msg, 32, 32, true);
+            ControlTimeout::feed_heartbeat(axis);
+            break;
+        }
+        case 0x58:
+        case 0x59:
+        case 0x5A:
+            status = EXT_STATUS_READONLY;
+            break;
         default:
             status = EXT_STATUS_UNKNOWN;
             break;

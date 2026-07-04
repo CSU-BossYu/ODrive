@@ -61,6 +61,19 @@ INPUT_MODE_TORQUE_RAMP                   = 6
 INPUT_MODE_TUNING                        = 8
 INPUT_MODE_MIT                           = 9
 
+# ODrive.Controller.TimeoutAction
+TIMEOUT_ACTION_HOLD_LAST_POSITION        = 0
+TIMEOUT_ACTION_QUICK_STOP                = 1
+TIMEOUT_ACTION_QUICK_STOP_AND_HOLD       = 2
+TIMEOUT_ACTION_TORQUE_ZERO               = 3
+TIMEOUT_ACTION_FAULT_DISABLE             = 4
+
+# ODrive.Controller.ServoControlMode
+SERVO_CONTROL_MODE_TORQUE                = 0
+SERVO_CONTROL_MODE_VELOCITY              = 1
+SERVO_CONTROL_MODE_PROFILE_POSITION      = 2
+SERVO_CONTROL_MODE_MIT_REALTIME          = 3
+
 # ODrive.Motor.MotorType
 MOTOR_TYPE_HIGH_CURRENT                  = 0
 MOTOR_TYPE_GIMBAL                        = 2
@@ -195,6 +208,17 @@ class InputMode(enum.Enum):
     TORQUE_RAMP                              = 6
     TUNING                                   = 8
     MIT                                      = 9
+class TimeoutAction(enum.Enum):
+    HOLD_LAST_POSITION                       = 0
+    QUICK_STOP                               = 1
+    QUICK_STOP_AND_HOLD                      = 2
+    TORQUE_ZERO                              = 3
+    FAULT_DISABLE                            = 4
+class ServoControlMode(enum.Enum):
+    TORQUE                                   = 0
+    VELOCITY                                 = 1
+    PROFILE_POSITION                         = 2
+    MIT_REALTIME                             = 3
 class MotorType(enum.Enum):
     HIGH_CURRENT                             = 0
     GIMBAL                                   = 2
