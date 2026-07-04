@@ -1,0 +1,24 @@
+# FOC upper-computer backend dependencies.
+# All licenses are MIT or BSD-3-Clause -- safe for closed-source commercial use.
+# Pin to versions known to work on Python 3.10-3.13.
+
+# ASGI web framework (MIT)
+fastapi==0.115.6
+
+# ASGI server (BSD-3-Clause)
+uvicorn[standard]==0.34.0
+
+# Serial port access (BSD-3-Clause) -- includes the `serial.tools.list_ports`
+# helper used by /api/ports.
+pyserial==3.5
+
+# Request/response validation (MIT) -- bundled with FastAPI, pinned for stability.
+pydantic==2.10.4
+
+# WebSocket protocol support for uvicorn (used by [standard] extra; pinned for
+# reproducibility).
+websockets==14.1
+
+# CAN bus access (MIT) -- supports PCAN, SocketCAN, Kvaser, etc.
+# Used by the optional odrive_can backend package.
+python-can==4.4.2

@@ -1,0 +1,105 @@
+:root {
+  --bg:        #0b1020;
+  --bg-2:      #151d2f;
+  --bg-3:      #22304a;
+  --border:    #3b4a63;
+  --fg:        #eef2f8;
+  --fg-dim:    #9aa8bd;
+  --accent:    #3b82f6;   /* blue-500 */
+  --accent-2:  #06b6d4;   /* cyan-500 */
+  --ok:        #22c55e;   /* green-500 */
+  --warn:      #f59e0b;   /* amber-500 */
+  --err:       #ef4444;   /* red-500 */
+  --fatal:     #dc2626;   /* red-600 */
+  --mono:      'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  --sans:      system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+#app { height: 100%; }
+
+button {
+  font-family: var(--sans);
+  font-size: 12px;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+button:hover:not(:disabled) { background: var(--border); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+button.primary:hover:not(:disabled) { background: #2563eb; }
+button.warn { background: rgba(245, 158, 11, 0.18); border-color: rgba(245, 158, 11, 0.65); color: #fbbf24; }
+button.warn:hover:not(:disabled) { background: rgba(245, 158, 11, 0.28); }
+button.danger { background: var(--err); border-color: var(--err); color: white; }
+button.danger:hover:not(:disabled) { background: #dc2626; }
+button.ok { background: var(--ok); border-color: var(--ok); color: white; }
+
+input, select {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 6px;
+  width: 100%;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+label { color: var(--fg-dim); font-size: 11px; }
+
+.panel {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset;
+}
+.panel-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+  margin: 0 0 6px 0;
+}
+
+.row { display: flex; gap: 6px; align-items: center; }
+.col { display: flex; flex-direction: column; gap: 6px; }
+.grow { flex: 1; }
+.spacer { flex: 1; }
+
+/* Status pill colors */
+.pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-family: var(--mono);
+}
+.pill.ok     { background: rgba(34,197,94,0.2);  color: var(--ok);    border: 1px solid var(--ok); }
+.pill.warn   { background: rgba(245,158,11,0.2); color: var(--warn);  border: 1px solid var(--warn); }
+.pill.err    { background: rgba(239,68,68,0.2);  color: var(--err);   border: 1px solid var(--err); }
+.pill.fatal  { background: rgba(220,38,38,0.3);  color: #fca5a5;      border: 1px solid var(--fatal); }
+.pill.dim    { background: rgba(148,163,184,0.15); color: var(--fg-dim); border: 1px solid var(--border); }
+
+/* Scrollbar styling for log panels */
+.scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll::-webkit-scrollbar-track { background: var(--bg); }
+.scroll::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 4px; }
+.scroll::-webkit-scrollbar-thumb:hover { background: var(--border); }
