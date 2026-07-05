@@ -14,6 +14,7 @@ bool Controller::apply_config() {
 void Controller::reset() {
     // pos_setpoint is initialized in start_closed_loop_control
     vel_setpoint_ = 0.0f;
+    pos_integrator_vel_ = 0.0f;
     vel_integrator_torque_ = 0.0f;
     torque_setpoint_ = 0.0f;
     mechanical_power_ = 0.0f;
@@ -220,6 +221,7 @@ bool Controller::control_mode_updated() {
 
         pos_setpoint_ = *estimate;
         set_input_pos_and_steps(*estimate);
+        pos_integrator_vel_ = 0.0f;
     }
     return true;
 }
@@ -437,12 +439,24 @@ bool Controller::update() {
             pos_err = pos_setpoint_ - *pos_estimate_linear;
         }
 
-        vel_des += config_.pos_gain * pos_err;
+        if (pos_integrator_gain_ > 0.0f) {
+            pos_integrator_vel_ += pos_integrator_gain_ * current_meas_period * pos_err;
+            const float pos_integrator_limit = std::abs(config_.vel_limit);
+            if (std::isfinite(pos_integrator_limit)) {
+                pos_integrator_vel_ = std::clamp(pos_integrator_vel_, -pos_integrator_limit, pos_integrator_limit);
+            }
+        } else {
+            pos_integrator_vel_ = 0.0f;
+        }
+
+        vel_des += config_.pos_gain * pos_err + pos_integrator_vel_;
         // V-shaped gain shedule based on position error
         float abs_pos_err = std::abs(pos_err);
         if (config_.enable_gain_scheduling && abs_pos_err <= config_.gain_scheduling_width) {
             gain_scheduling_multiplier = abs_pos_err / config_.gain_scheduling_width;
         }
+    } else {
+        pos_integrator_vel_ = 0.0f;
     }
 
     // Velocity limiting

@@ -1,38 +1,53 @@
+# Convenience wrapper around the CMake firmware build.
 
-# This is only a stub for various commands.
-# Tup is used for the actual compilation.
+BUILD_DIR ?= build
+BOARD_VERSION ?= v3.6-56V
+CONFIG_DEBUG ?= false
+CONFIG_STRICT ?= false
+CONFIG_USE_LTO ?= false
+CONFIG_ENABLE_DISASM ?= false
 
-BUILD_DIR = build
+CMAKE_CONFIGURE_ARGS = \
+	-DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+	-DBOARD_VERSION=$(BOARD_VERSION) \
+	-DCONFIG_DEBUG=$(CONFIG_DEBUG) \
+	-DCONFIG_STRICT=$(CONFIG_STRICT) \
+	-DCONFIG_USE_LTO=$(CONFIG_USE_LTO) \
+	-DCONFIG_ENABLE_DISASM=$(CONFIG_ENABLE_DISASM)
+
+ifneq ($(ARM_COMPILER_PATH),)
+CMAKE_CONFIGURE_ARGS += -DARM_COMPILER_PATH=$(ARM_COMPILER_PATH)
+endif
+
 FIRMWARE = $(BUILD_DIR)/ODriveFirmware.elf
 PROGRAMMER_CMD=$(if $(value PROGRAMMER),-c 'hla_serial $(PROGRAMMER)',)
 
-include tup.config # source build configuration to get CONFIG_BOARD_VERSION
-
-ifeq ($(shell python -c "import sys; print(sys.version_info.major)"), 3)
-	PY_CMD := python -B
+ifeq ($(OS),Windows_NT)
+  CMAKE_GENERATOR ?= Unix Makefiles
 else
-	PY_CMD := python3 -B
+  CMAKE_GENERATOR ?= Unix Makefiles
 endif
 
-ifneq (,$(findstring v3.,$(CONFIG_BOARD_VERSION)))
+ifeq ($(findstring v3.,$(BOARD_VERSION)),v3.)
   OPENOCD := openocd -f interface/stlink-v2.cfg $(PROGRAMMER_CMD) -f target/stm32f4x.cfg -c init
   GDB := arm-none-eabi-gdb --ex 'target extended-remote | openocd -f "interface/stlink-v2.cfg" -f "target/stm32f4x.cfg" -c "gdb_port pipe; log_output openocd.log"' --ex 'monitor reset halt'
-else ifneq (,$(findstring v4.,$(CONFIG_BOARD_VERSION)))
-  OPENOCD := openocd -f interface/stlink.cfg $(PROGRAMMER_CMD) -f target/stm32f7x.cfg -c 'reset_config none separate' -c init
-  GDB := arm-none-eabi-gdb --ex 'target extended-remote | openocd -f "interface/stlink-v2.cfg" -f "target/stm32f7x.cfg" -c "reset_config none separate" -c "gdb_port pipe; log_output openocd.log"' --ex 'monitor reset halt'
 else
-  $(error unknown board version)
+  $(error CMake wrapper currently supports v3 board versions only)
 endif
 
-$(info board version: $(CONFIG_BOARD_VERSION))
+$(info board version: $(BOARD_VERSION))
 
-all:
-	@$(PY_CMD) -c "import os; os.makedirs('autogen', exist_ok=True)"
-	@$(PY_CMD) ../tools/odrive/version.py --output autogen/version.c
-	@tup --quiet -no-environ-check
+configure:
+	cmake -S . -B $(BUILD_DIR) -G "$(CMAKE_GENERATOR)" $(CMAKE_CONFIGURE_ARGS)
+
+all: configure
+	cmake --build $(BUILD_DIR) --target ODriveFirmware
 
 clean:
-	-rm -fR .dep $(BUILD_DIR)
+	cmake --build $(BUILD_DIR) --target clean
+
+distclean:
+	cmake -E rm -rf $(BUILD_DIR)
 
 flash-stlink2: all
 	$(OPENOCD) \
@@ -44,11 +59,9 @@ flash-stlink2: all
 gdb-stlink2:
 	$(GDB) $(FIRMWARE)
 
-# Erase entire STM32
 erase-stlink2:
 	$(OPENOCD) -c 'reset halt' -c 'flash erase_sector 0 0 last' -c exit
 
-# Sometimes the STM32 will get it's protection bits set for unknown reasons. Unlock it with this command
 unlock-stlink2:
 	$(OPENOCD) -c 'reset halt' -c 'stm32f2x unlock 0'
 
@@ -72,6 +85,5 @@ gdb: gdb-stlink2
 erase: erase-stlink2
 unlock: unlock-stlink2
 
-.PHONY: stlink2-config flash-stlink2 gdb-stlink2 erase-stlink2 unlock-stlink2
-.PHONY: flash-bmp gdb-bmp
-.PHONY: all clean flash gdb erase unlock
+.PHONY: configure all clean distclean flash-stlink2 gdb-stlink2 erase-stlink2 unlock-stlink2
+.PHONY: flash-bmp gdb-bmp flash gdb erase unlock

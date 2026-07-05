@@ -767,6 +767,7 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
         case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
         case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
         case 0x32: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_integrator_gain, 32, 32, true); break;
+        case 0x35: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.pos_integrator_gain_, 32, 32, true); break;
         // --- odrive power limits ---
         case 0x40: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   odrv.config_.dc_max_negative_current, 32, 32, true); break;
         case 0x41: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   odrv.config_.dc_max_positive_current, 32, 32, true); break;
@@ -981,6 +982,14 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             axis.controller_.config_.vel_integrator_gain = value;
             break;
         }
+        case 0x35: {  // pos_integrator_gain (float32)
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.pos_integrator_gain_ = value;
+            axis.controller_.pos_integrator_vel_ = 0.0f;
+            break;
+        }
         case 0x40: {  // odrv.config.dc_max_negative_current (float32)
             if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
             float value = can_getSignal<float>(msg, 32, 32, true);
@@ -1020,6 +1029,7 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
 // item 0x5A: trajectory_done (uint32, readonly)
 // item 0x5B: servo_mode (uint32 enum)
 // item 0x5C: heartbeat_timeout_ms (uint32)
+// item 0x5D: pos_integrator_gain (float32)
 // =====================================================================
 bool CANSimple::handle_get_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
     const uint8_t param_id = msg.buf[1];
@@ -1045,6 +1055,7 @@ bool CANSimple::handle_get_control_config(Axis& axis, const can_Message_t& msg, 
         case 0x5A: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.controller_.trajectory_done_ ? 1u : 0u, 32, 32, true); break;
         case 0x5B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(ControlTimeout::derive_servo_mode(axis)), 32, 32, true); break;
         case 0x5C: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, cfg.heartbeat_timeout_ms, 32, 32, true); break;
+        case 0x5D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.pos_integrator_gain_, 32, 32, true); break;
         default:   status = EXT_STATUS_UNKNOWN; can_setSignal<uint32_t>(txmsg, 0, 32, 32, true); break;
     }
 
@@ -1157,6 +1168,14 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
             if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
             cfg.heartbeat_timeout_ms = can_getSignal<uint32_t>(msg, 32, 32, true);
             ControlTimeout::feed_heartbeat(axis);
+            break;
+        }
+        case 0x5D: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.pos_integrator_gain_ = value;
+            axis.controller_.pos_integrator_vel_ = 0.0f;
             break;
         }
         case 0x58:

@@ -324,6 +324,7 @@ OVERSPEED_SNAPSHOT_ITEMS: list[tuple[int, str, bool]] = [
 # Control configuration item IDs (ext sub_cmd 0x0B Get / 0x0C Set).
 # (item, name, is_float). 0x58/0x59/0x5A are readonly; 0x5B setter maps to
 # (ControlMode, InputMode, TimeoutAction); 0x5C is the heartbeat watchdog.
+# 0x5D exposes the position-loop integrator gain.
 CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x50, 'velocity_accel_limit',    True),
     (0x51, 'velocity_decel_limit',    True),
@@ -338,6 +339,7 @@ CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x5A, 'trajectory_done',         False),  # readonly
     (0x5B, 'servo_mode',              False),
     (0x5C, 'heartbeat_timeout_ms',    False),
+    (0x5D, 'pos_integrator_gain',      True),
 ]
 
 # control_runtime_state (0x58) flag bits.

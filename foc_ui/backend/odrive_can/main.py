@@ -446,6 +446,8 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
                     {'type': 'error', 'msg': 'missing name in set_gain'}))
             elif name == 'pos_gain':
                 await svc.set_pos_gain(float(obj['value']))
+            elif name == 'pos_integrator_gain':
+                await svc.set_pos_integrator_gain(float(obj['value']))
             elif name == 'vel_gain':
                 # Use cached integrator gain if not provided
                 ig = float(obj.get('integrator', svc._last_vel_integrator_gain))

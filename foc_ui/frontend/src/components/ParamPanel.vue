@@ -44,10 +44,20 @@ const CONTROL_PARAMS: ControlParamDef[] = [
   { key: 'trajectory_done', label: '轨迹完成', unit: '', min: 0, max: 1, step: 1, item: 0x5A, isFloat: false, readonly: true },
 ]
 
+PARAMS.splice(1, 0, {
+  key: 'pos_integrator_gain',
+  label: '位置积分增益',
+  unit: '(rev/s)/rev/s',
+  min: 0,
+  max: 100,
+  step: 0.001,
+})
+
 const values = ref<Record<string, number>>({
   pos_gain: 20, vel_gain: 0.5, vel_integrator_gain: 10,
   vel_limit: 60, current_limit: 3, poll_hz: 20,
 })
+values.value.pos_integrator_gain = 0
 
 const controlValues = ref<Record<string, number>>({
   profile_vel_limit: 60,
@@ -74,6 +84,13 @@ const controlResult = ref<Record<string, { ok: boolean; text: string } | null>>(
 
 watch(() => oSocket.controlConfig.value, (cfg) => {
   if (!cfg) return
+  for (const p of PARAMS) {
+    const v = cfg[p.key]
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      values.value[p.key] = p.scale ? v * p.scale : v
+      lastResult.value[p.key] = { ok: true, text: 'read' }
+    }
+  }
   for (const p of CONTROL_PARAMS) {
     const v = cfg[p.key]
     if (typeof v === 'number' && Number.isFinite(v)) {

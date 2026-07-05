@@ -266,7 +266,7 @@ Setters return `BUSY_ARMED` while the motor is armed.
 ## Control configuration extended items
 
 Subcommands `0x0B` and `0x0C`, Get/Set_Control_Config, use the same item IDs
-(range `0x50`-`0x5C`). These cover the mode-aware command watchdog, heartbeat
+(range `0x50`-`0x5D`). These cover the mode-aware command watchdog, heartbeat
 watchdog, velocity/quick-stop ramp limits, and position profile limits. The
 control-timeout fields are runtime configuration held outside `Controller` and
 are not persisted to NVM in this phase. Unlike Set_Basic_Config,
@@ -302,6 +302,7 @@ timeout action path runs with `last_timeout_reason = 2`.
 | `0x5A` | uint32 | trajectory_done (readonly), bool |
 | `0x5B` | uint32 | servo_mode enum (ServoControlMode); setter maps to `(ControlMode, InputMode)` plus default timeout_action |
 | `0x5C` | uint32 | heartbeat_timeout_ms, 0 = disabled |
+| `0x5D` | float32 | pos_integrator_gain [(turn/s)/(turn*s)] |
 
 The heartbeat (command `0x001`) controller flags byte (bits 56-63) mirrors a
 subset of `control_runtime_state`: bit0 controller error present, bit1

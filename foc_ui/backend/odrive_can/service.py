@@ -55,6 +55,7 @@ CURRENT_LIMIT: float = 3.0          # 3 A max initial
 # overspeed/current protection or command absurd motion.
 VEL_LIMIT_MAX: float = 30.0         # turns/s ceiling for vel_limit and vel setpoints
 POS_GAIN_MAX: float = 1000.0
+POS_INTEGRATOR_MAX: float = 1000.0
 VEL_GAIN_MAX: float = 100.0
 VEL_INTEGRATOR_MAX: float = 100.0
 MIT_KP_MAX: float = 500.0           # MIT protocol quantization max
@@ -366,6 +367,11 @@ class ODriveService:
         data = encode_set_pos_gain(gain)
         await self._send_cmd(CmdId.SET_POS_GAIN, data)
 
+    async def set_pos_integrator_gain(self, gain: float) -> None:
+        gain = _fclamp(gain, 0.0, POS_INTEGRATOR_MAX)
+        await self.ext_command(ExtSubCmd.SET_CONTROL_CONFIG, 0x5D,
+                               ExtType.FLOAT32, gain)
+
     async def set_vel_gains(self, gain: float, integrator_gain: float) -> None:
         gain = _fclamp(gain, 0.0, VEL_GAIN_MAX)
         integrator_gain = _fclamp(integrator_gain, 0.0, VEL_INTEGRATOR_MAX)
@@ -479,7 +485,7 @@ class ODriveService:
         return snap
 
     async def read_control_config(self) -> dict:
-        """Read all control-config registers (ext 0x0B items 0x50-0x5C).
+        """Read all control-config registers (ext 0x0B items 0x50-0x5D).
 
         Returns a flat dict of field -> value (None on per-item failure).
         Includes the runtime-state readonly items (control_runtime_state,

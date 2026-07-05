@@ -64,8 +64,9 @@ public:
     void reset();
     void set_error(Error error);
 
-    constexpr void input_pos_updated() {
+    void input_pos_updated() {
         input_pos_updated_ = true;
+        pos_integrator_vel_ = 0.0f;
     }
     bool control_mode_updated();
     void set_input_pos_and_steps(float pos);
@@ -149,6 +150,8 @@ public:
 
     float pos_setpoint_ = 0.0f; // [turns]
     float vel_setpoint_ = 0.0f; // [turn/s]
+    float pos_integrator_gain_ = 0.0f;      // [(turn/s) / (turn * s)]
+    float pos_integrator_vel_ = 0.0f;       // [turn/s]
     float vel_integrator_torque_ = 0.0f;    // [Nm]
     float torque_setpoint_ = 0.0f;  // [Nm], output-shaft Nm in vernier mode
 
