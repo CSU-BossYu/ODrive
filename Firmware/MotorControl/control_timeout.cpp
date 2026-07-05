@@ -189,7 +189,12 @@ void mark_running(Axis& axis) {
 }
 
 void clear_running(Axis& axis) {
-    state(axis).flags &= ~(FLAG_ENABLED | FLAG_RUNNING);
+    State& st = state(axis);
+    st.quick_stop_active = false;
+    st.torque_zero_active = false;
+    st.flags &= ~(FLAG_ENABLED | FLAG_RUNNING | FLAG_HOLDING |
+                  FLAG_QUICK_STOP_ACTIVE | FLAG_TRAJECTORY_DONE |
+                  FLAG_MIT_FRAME_STALE);
 }
 
 void mark_trajectory_active(Axis& axis) {

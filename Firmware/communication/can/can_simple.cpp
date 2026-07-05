@@ -377,6 +377,12 @@ bool CANSimple::get_iq_callback(const Axis& axis) {
     txmsg.isExt = axis.config_.can.is_extended;
     txmsg.len = 8;
 
+    if (!axis.motor_.is_armed_) {
+        can_setSignal<float>(txmsg, 0.0f, 0, 32, true);
+        can_setSignal<float>(txmsg, 0.0f, 32, 32, true);
+        return canbus_->send_message(txmsg);
+    }
+
     std::optional<float2D> Idq_setpoint = axis.motor_.current_control_.Idq_setpoint_;
     if (!Idq_setpoint.has_value()) {
         Idq_setpoint = {0.0f, 0.0f};
@@ -492,14 +498,17 @@ bool CANSimple::send_heartbeat(const Axis& axis) {
     uint8_t encoderFlags = axis.encoder_.error_ != 0;
 
     uint8_t controllerFlags = (axis.controller_.error_ != 0) ? 0x01 : 0;
-    uint32_t control_flags = ControlTimeout::state(axis).flags;
+    uint32_t control_flags = axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL
+        ? ControlTimeout::state(axis).flags
+        : 0;
     if (control_flags & ControlTimeout::FLAG_COMM_TIMEOUT)         controllerFlags |= 0x02;
     if (control_flags & ControlTimeout::FLAG_QUICK_STOP_ACTIVE)    controllerFlags |= 0x04;
     if (control_flags & ControlTimeout::FLAG_HOLDING)              controllerFlags |= 0x08;
     if (control_flags & ControlTimeout::FLAG_CMD_WATCHDOG_EXPIRED) controllerFlags |= 0x10;
     if (control_flags & ControlTimeout::FLAG_MIT_FRAME_STALE)      controllerFlags |= 0x20;
     if (control_flags & ControlTimeout::FLAG_RUNNING)              controllerFlags |= 0x40;
-    if (axis.controller_.trajectory_done_)                         controllerFlags |= 0x80;
+    if (axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL
+        && axis.controller_.trajectory_done_)                       controllerFlags |= 0x80;
 
     can_setSignal(txmsg, motorFlags, 40, 8, true);
     can_setSignal(txmsg, encoderFlags, 48, 8, true);

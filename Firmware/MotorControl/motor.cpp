@@ -289,6 +289,7 @@ bool Motor::disarm(bool* p_was_armed) {
         timer->Instance->BDTR &= ~TIM_BDTR_AOE; // prevent the PWMs from automatically enabling at the next update
         __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(timer);
         control_law_ = nullptr;
+        current_control_.reset();
     }
 
     // Check necessary to prevent infinite recursion
