@@ -8,7 +8,6 @@ import WaveformPanel from './components/WaveformPanel.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import ParamPanel from './components/ParamPanel.vue'
 import LogConsole from './components/LogConsole.vue'
-import AnticoggingPanel from './components/AnticoggingPanel.vue'
 import OverspeedPanel from './components/OverspeedPanel.vue'
 import { ODRIVE_DEFAULT_VISIBLE } from './channels'
 
@@ -35,7 +34,6 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
       </div>
       <div class="right-col">
         <ParamPanel />
-        <AnticoggingPanel />
         <OverspeedPanel />
       </div>
     </div>

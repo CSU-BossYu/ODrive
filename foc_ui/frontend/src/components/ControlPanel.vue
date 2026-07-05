@@ -41,11 +41,20 @@ const mitVelRpm = ref(0)
 const mitKp = ref(0)
 const mitKd = ref(0)
 const mitTorque = ref(0)
+const calibrationNotice = ref('')
+const calibrationNoticeKind = ref<'dim' | 'ok' | 'warn' | 'err'>('dim')
+const activeCalibration = ref<'full' | 'motor' | 'encoder' | 'anticog' | null>(null)
+const calibrationStartedAt = ref(0)
+const anticogCfgEnabled = ref(false)
+const anticogCfgPreCalibrated = ref(false)
+const anticogCfgPosThreshold = ref(1.0)
+const anticogCfgVelThreshold = ref(1.0)
 
 const streamMode = ref<ModeKey | null>(null)
 const streamHz = ref(20)
 let streamTimer: number | null = null
 let modeRequestTimer: number | null = null
+let calibrationPollTimer: number | null = null
 
 const axisState = computed(() => oSocket.heartbeat.value?.axis_state ?? 0)
 const axisStateName = computed(() => AXIS_STATES[axisState.value] ?? 'UNKNOWN')
@@ -77,6 +86,40 @@ const ibus = computed(() => oSocket.latest.value?.ch.ibus ?? 0)
 const targetPosTurns = computed(() => safeNumber(posTargetDeg.value) / 360)
 const targetVelTurnsPerSec = computed(() => safeNumber(velTargetRpm.value) / 60)
 const velocityIsAggressive = computed(() => Math.abs(safeNumber(velTargetRpm.value)) > 60)
+
+const calibrationResultDefs = [
+  { item: 0x01, label: 'phase_resistance', unit: 'ohm' },
+  { item: 0x02, label: 'phase_inductance', unit: 'H' },
+  { item: 0x03, label: 'encoder_phase_offset', unit: 'count' },
+  { item: 0x04, label: 'encoder_direction', unit: '' },
+]
+
+function latestExtResponse(subCmd: number, item: number) {
+  for (let i = oSocket.extResponses.value.length - 1; i >= 0; i--) {
+    const r = oSocket.extResponses.value[i]
+    if (r.sub_cmd === subCmd && r.item === item) return r
+  }
+  return null
+}
+
+const calibrationStatusFlags = computed(() => latestExtResponse(0x01, 0x00)?.ext_type ?? 0)
+const isMotorCalibrated = computed(() => !!(calibrationStatusFlags.value & (1 << 0)))
+const isEncoderReady = computed(() => !!(calibrationStatusFlags.value & (1 << 1)))
+const calibrationResults = computed(() => calibrationResultDefs.map((d) => {
+  const r = latestExtResponse(0x04, d.item)
+  return { ...d, status: r?.status, value: r?.value }
+}))
+const anticogStatusFlags = computed(() => latestExtResponse(0x08, 0x01)?.value ?? 0)
+const anticogIndex = computed(() => latestExtResponse(0x08, 0x02)?.value ?? 0)
+const anticogPosThreshold = computed(() => latestExtResponse(0x08, 0x03)?.value ?? 0)
+const anticogVelThreshold = computed(() => latestExtResponse(0x08, 0x04)?.value ?? 0)
+const anticogCoggingRatio = computed(() => latestExtResponse(0x08, 0x05)?.value ?? 0)
+const anticogSystemError = computed(() => latestExtResponse(0x08, 0x06)?.value ?? 0)
+const isAnticogCalibrating = computed(() => !!(anticogStatusFlags.value & (1 << 0)))
+const isAnticogValid = computed(() => !!(anticogStatusFlags.value & (1 << 1)))
+const isAnticogPreCalibrated = computed(() => !!(anticogStatusFlags.value & (1 << 2)))
+const isAnticogEnabled = computed(() => !!(anticogStatusFlags.value & (1 << 3)))
+const anticogProgress = computed(() => Math.max(0, Math.min(100, (safeNumber(anticogIndex.value) / 3600) * 100)))
 
 const cAxisErrs = computed(() => decodeAxisErrors(oSocket.heartbeat.value?.axis_error ?? 0))
 const cOdriveErrs = computed(() => decodeOdriveSystemErrors(oSocket.latest.value?.ch.odrv_err ?? 0))
@@ -112,6 +155,11 @@ function safeNumber(v: unknown): number {
 
 function format(v: number, digits = 2): string {
   return Number.isFinite(v) ? v.toFixed(digits) : '--'
+}
+
+function setCalibrationNotice(text: string, kind: 'dim' | 'ok' | 'warn' | 'err' = 'dim') {
+  calibrationNotice.value = text
+  calibrationNoticeKind.value = kind
 }
 
 function selectMode(mode: ModeKey) {
@@ -199,6 +247,142 @@ function applyPosition() {
   lastPositionSentAt.value = Date.now()
 }
 
+function readCalibrationResult(showNotice = true) {
+  oSocket.extCmd(0x01, 0x00)
+  calibrationResultDefs.forEach((d) => oSocket.extCmd(0x04, d.item))
+  ;[0x01, 0x02, 0x03, 0x04, 0x05, 0x06].forEach((item) => oSocket.extCmd(0x08, item))
+  if (showNotice) setCalibrationNotice('已请求校准状态与结果', 'dim')
+}
+
+function startCalibrationPolling() {
+  readCalibrationResult(false)
+  if (calibrationPollTimer != null) return
+  calibrationPollTimer = window.setInterval(() => {
+    readCalibrationResult(false)
+    evaluateCalibrationStatus()
+  }, 1000)
+}
+
+function stopCalibrationPolling() {
+  if (calibrationPollTimer != null) {
+    window.clearInterval(calibrationPollTimer)
+    calibrationPollTimer = null
+  }
+}
+
+function requestAxisState(state: number, label: string, action: 'full' | 'motor' | 'encoder') {
+  stopStreaming(true)
+  requestedMode.value = null
+  activeCalibration.value = action
+  calibrationStartedAt.value = Date.now()
+  oSocket.clearErrors()
+  oSocket.setState(1)
+  window.setTimeout(() => oSocket.setState(state), 80)
+  setCalibrationNotice(`${label} 已启动，等待状态回报`, 'warn')
+  startCalibrationPolling()
+}
+
+function runFullCalibration() {
+  requestAxisState(3, '完整校准', 'full')
+}
+
+function runMotorCalibration() {
+  requestAxisState(4, '电机校准', 'motor')
+}
+
+function runEncoderCalibration() {
+  requestAxisState(7, '编码器校准', 'encoder')
+}
+
+function markPrecalibrated() {
+  oSocket.extCmd(0x02, 0x03, 3, 0)
+  setCalibrationNotice('已发送：标记电机和编码器为预校准', 'warn')
+  window.setTimeout(() => readCalibrationResult(false), 250)
+}
+
+function clearPrecalibrated() {
+  oSocket.extCmd(0x02, 0x30, 3, 0)
+  setCalibrationNotice('已发送：清除电机和编码器预校准标志', 'warn')
+  window.setTimeout(() => readCalibrationResult(false), 250)
+}
+
+function saveConfiguration() {
+  oSocket.extCmd(0x03, 0x00, 3, 0, 3.0)
+  setCalibrationNotice('已请求保存配置，控制器可能会重启', 'warn')
+}
+
+function startAnticoggingCalibration() {
+  stopStreaming(true)
+  requestedMode.value = null
+  activeCalibration.value = 'anticog'
+  calibrationStartedAt.value = Date.now()
+  oSocket.clearErrors()
+  oSocket.setServoMode(2)
+  oSocket.setMode(3, 5)
+  oSocket.setState(8)
+  setCalibrationNotice('齿槽转矩校准准备中：切入位置闭环', 'warn')
+  window.setTimeout(() => {
+    oSocket.anticoggingStart()
+    setCalibrationNotice('齿槽转矩校准已启动，正在采集 map', 'warn')
+    startCalibrationPolling()
+  }, 250)
+}
+
+function applyAnticoggingConfig(field: 'enabled' | 'pre_calibrated' | 'pos_threshold' | 'vel_threshold' | 'reset') {
+  const cfg: Record<string, unknown> = {}
+  if (field === 'enabled') cfg.enabled = anticogCfgEnabled.value
+  if (field === 'pre_calibrated') cfg.pre_calibrated = anticogCfgPreCalibrated.value
+  if (field === 'pos_threshold') cfg.pos_threshold = safeNumber(anticogCfgPosThreshold.value)
+  if (field === 'vel_threshold') cfg.vel_threshold = safeNumber(anticogCfgVelThreshold.value)
+  if (field === 'reset') cfg.reset = true
+  oSocket.anticoggingConfig(cfg as any)
+  setCalibrationNotice(`已发送齿槽配置：${field}`, 'warn')
+  window.setTimeout(() => readCalibrationResult(false), 250)
+}
+
+function evaluateCalibrationStatus() {
+  const action = activeCalibration.value
+  if (!action) return
+  const elapsedMs = Date.now() - calibrationStartedAt.value
+  if (allErrors.value.length || (action === 'anticog' && anticogSystemError.value)) {
+    const detail = action === 'anticog' && anticogSystemError.value
+      ? `，system_error=0x${Math.trunc(anticogSystemError.value).toString(16)}`
+      : ''
+    setCalibrationNotice(`校准失败：检测到错误${detail}`, 'err')
+    activeCalibration.value = null
+    stopCalibrationPolling()
+    return
+  }
+
+  if (action === 'anticog') {
+    if (isAnticogCalibrating.value) {
+      setCalibrationNotice(`齿槽转矩校准中：${Math.round(anticogProgress.value)}% (${Math.trunc(anticogIndex.value)}/3600)`, 'warn')
+      return
+    }
+    if (isAnticogValid.value && elapsedMs > 800) {
+      setCalibrationNotice('齿槽转矩校准成功：map 有效', 'ok')
+      activeCalibration.value = null
+      stopCalibrationPolling()
+    }
+    return
+  }
+
+  if ([3, 4, 7].includes(axisState.value)) {
+    setCalibrationNotice(`校准运行中：${axisStateName.value}`, 'warn')
+    return
+  }
+
+  const done = action === 'motor'
+    ? isMotorCalibrated.value
+    : isMotorCalibrated.value && isEncoderReady.value
+  if (done && elapsedMs > 800) {
+    const label = action === 'motor' ? '电机校准' : action === 'encoder' ? '编码器校准' : '完整校准'
+    setCalibrationNotice(`${label}成功：${isMotorCalibrated.value ? 'Motor OK' : 'Motor --'} / ${isEncoderReady.value ? 'Encoder OK' : 'Encoder --'}`, 'ok')
+    activeCalibration.value = null
+    stopCalibrationPolling()
+  }
+}
+
 function clearErrors() {
   oSocket.clearErrors()
 }
@@ -217,8 +401,37 @@ watch(streamHz, () => {
   if (streamMode.value) startStreaming(streamMode.value)
 })
 
+watch([
+  axisState,
+  isMotorCalibrated,
+  isEncoderReady,
+  isAnticogCalibrating,
+  isAnticogValid,
+  anticogSystemError,
+  () => allErrors.value.length,
+], () => {
+  evaluateCalibrationStatus()
+})
+
+watch(isAnticogEnabled, (value) => {
+  anticogCfgEnabled.value = value
+})
+
+watch(isAnticogPreCalibrated, (value) => {
+  anticogCfgPreCalibrated.value = value
+})
+
+watch(anticogPosThreshold, (value) => {
+  if (Number.isFinite(value) && value > 0) anticogCfgPosThreshold.value = value
+})
+
+watch(anticogVelThreshold, (value) => {
+  if (Number.isFinite(value) && value > 0) anticogCfgVelThreshold.value = value
+})
+
 onBeforeUnmount(() => {
   stopStreaming(true)
+  stopCalibrationPolling()
   if (modeRequestTimer != null) window.clearTimeout(modeRequestTimer)
 })
 </script>
@@ -325,6 +538,88 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div class="calibration-card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">校准</div>
+          <div class="card-sub">完整校准不包含齿槽转矩；齿槽 map 需要单独启动</div>
+        </div>
+        <button @click="readCalibrationResult()" :disabled="!oSocket.ready.value">读取状态</button>
+      </div>
+
+      <div class="calibration-section">
+        <div class="section-title">基础校准</div>
+        <div class="calibration-actions">
+          <button @click="runFullCalibration" class="warn" :disabled="!oSocket.ready.value">完整校准</button>
+          <button @click="runMotorCalibration" :disabled="!oSocket.ready.value">电机校准</button>
+          <button @click="runEncoderCalibration" :disabled="!oSocket.ready.value">编码器校准</button>
+        </div>
+        <div class="calibration-status">
+          <span class="pill" :class="isMotorCalibrated ? 'ok' : 'dim'">Motor {{ isMotorCalibrated ? 'OK' : '--' }}</span>
+          <span class="pill" :class="isEncoderReady ? 'ok' : 'dim'">Encoder {{ isEncoderReady ? 'OK' : '--' }}</span>
+        </div>
+        <div class="calibration-results">
+          <div v-for="r in calibrationResults" :key="r.item">
+            <span>{{ r.label }}</span>
+            <strong>{{ r.status === 0 && r.value != null ? format(r.value, r.item <= 0x02 ? 6 : 0) : '--' }}</strong>
+            <em>{{ r.unit }}</em>
+          </div>
+        </div>
+      </div>
+
+      <div class="calibration-section">
+        <div class="section-title">齿槽转矩</div>
+        <div class="calibration-actions">
+          <button @click="startAnticoggingCalibration" class="warn" :disabled="!oSocket.ready.value">开始齿槽校准</button>
+          <button @click="applyAnticoggingConfig('reset')" :disabled="!oSocket.ready.value">重置 map</button>
+          <button @click="applyAnticoggingConfig('enabled')" :disabled="!oSocket.ready.value">
+            {{ anticogCfgEnabled ? '启用补偿' : '禁用补偿' }}
+          </button>
+        </div>
+        <div class="calibration-status">
+          <span class="pill" :class="isAnticogEnabled ? 'ok' : 'dim'">Comp {{ isAnticogEnabled ? 'ON' : 'OFF' }}</span>
+          <span class="pill" :class="isAnticogValid ? 'ok' : 'dim'">Map {{ isAnticogValid ? 'Valid' : '--' }}</span>
+          <span class="pill" :class="isAnticogPreCalibrated ? 'ok' : 'dim'">Precal {{ isAnticogPreCalibrated ? 'YES' : '--' }}</span>
+          <span class="pill" :class="isAnticogCalibrating ? 'warn' : 'dim'">Index {{ Math.trunc(anticogIndex) }}/3600</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" :style="{ width: `${anticogProgress}%` }"></div>
+        </div>
+        <div class="anticog-grid">
+          <label>位置阈值 (counts)
+            <input type="number" step="0.1" v-model.number="anticogCfgPosThreshold" @keyup.enter="applyAnticoggingConfig('pos_threshold')" />
+          </label>
+          <label>速度阈值 (counts/s)
+            <input type="number" step="0.1" v-model.number="anticogCfgVelThreshold" @keyup.enter="applyAnticoggingConfig('vel_threshold')" />
+          </label>
+          <button @click="applyAnticoggingConfig('pos_threshold')" :disabled="!oSocket.ready.value">set pos</button>
+          <button @click="applyAnticoggingConfig('vel_threshold')" :disabled="!oSocket.ready.value">set vel</button>
+        </div>
+        <label class="check-row">
+          <input type="checkbox" v-model="anticogCfgPreCalibrated" @change="applyAnticoggingConfig('pre_calibrated')" />
+          齿槽 map 预校准有效
+        </label>
+        <div class="calibration-results compact">
+          <div><span>pos_threshold</span><strong>{{ format(anticogPosThreshold, 4) }}</strong><em>counts</em></div>
+          <div><span>vel_threshold</span><strong>{{ format(anticogVelThreshold, 4) }}</strong><em>counts/s</em></div>
+          <div><span>cogging_ratio</span><strong>{{ format(anticogCoggingRatio, 6) }}</strong><em>turn</em></div>
+          <div><span>system_error</span><strong>0x{{ Math.trunc(anticogSystemError).toString(16).padStart(8, '0') }}</strong><em></em></div>
+        </div>
+      </div>
+
+      <div class="calibration-section">
+        <div class="calibration-actions secondary">
+          <button @click="markPrecalibrated" :disabled="!oSocket.ready.value">标记电机/编码器预校准</button>
+          <button @click="clearPrecalibrated" :disabled="!oSocket.ready.value">清除电机/编码器预校准</button>
+          <button @click="saveConfiguration" class="warn" :disabled="!oSocket.ready.value">保存配置</button>
+        </div>
+      </div>
+
+      <div v-if="calibrationNotice" class="calibration-message" :class="calibrationNoticeKind">
+        {{ calibrationNotice }}
+      </div>
+    </div>
+
     <div class="fault-card" :class="{ fault: allErrors.length }">
       <div class="fault-head">
         <div>
@@ -407,7 +702,7 @@ onBeforeUnmount(() => {
   font-family: var(--mono);
   color: var(--accent-2);
 }
-.active-card, .telemetry-card, .fault-card {
+.active-card, .telemetry-card, .calibration-card, .fault-card {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -499,6 +794,128 @@ onBeforeUnmount(() => {
   font-style: normal;
   font-size: 10px;
 }
+.calibration-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.calibration-section {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+.calibration-section:first-of-type {
+  padding-top: 0;
+  border-top: none;
+}
+.section-title {
+  font-size: 10px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.calibration-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.calibration-actions.secondary button {
+  min-height: 30px;
+}
+.calibration-status {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.calibration-results {
+  display: grid;
+  gap: 6px;
+}
+.calibration-results.compact {
+  gap: 4px;
+}
+.calibration-results div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 5px;
+}
+.calibration-results span {
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.calibration-results strong {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.calibration-results em {
+  color: var(--fg-dim);
+  font-style: normal;
+  font-size: 10px;
+}
+.progress-track {
+  height: 7px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+}
+.progress-fill {
+  height: 100%;
+  min-width: 0;
+  background: var(--warn);
+  transition: width 0.2s ease;
+}
+.anticog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  align-items: end;
+}
+.anticog-grid label {
+  display: grid;
+  gap: 4px;
+}
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.check-row input {
+  width: auto;
+}
+.calibration-message {
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.calibration-message.dim {
+  color: var(--fg-dim);
+  background: rgba(148, 163, 184, 0.08);
+}
+.calibration-message.ok {
+  color: var(--ok);
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.1);
+}
+.calibration-message.warn {
+  color: var(--warn);
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.1);
+}
+.calibration-message.err {
+  color: var(--err);
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.1);
+}
 .fault-card.fault {
   border-color: rgba(239, 68, 68, 0.45);
   background: rgba(239, 68, 68, 0.06);
@@ -526,5 +943,6 @@ onBeforeUnmount(() => {
 @media (max-width: 1280px) {
   .mode-cards { grid-template-columns: 1fr; }
   .stream-row { grid-template-columns: 1fr; }
+  .calibration-actions, .anticog-grid { grid-template-columns: 1fr; }
 }
 </style>

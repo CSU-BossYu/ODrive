@@ -7,9 +7,9 @@
 // Three sections:
 //   1. Status (read-only): flags, calib_index, thresholds, cogging_ratio
 //   2. Config (writable): enabled, pre_calibrated, pos/vel thresholds, reset
-//   3. Calibration: disabled with warning (position following not fully validated)
+//   3. Calibration: start anticogging and poll progress
 
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useOdriveSocket } from '../composables/useOdriveSocket'
 import type { ODriveExtRespMsg } from '../types'
 
@@ -37,6 +37,19 @@ const cfgVelThreshold = ref(1.0)
 
 // Feedback
 const lastResult = ref<string>('')
+let statusTimer: number | null = null
+
+function startStatusPolling() {
+  if (statusTimer != null) return
+  statusTimer = window.setInterval(() => oSocket.anticoggingStatus(), 1000)
+}
+
+function stopStatusPolling() {
+  if (statusTimer != null) {
+    window.clearInterval(statusTimer)
+    statusTimer = null
+  }
+}
 
 function refreshStatus() {
   oSocket.anticoggingStatus()
@@ -66,6 +79,19 @@ function applyConfig(field: string) {
   lastResult.value = `Set ${field} sent`
 }
 
+function startCalibration() {
+  oSocket.clearErrors()
+  oSocket.setServoMode(2)
+  oSocket.setMode(3, 5)
+  oSocket.setState(8)
+  window.setTimeout(() => {
+    oSocket.anticoggingStart()
+    refreshStatus()
+    startStatusPolling()
+    lastResult.value = 'Anticogging calibration started'
+  }, 250)
+}
+
 // Watch extSeq (monotonic counter) instead of extResponses.length: once the
 // ring buffer fills, push+shift keeps length constant so a length watch stops
 // firing and the panel freezes. Process only the latest response on each fire.
@@ -81,11 +107,18 @@ watch(() => oSocket.extSeq.value, () => {
     case 0x05: coggingRatio.value = r.value; break
     case 0x06: systemError.value = r.value; break
   }
+  if (!isCalibrating.value && (isValid.value || systemError.value)) {
+    stopStatusPolling()
+  }
 })
 
 onMounted(() => {
   // Fetch status on mount
   refreshStatus()
+})
+
+onBeforeUnmount(() => {
+  stopStatusPolling()
 })
 </script>
 
@@ -163,15 +196,15 @@ onMounted(() => {
       <button @click="applyConfig('reset')" class="warn">Reset Calibration</button>
     </div>
 
-    <!-- Calibration (disabled) -->
+    <!-- Calibration -->
     <div class="section">
       <div class="section-label">Calibration</div>
-      <button disabled class="cal-btn" title="Position following not fully validated">
+      <button @click="startCalibration" class="cal-btn warn">
         Start Anticogging Calibration
       </button>
       <div class="warning-text">
-        ⚠ Calibration disabled: position following has not been fully validated.
-        Use ODrive CLI tools for calibration.
+        It enters closed-loop position control and sweeps the cogging map.
+        The motor must already be calibrated and able to move freely.
       </div>
     </div>
 
@@ -223,7 +256,6 @@ onMounted(() => {
 .cfg-field input { flex: 1; }
 .cal-btn {
   width: 100%; padding: 6px;
-  opacity: 0.4; cursor: not-allowed;
 }
 .warning-text {
   font-size: 9px; color: var(--warn); line-height: 1.4;

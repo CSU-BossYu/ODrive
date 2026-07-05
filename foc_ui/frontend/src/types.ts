@@ -286,6 +286,7 @@ export interface ODriveExtRespMsg {
   sub_cmd: number
   item: number
   status: number
+  ext_type?: number
   value: number
 }
 
