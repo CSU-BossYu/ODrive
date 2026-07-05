@@ -17,6 +17,7 @@ void Controller::reset() {
     pos_integrator_vel_ = 0.0f;
     vel_integrator_torque_ = 0.0f;
     torque_setpoint_ = 0.0f;
+    reset_adrc();
     mechanical_power_ = 0.0f;
     electrical_power_ = 0.0f;
     overspeed_time_ = 0.0f;
@@ -85,8 +86,14 @@ void Controller::capture_overspeed_snapshot(float vel_estimate,
 
 
 void Controller::move_to_pos(float goal_point) {
+    float profile_vel_limit = axis_->trap_traj_.config_.vel_limit;
+    if (config_.enable_vel_limit &&
+        std::isfinite(config_.vel_limit) &&
+        config_.vel_limit > 0.0f) {
+        profile_vel_limit = std::min(profile_vel_limit, config_.vel_limit);
+    }
     axis_->trap_traj_.planTrapezoidal(goal_point, pos_setpoint_, vel_setpoint_,
-                                 axis_->trap_traj_.config_.vel_limit,
+                                 profile_vel_limit,
                                  axis_->trap_traj_.config_.accel_limit,
                                  axis_->trap_traj_.config_.decel_limit);
     axis_->trap_traj_.t_ = 0.0f;
@@ -231,6 +238,52 @@ void Controller::update_filter_gains() {
     float bandwidth = std::min(config_.input_filter_bandwidth, 0.25f * current_meas_hz);
     input_filter_ki_ = 2.0f * bandwidth;  // basic conversion to discrete time
     input_filter_kp_ = 0.25f * (input_filter_ki_ * input_filter_ki_); // Critically damped
+}
+
+void Controller::reset_adrc() {
+    adrc_initialized_ = false;
+    adrc_z1_ = 0.0f;
+    adrc_z2_ = 0.0f;
+    adrc_z3_ = 0.0f;
+    adrc_last_torque_ = 0.0f;
+}
+
+float Controller::update_adrc_torque(float pos_estimate, float vel_estimate,
+                                     float torque_cmd) {
+    if (!adrc_initialized_) {
+        adrc_z1_ = pos_estimate;
+        adrc_z2_ = vel_estimate;
+        adrc_z3_ = 0.0f;
+        adrc_last_torque_ = 0.0f;
+        adrc_initialized_ = true;
+    }
+
+    const float wo = std::clamp(adrc_bandwidth_, 1.0f, 0.25f * current_meas_hz);
+    const float beta1 = 3.0f * wo;
+    const float beta2 = 3.0f * wo * wo;
+    const float beta3 = wo * wo * wo;
+    const float b0 = std::max(adrc_b0_, 1.0e-6f);
+
+    const float e = adrc_z1_ - pos_estimate;
+    adrc_z1_ += current_meas_period * (adrc_z2_ - beta1 * e);
+    adrc_z2_ += current_meas_period * (adrc_z3_ - beta2 * e + b0 * adrc_last_torque_);
+    adrc_z3_ += current_meas_period * (-beta3 * e);
+
+    if (std::isfinite(adrc_disturbance_limit_)) {
+        const float lim = std::abs(adrc_disturbance_limit_);
+        adrc_z3_ = std::clamp(adrc_z3_, -lim, lim);
+    }
+
+    return torque_cmd - adrc_z3_ / b0;
+}
+
+float Controller::update_adrc(float pos_estimate, float vel_estimate,
+                              float pos_setpoint, float vel_setpoint) {
+    const float pos_err = pos_setpoint - pos_estimate;
+    const float vel_err = vel_setpoint - vel_estimate;
+    const float desired_accel = adrc_pos_gain_ * pos_err + adrc_vel_gain_ * vel_err;
+    const float b0 = std::max(adrc_b0_, 1.0e-6f);
+    return update_adrc_torque(pos_estimate, vel_estimate, desired_accel / b0);
 }
 
 static float limitVel(const float vel_limit, const float vel_estimate, const float vel_gain, const float torque) {
@@ -414,10 +467,18 @@ bool Controller::update() {
     const float Tlim = axis_->motor_.max_available_torque() / controller_to_motor_torque;
     torque_setpoint_ = std::clamp(torque_setpoint_, -Tlim, Tlim);
 
+    const bool mit_adrc_active = adrc_enabled_ &&
+        config_.control_mode == CONTROL_MODE_TORQUE_CONTROL &&
+        config_.input_mode == INPUT_MODE_MIT;
+
     // Position control
     // TODO Decide if we want to use encoder or pll position here
     float gain_scheduling_multiplier = 1.0f;
     float vel_des = vel_setpoint_;
+    bool adrc_active = adrc_enabled_ && config_.control_mode >= CONTROL_MODE_VELOCITY_CONTROL;
+    float adrc_pos_estimate = 0.0f;
+    float adrc_vel_estimate = 0.0f;
+    bool adrc_measurement_valid = false;
     if (config_.control_mode >= CONTROL_MODE_POSITION_CONTROL) {
         float pos_err;
 
@@ -431,15 +492,23 @@ bool Controller::update() {
             // Circular delta
             pos_err = pos_setpoint_ - *pos_estimate_circular;
             pos_err = wrap_pm(pos_err, *pos_wrap);
+            adrc_active = false;
         } else {
             if (!pos_estimate_linear.has_value()) {
                 set_error(ERROR_INVALID_ESTIMATE);
                 return false;
             }
             pos_err = pos_setpoint_ - *pos_estimate_linear;
+            if (!vel_estimate.has_value()) {
+                set_error(ERROR_INVALID_ESTIMATE);
+                return false;
+            }
+            adrc_pos_estimate = *pos_estimate_linear;
+            adrc_vel_estimate = *vel_estimate;
+            adrc_measurement_valid = true;
         }
 
-        if (pos_integrator_gain_ > 0.0f) {
+        if (!adrc_active && pos_integrator_gain_ > 0.0f) {
             pos_integrator_vel_ += pos_integrator_gain_ * current_meas_period * pos_err;
             const float pos_integrator_limit = std::abs(config_.vel_limit);
             if (std::isfinite(pos_integrator_limit)) {
@@ -449,7 +518,9 @@ bool Controller::update() {
             pos_integrator_vel_ = 0.0f;
         }
 
-        vel_des += config_.pos_gain * pos_err + pos_integrator_vel_;
+        if (!adrc_active) {
+            vel_des += config_.pos_gain * pos_err + pos_integrator_vel_;
+        }
         // V-shaped gain shedule based on position error
         float abs_pos_err = std::abs(pos_err);
         if (config_.enable_gain_scheduling && abs_pos_err <= config_.gain_scheduling_width) {
@@ -457,6 +528,30 @@ bool Controller::update() {
         }
     } else {
         pos_integrator_vel_ = 0.0f;
+    }
+
+    if (adrc_active && !adrc_measurement_valid) {
+        if (!pos_estimate_linear.has_value() || !vel_estimate.has_value()) {
+            set_error(ERROR_INVALID_ESTIMATE);
+            return false;
+        }
+        adrc_pos_estimate = *pos_estimate_linear;
+        adrc_vel_estimate = *vel_estimate;
+        adrc_measurement_valid = true;
+    }
+
+    if (mit_adrc_active && !adrc_measurement_valid) {
+        if (!pos_estimate_linear.has_value() || !vel_estimate.has_value()) {
+            set_error(ERROR_INVALID_ESTIMATE);
+            return false;
+        }
+        adrc_pos_estimate = *pos_estimate_linear;
+        adrc_vel_estimate = *vel_estimate;
+        adrc_measurement_valid = true;
+    }
+
+    if (!adrc_active && !mit_adrc_active) {
+        reset_adrc();
     }
 
     // Velocity limiting
@@ -520,7 +615,25 @@ bool Controller::update() {
     }
 
     float v_err = 0.0f;
-    if (config_.control_mode >= CONTROL_MODE_VELOCITY_CONTROL) {
+    if (mit_adrc_active) {
+        if (!adrc_measurement_valid) {
+            set_error(ERROR_INVALID_ESTIMATE);
+            return false;
+        }
+        torque = update_adrc_torque(adrc_pos_estimate, adrc_vel_estimate, torque);
+        vel_integrator_torque_ = 0.0f;
+    } else if (adrc_active) {
+        if (!adrc_measurement_valid) {
+            set_error(ERROR_INVALID_ESTIMATE);
+            return false;
+        }
+        const float adrc_pos_setpoint = config_.control_mode >= CONTROL_MODE_POSITION_CONTROL
+            ? pos_setpoint_
+            : adrc_pos_estimate;
+        torque += update_adrc(adrc_pos_estimate, adrc_vel_estimate,
+                              adrc_pos_setpoint, vel_setpoint_);
+        vel_integrator_torque_ = 0.0f;
+    } else if (config_.control_mode >= CONTROL_MODE_VELOCITY_CONTROL) {
         if (!vel_estimate.has_value()) {
             set_error(ERROR_INVALID_ESTIMATE);
             return false;
@@ -552,9 +665,12 @@ bool Controller::update() {
         limited = true;
         torque = -Tlim;
     }
+    if (adrc_active || mit_adrc_active) {
+        adrc_last_torque_ = torque;
+    }
 
     // Velocity integrator (behaviour dependent on limiting)
-    if (config_.control_mode < CONTROL_MODE_VELOCITY_CONTROL) {
+    if (config_.control_mode < CONTROL_MODE_VELOCITY_CONTROL || adrc_active || mit_adrc_active) {
         // reset integral if not in use
         vel_integrator_torque_ = 0.0f;
     } else {

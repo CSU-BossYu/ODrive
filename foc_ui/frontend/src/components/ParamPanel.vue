@@ -44,6 +44,24 @@ const CONTROL_PARAMS: ControlParamDef[] = [
   { key: 'trajectory_done', label: '轨迹完成', unit: '', min: 0, max: 1, step: 1, item: 0x5A, isFloat: false, readonly: true },
 ]
 
+const ADRC_PARAMS: ControlParamDef[] = [
+  { key: 'adrc_enabled', label: 'ADRC启用', unit: '', min: 0, max: 1, step: 1, item: 0x60, isFloat: false },
+  { key: 'adrc_b0', label: 'ADRC b0', unit: '(rev/s²)/Nm', min: 0.001, max: 100000, step: 0.001, item: 0x61, isFloat: true },
+  { key: 'adrc_bandwidth', label: 'ADRC观测带宽', unit: '1/s', min: 1, max: 1000, step: 1, item: 0x62, isFloat: true },
+  { key: 'adrc_pos_gain', label: 'ADRC位置增益', unit: '1/s²', min: 0, max: 100000, step: 1, item: 0x63, isFloat: true },
+  { key: 'adrc_vel_gain', label: 'ADRC速度增益', unit: '1/s', min: 0, max: 10000, step: 0.1, item: 0x64, isFloat: true },
+  { key: 'adrc_disturbance_limit', label: 'ADRC扰动限幅', unit: 'rev/s²', min: 0.001, max: 100000, step: 1, item: 0x65, isFloat: true },
+  { key: 'adrc_z1', label: 'ADRC z1位置', unit: 'rev', min: -1e9, max: 1e9, step: 0.0001, item: 0x66, isFloat: true, readonly: true },
+  { key: 'adrc_z2', label: 'ADRC z2速度', unit: 'rev/s', min: -1e9, max: 1e9, step: 0.0001, item: 0x67, isFloat: true, readonly: true },
+  { key: 'adrc_z3', label: 'ADRC z3扰动', unit: 'rev/s²', min: -1e9, max: 1e9, step: 0.0001, item: 0x68, isFloat: true, readonly: true },
+]
+
+const VERNIER_PARAMS: ControlParamDef[] = [
+  { key: 'vernier_aux_correction_bandwidth', label: 'Vernier aux pos BW', unit: '1/s', min: 0, max: 100, step: 0.1, item: 0x36, isFloat: true },
+  { key: 'vernier_aux_velocity_bandwidth', label: 'Vernier aux vel BW', unit: '1/s', min: 0, max: 500, step: 0.1, item: 0x37, isFloat: true },
+  { key: 'vernier_aux_max_correction', label: 'Vernier max corr', unit: 'rev/sample', min: 0, max: 0.1, step: 0.0001, item: 0x38, isFloat: true },
+]
+
 PARAMS.splice(1, 0, {
   key: 'pos_integrator_gain',
   label: '位置积分增益',
@@ -70,16 +88,34 @@ const controlValues = ref<Record<string, number>>({
   heartbeat_timeout_ms: 0,
   timeout_action: 2,
   servo_mode: 2,
+  adrc_enabled: 1,
+  adrc_b0: 1,
+  adrc_bandwidth: 30,
+  adrc_pos_gain: 100,
+  adrc_vel_gain: 20,
+  adrc_disturbance_limit: 1000,
+  adrc_z1: 0,
+  adrc_z2: 0,
+  adrc_z3: 0,
   control_runtime_state: 0,
   last_timeout_reason: 0,
   trajectory_done: 0,
+})
+
+const vernierValues = ref<Record<string, number>>({
+  vernier_aux_correction_bandwidth: 0,
+  vernier_aux_velocity_bandwidth: 0,
+  vernier_aux_max_correction: 0.002,
 })
 
 const lastResult = ref<Record<string, { ok: boolean; text: string } | null>>(
   Object.fromEntries(PARAMS.map((p) => [p.key, null]))
 )
 const controlResult = ref<Record<string, { ok: boolean; text: string } | null>>(
-  Object.fromEntries(CONTROL_PARAMS.map((p) => [p.key, null]))
+  Object.fromEntries([...ADRC_PARAMS, ...CONTROL_PARAMS].map((p) => [p.key, null]))
+)
+const vernierResult = ref<Record<string, { ok: boolean; text: string } | null>>(
+  Object.fromEntries(VERNIER_PARAMS.map((p) => [p.key, null]))
 )
 
 watch(() => oSocket.controlConfig.value, (cfg) => {
@@ -91,7 +127,7 @@ watch(() => oSocket.controlConfig.value, (cfg) => {
       lastResult.value[p.key] = { ok: true, text: 'read' }
     }
   }
-  for (const p of CONTROL_PARAMS) {
+  for (const p of [...ADRC_PARAMS, ...CONTROL_PARAMS]) {
     const v = cfg[p.key]
     if (typeof v === 'number' && Number.isFinite(v)) {
       controlValues.value[p.key] = p.scale ? v * p.scale : v
@@ -99,6 +135,19 @@ watch(() => oSocket.controlConfig.value, (cfg) => {
     }
   }
 }, { deep: true })
+
+watch(() => oSocket.extSeq.value, () => {
+  const list = oSocket.extResponses.value
+  const resp = list[list.length - 1]
+  if (!resp || (resp.sub_cmd !== 0x06 && resp.sub_cmd !== 0x07)) return
+  const p = VERNIER_PARAMS.find((item) => item.item === resp.item)
+  if (!p) return
+  const ok = resp.status === 0
+  if (ok && resp.sub_cmd === 0x06 && typeof resp.value === 'number' && Number.isFinite(resp.value)) {
+    vernierValues.value[p.key] = resp.value
+  }
+  vernierResult.value[p.key] = { ok, text: ok ? (resp.sub_cmd === 0x06 ? 'read' : 'sent') : `status ${resp.status}` }
+})
 
 function apply(p: ParamDef) {
   const v = values.value[p.key]
@@ -139,6 +188,20 @@ function readConfig() {
 
 function readControlConfig() {
   oSocket.getControlConfig()
+}
+
+function readVernierConfig() {
+  VERNIER_PARAMS.forEach((p) => oSocket.extCmd(0x06, p.item))
+}
+
+function applyVernier(p: ControlParamDef) {
+  const v = vernierValues.value[p.key]
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < p.min || v > p.max) {
+    vernierResult.value[p.key] = { ok: false, text: `Out of range [${p.min}, ${p.max}]` }
+    return
+  }
+  oSocket.extCmd(0x07, p.item, p.isFloat ? 1 : 3, v)
+  vernierResult.value[p.key] = { ok: true, text: 'sent' }
 }
 
 function applyControl(p: ControlParamDef) {
@@ -193,6 +256,49 @@ function deviceInfo() {
         <div v-if="lastResult[p.key]" class="result"
           :class="{ ok: lastResult[p.key]?.ok, err: !lastResult[p.key]?.ok }">
           {{ lastResult[p.key]?.text }}
+        </div>
+      </div>
+
+      <div class="section-heading">
+        <span>Vernier Fusion</span>
+        <button @click="readVernierConfig">Read</button>
+      </div>
+      <div v-for="p in VERNIER_PARAMS" :key="p.key" class="param-row">
+        <label :title="`${p.min}..${p.max}`">{{ p.label }}</label>
+        <div class="row">
+          <input
+            type="number" :step="p.step" :min="p.min" :max="p.max"
+            v-model.number="vernierValues[p.key]"
+            @keyup.enter="applyVernier(p)"
+          />
+          <span class="unit">{{ p.unit }}</span>
+          <button @click="applyVernier(p)">set</button>
+        </div>
+        <div v-if="vernierResult[p.key]" class="result"
+          :class="{ ok: vernierResult[p.key]?.ok, err: !vernierResult[p.key]?.ok }">
+          {{ vernierResult[p.key]?.text }}
+        </div>
+      </div>
+
+      <div class="section-heading">
+        <span>ADRC</span>
+        <button @click="readControlConfig">读取</button>
+      </div>
+      <div v-for="p in ADRC_PARAMS" :key="p.key" class="param-row adrc-row">
+        <label :title="`${p.min}..${p.max}`">{{ p.label }}</label>
+        <div class="row">
+          <input
+            type="number" :step="p.step" :min="p.min" :max="p.max"
+            v-model.number="controlValues[p.key]"
+            :disabled="p.readonly"
+            @keyup.enter="applyControl(p)"
+          />
+          <span class="unit">{{ p.unit }}</span>
+          <button @click="applyControl(p)">{{ p.readonly ? '读取' : '设置' }}</button>
+        </div>
+        <div v-if="controlResult[p.key]" class="result"
+          :class="{ ok: controlResult[p.key]?.ok, err: !controlResult[p.key]?.ok }">
+          {{ controlResult[p.key]?.text }}
         </div>
       </div>
 

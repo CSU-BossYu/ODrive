@@ -29,7 +29,7 @@ public:
                                     // be determined by run_offset_calibration.
         int32_t direction = 0; // direction with respect to motor
         bool enable_phase_interpolation = true; // Use velocity to interpolate inside the count state
-        uint16_t abs_spi_cs_gpio_pin = 1;
+        uint16_t abs_spi_cs_gpio_pin = 2;
         uint16_t abs_spi_aux_cs_gpio_pin = 4;
         float vernier_main_ratio = 42.0f;
         float vernier_aux_ratio = 41.0f;
@@ -44,6 +44,9 @@ public:
         float vernier_err_reject = 0.08f;
         uint16_t mt6826s_spi_mode = 3;
         uint16_t mt6826s_spi_prescaler = 8;
+        float vernier_aux_correction_bandwidth = 0.0f;
+        float vernier_aux_velocity_bandwidth = 0.0f;
+        float vernier_aux_max_correction = 0.002f;
 
 
         // custom setters
@@ -60,6 +63,9 @@ public:
         void set_vernier_output_reversed(bool value) { vernier_output_reversed = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_err_accept(float value) { vernier_err_accept = value; parent->apply_vernier_resolver_config(); }
         void set_vernier_err_reject(float value) { vernier_err_reject = value; parent->apply_vernier_resolver_config(); }
+        void set_vernier_aux_correction_bandwidth(float value) { vernier_aux_correction_bandwidth = value; parent->reset_vernier_output_velocity_estimate(); }
+        void set_vernier_aux_velocity_bandwidth(float value) { vernier_aux_velocity_bandwidth = value; parent->reset_vernier_output_velocity_estimate(); }
+        void set_vernier_aux_max_correction(float value) { vernier_aux_max_correction = value; parent->reset_vernier_output_velocity_estimate(); }
         void set_mt6826s_spi_mode(uint16_t value) { mt6826s_spi_mode = value; parent->apply_mt6826s_spi_config(); }
         void set_mt6826s_spi_prescaler(uint16_t value) { mt6826s_spi_prescaler = value; parent->apply_mt6826s_spi_config(); }
         void set_pre_calibrated(bool value) { pre_calibrated = value; parent->check_pre_calibrated(); }
@@ -129,6 +135,8 @@ public:
     float vernier_output_direction_sign() const;
     float vernier_output_position_from_main(float main_position_turns) const;
     float vernier_output_velocity_from_main(float main_velocity_turns) const;
+    float vernier_main_position_from_output(float output_position_turns) const;
+    float align_vernier_output_position(float position_turns, float reference_turns) const;
     float normalized_main_phase_from_raw_phase(float raw_phase) const;
     float normalized_main_velocity_from_raw_velocity(float raw_velocity) const;
     void publish_vernier_output_estimate(float dt, float motor_vel_estimate_turns);
@@ -165,6 +173,8 @@ public:
         float output_vel_estimate = 0.0f;
         float output_sample_dt = 0.0f;
         uint32_t output_pair_sequence = 0;
+        float output_pair_vel_estimate = 0.0f;
+        float output_last_aux_correction = 0.0f;
         uint32_t main_error_count = 0;
         uint32_t aux_error_count = 0;
         uint32_t pair_error_count = 0;
@@ -189,6 +199,11 @@ public:
     float vernier_output_sample_dt_ = 0.0f;
     uint32_t vernier_output_pair_sequence_ = 0;
     bool vernier_output_estimate_valid_ = false;
+    float vernier_pair_vel_estimate_ = 0.0f;
+    float vernier_last_pair_position_ = 0.0f;
+    float vernier_last_aux_correction_ = 0.0f;
+    bool vernier_pair_vel_estimate_valid_ = false;
+    bool vernier_last_pair_position_valid_ = false;
     float vernier_main_continuous_pos_ = 0.0f;
     float vernier_last_main_phase_corr_ = 0.0f;
     bool vernier_main_continuous_valid_ = false;

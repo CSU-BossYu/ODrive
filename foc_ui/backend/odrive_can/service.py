@@ -114,6 +114,7 @@ class ODriveService:
         # Last-set gains (so setting one doesn't zero the other)
         self._last_vel_gain: float = 0.0
         self._last_vel_integrator_gain: float = 0.0
+        self._last_vel_limit: float = 0.0
 
         # Error detail request throttling (prevent CAN bus flood on persistent faults)
         self._last_error_req_ts: dict[int, float] = {}  # cmd_id -> monotonic ts
@@ -356,11 +357,14 @@ class ODriveService:
         current protection."""
         vel_limit = _fclamp(vel_limit, 0.0, VEL_LIMIT_MAX)
         current_limit = _fclamp(current_limit, 0.0, CURRENT_LIMIT)
+        self._last_vel_limit = vel_limit
         data = encode_set_limits(vel_limit, current_limit)
         await self._send_cmd(CmdId.SET_LIMITS, data)
+        await self.ext_command(ExtSubCmd.SET_CONTROL_CONFIG, 0x55,
+                               ExtType.FLOAT32, vel_limit)
         if self.on_log:
             self.on_log(f'[CMD] set_limits -> vel={vel_limit:.2f} rev/s, '
-                        f'cur={current_limit:.2f} A')
+                        f'cur={current_limit:.2f} A, profile_vel<=vel')
 
     async def set_pos_gain(self, gain: float) -> None:
         gain = _fclamp(gain, 0.0, POS_GAIN_MAX)
@@ -503,6 +507,9 @@ class ODriveService:
     async def set_control_config(self, item: int, value: Any,
                                  is_float: bool) -> dict:
         """Set one control-config register (ext 0x0C). Returns the response."""
+        if item == 0x55:
+            profile_ceiling = self._last_vel_limit if self._last_vel_limit > 0.0 else VEL_LIMIT_MAX
+            value = _fclamp(float(value), 0.0, min(profile_ceiling, VEL_LIMIT_MAX))
         ext_type = ExtType.FLOAT32 if is_float else ExtType.UINT32
         return await self.ext_command(ExtSubCmd.SET_CONTROL_CONFIG, item,
                                       ext_type, value)

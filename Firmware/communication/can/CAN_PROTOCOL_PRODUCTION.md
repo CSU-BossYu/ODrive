@@ -236,6 +236,9 @@ Vernier encoder items:
 | `0x2E` | float32 | vernier_err_reject |
 | `0x33` | uint32 | vernier_output_reversed, bool |
 | `0x34` | uint32 | vernier_use_phase_difference, bool |
+| `0x36` | float32 | vernier_aux_correction_bandwidth [1/s], 0 disables aux position correction |
+| `0x37` | float32 | vernier_aux_velocity_bandwidth [1/s], 0 keeps motor-side velocity feedback |
+| `0x38` | float32 | vernier_aux_max_correction [turn/sample], 0 disables aux position correction |
 
 ## Anticogging extended items
 
@@ -303,6 +306,15 @@ timeout action path runs with `last_timeout_reason = 2`.
 | `0x5B` | uint32 | servo_mode enum (ServoControlMode); setter maps to `(ControlMode, InputMode)` plus default timeout_action |
 | `0x5C` | uint32 | heartbeat_timeout_ms, 0 = disabled |
 | `0x5D` | float32 | pos_integrator_gain [(turn/s)/(turn*s)] |
+| `0x60` | uint32 | adrc_enabled, runtime-only bool for velocity, position, and MIT modes |
+| `0x61` | float32 | adrc_b0 [(turn/s²)/Nm] |
+| `0x62` | float32 | adrc_bandwidth [1/s], ESO bandwidth |
+| `0x63` | float32 | adrc_pos_gain [1/s²] |
+| `0x64` | float32 | adrc_vel_gain [1/s] |
+| `0x65` | float32 | adrc_disturbance_limit [turn/s²] |
+| `0x66` | float32 | adrc_z1 [turn], readonly observer position |
+| `0x67` | float32 | adrc_z2 [turn/s], readonly observer velocity |
+| `0x68` | float32 | adrc_z3 [turn/s²], readonly observer disturbance |
 
 The heartbeat (command `0x001`) controller flags byte (bits 56-63) mirrors a
 subset of `control_runtime_state`: bit0 controller error present, bit1
@@ -313,9 +325,10 @@ trajectory_done. Bit0 and bit7 are backward-compatible with older hosts.
 ## Vernier diagnostics extended items
 
 Subcommand `0x0A` is diagnostic and may grow, but existing item IDs are frozen.
-Items `0x30`, `0x34`, `0x35`, `0x36`, `0x37`, and `0x38` expose the minimal
-timing/SPI counters used by production gates:
+Selected diagnostic items include:
 
+- `0x2C`: output_pair_vel_estimate, load-side velocity estimated from accepted Vernier pair samples
+- `0x2D`: output_last_aux_correction, last low-frequency auxiliary position correction in output turns
 - `0x30`: FOC_BAD_TIMING
 - `0x34`: ADC_PRE
 - `0x35`: ADC_POST

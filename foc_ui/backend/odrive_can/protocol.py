@@ -281,6 +281,8 @@ VERNIER_ADC_POST       = 0x35
 VERNIER_DEADLINE_MISS  = 0x36
 VERNIER_SPI_PAIR_BUSY  = 0x37
 VERNIER_SPI_PAIR_OK    = 0x38
+VERNIER_OUTPUT_PAIR_VEL_ESTIMATE = 0x2C
+VERNIER_OUTPUT_LAST_AUX_CORRECTION = 0x2D
 
 # OverspeedSnapshot item IDs (ext sub_cmd 0x0A, items 0x40-0x5F).
 # Captured by firmware at the instant of ERROR_OVERSPEED and held until
@@ -324,7 +326,8 @@ OVERSPEED_SNAPSHOT_ITEMS: list[tuple[int, str, bool]] = [
 # Control configuration item IDs (ext sub_cmd 0x0B Get / 0x0C Set).
 # (item, name, is_float). 0x58/0x59/0x5A are readonly; 0x5B setter maps to
 # (ControlMode, InputMode, TimeoutAction); 0x5C is the heartbeat watchdog.
-# 0x5D exposes the position-loop integrator gain.
+# 0x5D exposes the position-loop integrator gain. 0x60..0x68 expose the
+# runtime-only ADRC velocity/position/MIT controller and observer state.
 CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x50, 'velocity_accel_limit',    True),
     (0x51, 'velocity_decel_limit',    True),
@@ -340,6 +343,15 @@ CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x5B, 'servo_mode',              False),
     (0x5C, 'heartbeat_timeout_ms',    False),
     (0x5D, 'pos_integrator_gain',      True),
+    (0x60, 'adrc_enabled',            False),
+    (0x61, 'adrc_b0',                 True),
+    (0x62, 'adrc_bandwidth',          True),
+    (0x63, 'adrc_pos_gain',           True),
+    (0x64, 'adrc_vel_gain',           True),
+    (0x65, 'adrc_disturbance_limit',  True),
+    (0x66, 'adrc_z1',                 True),
+    (0x67, 'adrc_z2',                 True),
+    (0x68, 'adrc_z3',                 True),
 ]
 
 # control_runtime_state (0x58) flag bits.

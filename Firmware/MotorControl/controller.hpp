@@ -67,6 +67,7 @@ public:
     void input_pos_updated() {
         input_pos_updated_ = true;
         pos_integrator_vel_ = 0.0f;
+        reset_adrc();
     }
     bool control_mode_updated();
     void set_input_pos_and_steps(float pos);
@@ -90,6 +91,11 @@ public:
     }
 
     void update_filter_gains();
+    void reset_adrc();
+    float update_adrc_torque(float pos_estimate, float vel_estimate,
+                             float torque_cmd);
+    float update_adrc(float pos_estimate, float vel_estimate,
+                      float pos_setpoint, float vel_setpoint);
     bool update();
 
     Config_t config_;
@@ -154,6 +160,18 @@ public:
     float pos_integrator_vel_ = 0.0f;       // [turn/s]
     float vel_integrator_torque_ = 0.0f;    // [Nm]
     float torque_setpoint_ = 0.0f;  // [Nm], output-shaft Nm in vernier mode
+
+    bool adrc_enabled_ = true;
+    bool adrc_initialized_ = false;
+    float adrc_b0_ = 1.0f;             // [(turn/s^2) / Nm]
+    float adrc_bandwidth_ = 30.0f;     // [1/s], ESO bandwidth
+    float adrc_pos_gain_ = 100.0f;     // [1/s^2]
+    float adrc_vel_gain_ = 20.0f;      // [1/s]
+    float adrc_disturbance_limit_ = 1000.0f; // [turn/s^2]
+    float adrc_z1_ = 0.0f;             // estimated position [turn]
+    float adrc_z2_ = 0.0f;             // estimated velocity [turn/s]
+    float adrc_z3_ = 0.0f;             // estimated disturbance [turn/s^2]
+    float adrc_last_torque_ = 0.0f;    // last applied ADRC torque [Nm]
 
     float input_pos_ = 0.0f;     // [turns]
     float input_vel_ = 0.0f;     // [turn/s]

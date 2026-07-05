@@ -105,6 +105,14 @@ function latestExtResponse(subCmd: number, item: number) {
 const calibrationStatusFlags = computed(() => latestExtResponse(0x01, 0x00)?.ext_type ?? 0)
 const isMotorCalibrated = computed(() => !!(calibrationStatusFlags.value & (1 << 0)))
 const isEncoderReady = computed(() => !!(calibrationStatusFlags.value & (1 << 1)))
+const encoderDirection = computed(() => latestExtResponse(0x04, 0x04)?.value ?? 0)
+const closedLoopBlockers = computed(() => {
+  const blockers: string[] = []
+  if (!isMotorCalibrated.value) blockers.push('电机未校准')
+  if (!isEncoderReady.value) blockers.push('编码器未 ready')
+  if (Math.trunc(safeNumber(encoderDirection.value)) === 0) blockers.push('encoder direction 为 0')
+  return blockers
+})
 const calibrationResults = computed(() => calibrationResultDefs.map((d) => {
   const r = latestExtResponse(0x04, d.item)
   return { ...d, status: r?.status, value: r?.value }
@@ -174,17 +182,37 @@ function clearModeRequestLater() {
   }, 1800)
 }
 
+function requestCalibrationSnapshot() {
+  oSocket.extCmd(0x01, 0x00)
+  calibrationResultDefs.forEach((d) => oSocket.extCmd(0x04, d.item))
+}
+
+function enterSelectedMode(targetMode: ModeKey) {
+  if (targetMode !== selectedMode.value) return
+  const blockers = closedLoopBlockers.value
+  if (blockers.length) {
+    requestedMode.value = null
+    setCalibrationNotice(`无法进入闭环：${blockers.join(' / ')}。请先完整校准，或确认校准值有效后标记预校准并保存。`, 'err')
+    return
+  }
+
+  stopStreaming(false)
+  requestedMode.value = targetMode
+  clearModeRequestLater()
+  oSocket.clearErrors()
+  if (targetMode === 'torque') oSocket.setTorque(0)
+  if (targetMode === 'velocity') oSocket.setVel(0)
+  if (targetMode === 'mit') oSocket.sendMit(0, 0, 0, 0, 0)
+  oSocket.setServoMode(selected.value.servoMode)
+  oSocket.setMode(selected.value.controlMode, selected.value.inputMode)
+  setTimeout(() => oSocket.setState(8), targetMode === 'mit' ? 200 : 150)
+}
+
 function activateSelectedMode() {
   stopStreaming(false)
   requestedMode.value = selectedMode.value
-  clearModeRequestLater()
-  oSocket.clearErrors()
-  if (selectedMode.value === 'torque') oSocket.setTorque(0)
-  if (selectedMode.value === 'velocity') oSocket.setVel(0)
-  if (selectedMode.value === 'mit') oSocket.sendMit(0, 0, 0, 0, 0)
-  oSocket.setServoMode(selected.value.servoMode)
-  oSocket.setMode(selected.value.controlMode, selected.value.inputMode)
-  setTimeout(() => oSocket.setState(8), selectedMode.value === 'mit' ? 200 : 150)
+  requestCalibrationSnapshot()
+  setTimeout(() => enterSelectedMode(selectedMode.value), 220)
 }
 
 function disableAxis() {
@@ -397,6 +425,10 @@ watch(firmwareMode, (mode) => {
   }
 })
 
+watch(() => oSocket.ready.value, (ready) => {
+  if (ready) requestCalibrationSnapshot()
+})
+
 watch(streamHz, () => {
   if (streamMode.value) startStreaming(streamMode.value)
 })
@@ -472,6 +504,10 @@ onBeforeUnmount(() => {
         <button @click="activateSelectedMode" class="primary" :class="{ active: isSelectedModeActive }">
           {{ isSelectedModeActive ? '已在该模式' : requestedMode === selectedMode ? '切换中...' : '进入模式' }}
         </button>
+      </div>
+
+      <div v-if="closedLoopBlockers.length" class="explain warn">
+        闭环前置条件未满足：{{ closedLoopBlockers.join(' / ') }}
       </div>
 
       <div v-if="selectedMode === 'position'" class="mode-fields">

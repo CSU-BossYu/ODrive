@@ -3,6 +3,7 @@
 #include "debug_counters.hpp"
 #include <Drivers/STM32/stm32_system.h>
 #include <algorithm>
+#include <cmath>
 
 Encoder::Encoder(Stm32SpiArbiter* spi_arbiter) :
         spi_arbiter_(spi_arbiter)
@@ -448,6 +449,16 @@ float Encoder::vernier_output_velocity_from_main(float main_velocity_turns) cons
            / vernier_motor_turns_per_output_turn();
 }
 
+float Encoder::vernier_main_position_from_output(float output_position_turns) const {
+    return vernier_output_direction_sign()
+           * output_position_turns
+           * vernier_motor_turns_per_output_turn();
+}
+
+float Encoder::align_vernier_output_position(float position_turns, float reference_turns) const {
+    return position_turns + roundf(reference_turns - position_turns);
+}
+
 float Encoder::normalized_main_phase_from_raw_phase(float raw_phase) const {
     float phase = VernierResolver::wrap01(raw_phase);
     if (config_.vernier_main_reversed) {
@@ -525,6 +536,11 @@ void Encoder::reset_vernier_output_velocity_estimate() {
     }
 
     vernier_output_vel_estimate_ = 0.0f;
+    vernier_pair_vel_estimate_ = 0.0f;
+    vernier_last_aux_correction_ = 0.0f;
+    vernier_pair_vel_estimate_valid_ = result.valid;
+    vernier_last_pair_position_valid_ = result.valid;
+    vernier_last_pair_position_ = vernier_output_pos_estimate_;
     vernier_output_sample_dt_ = 0.0f;
     vernier_output_pair_sequence_ = pair_sequence;
     vel_estimate_ = 0.0f;
@@ -543,7 +559,6 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
     }
 
     vernier_output_sample_dt_ += dt;
-
     const float raw_main_pll_phase =
         VernierResolver::wrap01(pos_cpr_counts_ / (float)config_.cpr);
     const float main_phase_corr =
@@ -571,11 +586,13 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
         vernier_last_main_phase_corr_ = main_phase_corr;
         vernier_output_pos_estimate_ =
             vernier_output_position_from_main(vernier_main_continuous_pos_);
-        vernier_output_vel_estimate_ =
-            vernier_output_velocity_from_main(
-                normalized_main_velocity_from_raw_velocity(motor_vel_estimate_turns));
         vernier_output_estimate_valid_ = true;
     }
+
+    vernier_output_vel_estimate_ =
+        vernier_output_velocity_from_main(
+            normalized_main_velocity_from_raw_velocity(motor_vel_estimate_turns));
+    vernier_last_aux_correction_ = 0.0f;
 
     if (pair_sequence != vernier_output_pair_sequence_) {
         vernier_output_pair_sequence_ = pair_sequence;
@@ -631,6 +648,8 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
     out->output_vel_estimate = vernier_output_vel_estimate_;
     out->output_sample_dt = vernier_output_sample_dt_;
     out->output_pair_sequence = vernier_output_pair_sequence_;
+    out->output_pair_vel_estimate = vernier_pair_vel_estimate_;
+    out->output_last_aux_correction = vernier_last_aux_correction_;
     out->main_spi_dma_error_count = mt6826s_spi_.spi_dma_error_count();
     out->main_crc_error_count = mt6826s_spi_.crc_error_count();
     out->main_fixed_bit_error_count = mt6826s_spi_.fixed_bit_error_count();

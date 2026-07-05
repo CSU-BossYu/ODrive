@@ -1313,6 +1313,18 @@ interfaces:
             type: uint16
             c_setter: set_mt6826s_spi_prescaler
             doc: SPI baudrate prescaler divisor for MT6826S diagnostics.
+          vernier_aux_correction_bandwidth:
+            type: float32
+            c_setter: set_vernier_aux_correction_bandwidth
+            doc: Low-frequency bandwidth for auxiliary encoder position correction in Vernier mode.
+          vernier_aux_velocity_bandwidth:
+            type: float32
+            c_setter: set_vernier_aux_velocity_bandwidth
+            doc: Low-frequency bandwidth for auxiliary encoder load-side velocity estimation in Vernier mode.
+          vernier_aux_max_correction:
+            type: float32
+            c_setter: set_vernier_aux_max_correction
+            doc: Maximum auxiliary position correction per pair sample in output turns.
           phase_offset: int32
           phase_offset_float: float32
           direction: int32
