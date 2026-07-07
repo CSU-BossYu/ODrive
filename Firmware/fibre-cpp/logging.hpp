@@ -331,7 +331,14 @@ static inline std::ostream& operator<<(std::ostream& stream, const sys_err&) {
 #define USE_LOG_TOPIC(topic)
 
 struct NullStream {
-    template<typename T> NullStream& operator<<(T val) { return *this; }
+    // Returns by value (not NullStream&) so that chained `<<` operands stay
+    // prvalues. A prvalue left operand cannot bind to the non-const lvalue
+    // reference parameter of the free-function `operator<<(TStream&, ...)`
+    // overloads (e.g. HexArrayPrinter in print_utils.hpp), so only this member
+    // is a candidate and overload resolution is unambiguous. Otherwise the
+    // member (more specialized on `this`) and the free function (more
+    // specialized on the argument) tie and GCC 15+ rejects it as ambiguous.
+    template<typename T> NullStream operator<<(T val) { return *this; }
 };
 
 #define FIBRE_LOG(level) NullStream()

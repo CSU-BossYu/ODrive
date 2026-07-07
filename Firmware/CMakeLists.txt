@@ -127,6 +127,7 @@ set(FIRMWARE_SOURCES
     MotorControl/trapTraj.cpp
     MotorControl/pwm_input.cpp
     MotorControl/main.cpp
+    MotorControl/log_task.cpp
     Drivers/STM32/stm32_system.cpp
     Drivers/STM32/stm32_gpio.cpp
     Drivers/STM32/stm32_nvm.c

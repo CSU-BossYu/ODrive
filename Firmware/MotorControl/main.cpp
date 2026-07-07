@@ -3,6 +3,7 @@
 #include "odrive_main.h"
 #include "control_timeout.hpp"
 #include "nvm_config.hpp"
+#include "log_task.hpp"
 
 #include "usart.h"
 #include "freertos_vars.h"
@@ -530,6 +531,11 @@ static void rtos_main(void*) {
     //osDelay(100);
     // Init communications (this requires the axis objects to be constructed)
     init_communication();
+
+    // Start the USB CDC @log stream task now that the USB server is up
+    // (see log_task.hpp). Started here, not from main(), so it cannot stream
+    // before usb_cdc_stdout_sink / the USB thread are ready.
+    log_task_create();
 
     // Start pwm-in compare modules
     // must happen after communication is initialized

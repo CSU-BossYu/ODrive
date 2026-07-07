@@ -10,6 +10,7 @@
 #include "odrive_main.h"
 #include "communication.h"
 #include "ascii_protocol.hpp"
+#include "log_task.hpp"
 #include <utils.hpp>
 #include <fibre/cpp_utils.hpp>
 
@@ -122,6 +123,7 @@ void AsciiProtocol::process_line(cbufptr_t buffer) {
         case 'w': cmd_write_property(cmd, use_checksum);              break;  // write property
         case 'u': cmd_update_axis_wdg(cmd, use_checksum);             break;  // Update axis watchdog. 
         case 'e': cmd_encoder(cmd, use_checksum);                     break;  // Encoder commands
+        case 'l': cmd_log_config(cmd, use_checksum);                   break;  // USB @log stream config
         default : cmd_unknown(nullptr, use_checksum);                 break;
     }
 }
@@ -407,6 +409,25 @@ void AsciiProtocol::cmd_update_axis_wdg(char * pStr, bool use_checksum) {
 void AsciiProtocol::cmd_unknown(char * pStr, bool use_checksum) {
     (void)pStr;
     respond(use_checksum, "unknown command");
+}
+
+// `l` command: configure the USB @log stream (see log_task.hpp).
+//   l                -> print current mask and rate
+//   l <mask>         -> set log_channel_mask (LogChannel bitmask, decimal or 0x..)
+//   l <mask> <rate>  -> set both mask and rate (Hz)
+// Runtime only; not persisted to flash (resets to defaults on reboot).
+void AsciiProtocol::cmd_log_config(char * pStr, bool use_checksum) {
+    int mask_i = 0;
+    float rate = 0.0f;
+    int numscan = sscanf(pStr, "l %i %f", &mask_i, &rate);
+    if (numscan >= 1) {
+        log_channel_mask = (uint32_t)mask_i;
+    }
+    if (numscan >= 2) {
+        log_rate_hz = rate;
+    }
+    respond(use_checksum, "log mask=0x%lx rate=%.2f",
+            (unsigned long)log_channel_mask, (double)log_rate_hz);
 }
 
 void AsciiProtocol::on_read_finished(ReadResult result) {
