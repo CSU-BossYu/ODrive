@@ -543,7 +543,7 @@ static constexpr uint8_t  EXT_STATUS_INVALID_TYPE = 3;
 static constexpr uint8_t  EXT_STATUS_INVALID_VALUE = 4;
 static constexpr uint8_t  EXT_STATUS_BUSY_ARMED  = 5;
 
-static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000101;  // v1.1
+static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000102;  // v1.2
 
 // ---- utility --------------------------------------------------------
 static bool any_axis_armed() {
@@ -727,6 +727,9 @@ bool CANSimple::handle_get_device_info(const can_Message_t& msg, can_Message_t& 
         case 0x05:  // serial_number high 32 bits
             value = static_cast<uint32_t>((odrv.serial_number_ >> 32) & 0xFFFFFFFFULL);
             break;
+        case 0x06:  // user_config_loaded: NVM bytes loaded on boot; 0 = load failed (running defaults)
+            value = odrv.user_config_loaded_;
+            break;
         default:
             status = EXT_STATUS_UNKNOWN;
             break;
@@ -778,9 +781,6 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
         case 0x2F: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.mt6826s_spi_prescaler, 32, 32, true); break;
         case 0x33: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_output_reversed ? 1u : 0u, 32, 32, true); break;
         case 0x34: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_use_phase_difference ? 1u : 0u, 32, 32, true); break;
-        case 0x36: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_aux_correction_bandwidth, 32, 32, true); break;
-        case 0x37: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_aux_velocity_bandwidth, 32, 32, true); break;
-        case 0x38: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_aux_max_correction, 32, 32, true); break;
         // --- controller ---
         case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
         case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
@@ -978,27 +978,6 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             axis.encoder_.config_.set_vernier_use_phase_difference(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
             break;
         }
-        case 0x36: {  // vernier_aux_correction_bandwidth (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_vernier_aux_correction_bandwidth(value);
-            break;
-        }
-        case 0x37: {  // vernier_aux_velocity_bandwidth (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_vernier_aux_velocity_bandwidth(value);
-            break;
-        }
-        case 0x38: {  // vernier_aux_max_correction (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_vernier_aux_max_correction(value);
-            break;
-        }
         // --- controller ---
         case 0x30: {  // pos_gain (float32)
             if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
@@ -1110,6 +1089,14 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
     txmsg.buf[0] = 0x0C;
     txmsg.buf[1] = param_id;
     txmsg.buf[3] = req_type;
+
+    // Refuse writes while any motor is armed -- these are persistent config
+    // fields (ramp limits, watchdog timeouts, timeout_action, servo_mode,
+    // profile limits, pos_integrator_gain). Disarm, edit, save, re-enter.
+    if (any_axis_armed()) {
+        txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
+        return canbus_->send_message(txmsg);
+    }
 
     switch (param_id) {
         case 0x50: {

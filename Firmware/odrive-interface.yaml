@@ -813,8 +813,8 @@ interfaces:
             unit: W
             doc: |
               The electrical power being delivered to the motor
-          v_current_control_integral_d: float32
-          v_current_control_integral_q: float32
+          v_current_control_integral_d: {type: readonly float32}
+          v_current_control_integral_q: {type: readonly float32}
           final_v_alpha: readonly float32
           final_v_beta: readonly float32
       n_evt_current_measurement: {type: readonly uint32, doc: Number of current measurement events since startup (modulo 2^32)}
@@ -862,45 +862,6 @@ interfaces:
             type: float32
             unit: °C
             doc: Not implemented.
-          requested_current_range:
-            type: float32
-            unit: A
-            doc: |
-              The minimum phase current range expected to be measured.  This is used to set the current shunt amplifier gains.
-              This should be set > `current_lim + curren_lim_margin`, but as low as possible to maximize precision and accuracy of the controller.
-          acim_gain_min_flux: float32
-          acim_autoflux_min_Id: float32
-          acim_autoflux_enable: bool
-          acim_autoflux_attack_gain: float32
-          acim_autoflux_decay_gain: float32
-          I_bus_hard_min:
-            type: float32
-            unit: A
-            doc: |
-              If the controller fails to keep this motor's DC current (`ODrive.Motor:I_bus`)
-              above this value the motor gets disarmed immediately. Most likely
-              you want a negative value here. Set to -inf to disable. Take noise
-              into account when chosing a value.
-          I_bus_hard_max:
-            type: float32
-            unit: A
-            doc: |
-              If the controller fails to keep this motor's DC current (`ODrive.Motor:I_bus`)
-              below this value the motor gets disarmed immediately. Usually this
-              is set in conjunction with `I_bus_hard_min`. Set to inf to disable.
-              Take noise into account when chosing a value.
-          I_leak_max:
-            type: float32
-            unit: A
-            doc: |
-              In almost all scenarios, the currents on phase A, B and C should
-              add up to zero. A small amount of measurement noise is expected.
-              However if the sum of A, B, C currents exceeds this configuration
-              value, the motor gets disarmed immediately.
-
-              Note that this feature is only works on devices with three current
-              sensors (e.g. ODrive v4).
-          dc_calib_tau: float32
 
   ODrive.Oscilloscope:
     c_is_class: True
@@ -1319,18 +1280,6 @@ interfaces:
             type: uint16
             c_setter: set_mt6826s_spi_prescaler
             doc: SPI baudrate prescaler divisor for MT6826S diagnostics.
-          vernier_aux_correction_bandwidth:
-            type: float32
-            c_setter: set_vernier_aux_correction_bandwidth
-            doc: Low-frequency bandwidth for auxiliary encoder position correction in Vernier mode.
-          vernier_aux_velocity_bandwidth:
-            type: float32
-            c_setter: set_vernier_aux_velocity_bandwidth
-            doc: Low-frequency bandwidth for auxiliary encoder load-side velocity estimation in Vernier mode.
-          vernier_aux_max_correction:
-            type: float32
-            c_setter: set_vernier_aux_max_correction
-            doc: Maximum auxiliary position correction per pair sample in output turns.
           phase_offset: int32
           phase_offset_float: float32
           direction: int32

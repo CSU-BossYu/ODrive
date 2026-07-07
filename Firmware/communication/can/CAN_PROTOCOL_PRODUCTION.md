@@ -214,7 +214,12 @@ Subcommands:
 | `0x0D..0x1F` | Reserved | reserved for production protocol growth |
 
 The current extended protocol version is returned by subcommand `0x05`, item
-`0x01`, and is `0x00000101`.
+`0x01`, and is `0x00000102`.
+
+Get_Device_Info items: `0x01` protocol_version, `0x02` fw_version,
+`0x03` hw_version, `0x04`/`0x05` serial_number low/high 32 bits, `0x06`
+user_config_loaded (uint32; NVM bytes loaded on boot, 0 = load failed and the
+device is running factory defaults -- reconfigure and `save_configuration`).
 
 ## Basic configuration extended items
 
@@ -275,9 +280,9 @@ control-timeout fields are persistent configuration:
 `velocity_accel_limit`/`velocity_decel_limit`/`quick_stop_decel_limit`/`timeout_action`
 live in `controller.config`; `can_watchdog_timeout_ms`/`heartbeat_timeout_ms`
 live in `axis.config.can`. They are saved by `save_configuration` (command
-`0x03`) and restored on boot. Unlike Set_Basic_Config,
-Set_Control_Config has **no `BUSY_ARMED` guard**; writable fields take effect
-on the next control loop. Items `0x58`-`0x5A` are readonly and return
+`0x03`) and restored on boot. Like Set_Basic_Config, Set_Control_Config
+refuses writes while any motor is armed (`BUSY_ARMED`); disarm, edit, save,
+then re-enter closed loop. Items `0x58`-`0x5A` are readonly and return
 `READONLY` on set.
 
 The command watchdog is the motion-control-layer timeout, distinct from the

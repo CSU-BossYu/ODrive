@@ -13,6 +13,8 @@ import type {
 
 const MAX_LOGS = 1000
 const MAX_EXT = 100
+// Firmware CAN extended-protocol version this UI expects (device info 0x05/0x01).
+export const EXPECTED_PROTOCOL_VERSION = 0x00000102
 
 interface ODriveSocket {
   connected: Ref<boolean>
@@ -26,6 +28,8 @@ interface ODriveSocket {
   recording: Ref<boolean>
   overspeedSnapshot: Ref<Record<string, number | null> | null>
   controlConfig: Ref<Record<string, number | null> | null>
+  userConfigLoaded: Ref<number | null>
+  protocolVersion: Ref<number | null>
   connect: () => void
   disconnect: () => void
   send: (m: ODriveOutboundMsg) => void
@@ -51,6 +55,8 @@ interface ODriveSocket {
   recStart: (path?: string) => void
   recStop: () => void
   getOverspeedSnapshot: () => void
+  fetchUserConfigLoaded: () => void
+  fetchProtocolVersion: () => void
   clearLogs: () => void
 }
 
@@ -77,6 +83,12 @@ export function useOdriveSocket(): ODriveSocket {
   // null until a get_overspeed_snapshot request returns.
   const overspeedSnapshot = ref<Record<string, number | null> | null>(null)
   const controlConfig = ref<Record<string, number | null> | null>(null)
+  // NVM bytes loaded on boot (device info item 0x06). 0 = load failed, the
+  // firmware is running factory defaults. null = not yet queried.
+  const userConfigLoaded = ref<number | null>(null)
+  // Firmware CAN extended-protocol version (device info item 0x01).
+  // null = not yet queried.
+  const protocolVersion = ref<number | null>(null)
 
   let ws: WebSocket | null = null
   let reconnectTimer: number | null = null
@@ -126,6 +138,8 @@ export function useOdriveSocket(): ODriveSocket {
       recording.value = false
       overspeedSnapshot.value = null
       controlConfig.value = null
+      userConfigLoaded.value = null
+      protocolVersion.value = null
       if (keepaliveTimer != null) {
         window.clearInterval(keepaliveTimer)
         keepaliveTimer = null
@@ -162,10 +176,18 @@ export function useOdriveSocket(): ODriveSocket {
       case 'heartbeat':
         heartbeat.value = msg
         break
-      case 'status':
+      case 'status': {
+        const wasReady = ready.value
         status.value = msg
         ready.value = msg.connected
+        // On (re)connect, fetch whether the firmware loaded a saved config
+        // and the protocol version it speaks.
+        if (msg.connected && !wasReady) {
+          fetchUserConfigLoaded()
+          fetchProtocolVersion()
+        }
         break
+      }
       case 'log':
         pushLog(logs.value, msg)
         break
@@ -174,6 +196,12 @@ export function useOdriveSocket(): ODriveSocket {
         if (extResponses.value.length > MAX_EXT)
           extResponses.value.shift()
         extSeq.value++
+        // Device info: item 0x01 = protocol_version, item 0x06 = user_config_loaded.
+        if (msg.sub_cmd === 0x05 && msg.item === 0x01) {
+          protocolVersion.value = msg.status === 0 ? msg.value : null
+        } else if (msg.sub_cmd === 0x05 && msg.item === 0x06) {
+          userConfigLoaded.value = msg.status === 0 ? msg.value : 0
+        }
         break
       case 'rec_state':
         recording.value = msg.recording
@@ -260,17 +288,19 @@ export function useOdriveSocket(): ODriveSocket {
   function recStart(path?: string) { send({ type: 'rec', action: 'start', path }) }
   function recStop() { send({ type: 'rec', action: 'stop' }) }
   function getOverspeedSnapshot() { send({ type: 'get_overspeed_snapshot' }) }
+  function fetchUserConfigLoaded() { extCmd(0x05, 0x06) }
+  function fetchProtocolVersion() { extCmd(0x05, 0x01) }
   function clearLogs() { logs.value = []; extResponses.value = [] }
 
   _singleton = {
     connected, ready, status, latest, heartbeat, logs, extResponses,
-    extSeq, recording, overspeedSnapshot, controlConfig,
+    extSeq, recording, overspeedSnapshot, controlConfig, userConfigLoaded, protocolVersion,
     connect, disconnect, send,
     setState, setMode, setPos, setVel, setTorque, sendMit,
     setGain, setLimits, clearErrors, estop, reboot,
     extCmd, getControlConfig, setControlConfig, setServoMode,
     anticoggingStart, anticoggingStatus, anticoggingConfig,
-    setPollHz, recStart, recStop, getOverspeedSnapshot, clearLogs,
+    setPollHz, recStart, recStop, getOverspeedSnapshot, fetchUserConfigLoaded, fetchProtocolVersion, clearLogs,
   }
   connect()
   return _singleton

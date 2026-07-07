@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useOdriveSocket } from '../composables/useOdriveSocket'
+import { useOdriveSocket, EXPECTED_PROTOCOL_VERSION } from '../composables/useOdriveSocket'
 import {
   decodeAxisErrors, decodeMotorErrors, decodeEncoderErrors, decodeControllerErrors,
   decodeOdriveSystemErrors,
@@ -68,6 +68,16 @@ const ibus = computed(() => oSocket.latest.value?.ch.ibus ?? 0)
 const stats = computed(() => oSocket.status.value)
 const axisStateValue = computed(() => oSocket.heartbeat.value?.axis_state ?? 0)
 const axisStateName = computed(() => AXIS_STATES[axisStateValue.value] ?? 'UNKNOWN')
+
+// Firmware reported 0 NVM bytes loaded on boot -> running factory defaults
+// (e.g. after a config_version bump invalidated the saved config).
+const configDefaulted = computed(() => oSocket.userConfigLoaded.value === 0)
+
+// Firmware speaks an older CAN protocol than this UI expects.
+const protocolMismatched = computed(() => {
+  const v = oSocket.protocolVersion.value
+  return v !== null && v < EXPECTED_PROTOCOL_VERSION
+})
 
 const axisErrs = computed(() => decodeAxisErrors(oSocket.heartbeat.value?.axis_error ?? 0))
 const odriveErrs = computed(() => decodeOdriveSystemErrors(oSocket.latest.value?.ch.odrv_err ?? 0))
@@ -146,6 +156,8 @@ function fmt(v: number, digits = 2): string {
     <div class="divider"></div>
     <span class="pill system-pill" :class="systemClass">{{ systemText }}</span>
     <span class="pill dim">{{ axisStateName }}</span>
+    <span v-if="configDefaulted" class="pill cfg-default-pill" title="固件未加载已保存的配置（config_version 变更或 NVM 校验失败），运行在出厂默认值。请重新标定并 save_configuration。">CFG 默认</span>
+    <span v-if="protocolMismatched" class="pill cfg-default-pill" title="固件 CAN 协议版本低于上位机预期，部分功能可能不可用或语义不符。">PROTO</span>
 
     <div class="divider"></div>
     <div class="readings">
@@ -208,6 +220,15 @@ function fmt(v: number, digits = 2): string {
   flex: 0 0 auto;
 }
 .system-pill { min-width: 78px; text-align: center; font-weight: 700; }
+.cfg-default-pill {
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--warn);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
 .readings { display: flex; gap: 14px; }
 .reading { display: flex; align-items: baseline; gap: 3px; white-space: nowrap; font-family: var(--mono); }
 .reading .k { font-size: 10px; color: var(--fg-dim); }
