@@ -271,8 +271,11 @@ Setters return `BUSY_ARMED` while the motor is armed.
 Subcommands `0x0B` and `0x0C`, Get/Set_Control_Config, use the same item IDs
 (range `0x50`-`0x5D`). These cover the mode-aware command watchdog, heartbeat
 watchdog, velocity/quick-stop ramp limits, and position profile limits. The
-control-timeout fields are runtime configuration held outside `Controller` and
-are not persisted to NVM in this phase. Unlike Set_Basic_Config,
+control-timeout fields are persistent configuration:
+`velocity_accel_limit`/`velocity_decel_limit`/`quick_stop_decel_limit`/`timeout_action`
+live in `controller.config`; `can_watchdog_timeout_ms`/`heartbeat_timeout_ms`
+live in `axis.config.can`. They are saved by `save_configuration` (command
+`0x03`) and restored on boot. Unlike Set_Basic_Config,
 Set_Control_Config has **no `BUSY_ARMED` guard**; writable fields take effect
 on the next control loop. Items `0x58`-`0x5A` are readonly and return
 `READONLY` on set.
@@ -306,15 +309,6 @@ timeout action path runs with `last_timeout_reason = 2`.
 | `0x5B` | uint32 | servo_mode enum (ServoControlMode); setter maps to `(ControlMode, InputMode)` plus default timeout_action |
 | `0x5C` | uint32 | heartbeat_timeout_ms, 0 = disabled |
 | `0x5D` | float32 | pos_integrator_gain [(turn/s)/(turn*s)] |
-| `0x60` | uint32 | adrc_enabled, runtime-only bool for velocity, position, and MIT modes |
-| `0x61` | float32 | adrc_b0 [(turn/s²)/Nm] |
-| `0x62` | float32 | adrc_bandwidth [1/s], ESO bandwidth |
-| `0x63` | float32 | adrc_pos_gain [1/s²] |
-| `0x64` | float32 | adrc_vel_gain [1/s] |
-| `0x65` | float32 | adrc_disturbance_limit [turn/s²] |
-| `0x66` | float32 | adrc_z1 [turn], readonly observer position |
-| `0x67` | float32 | adrc_z2 [turn/s], readonly observer velocity |
-| `0x68` | float32 | adrc_z3 [turn/s²], readonly observer disturbance |
 
 The heartbeat (command `0x001`) controller flags byte (bits 56-63) mirrors a
 subset of `control_runtime_state`: bit0 controller error present, bit1

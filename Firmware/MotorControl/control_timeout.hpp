@@ -17,14 +17,12 @@ static constexpr uint32_t FLAG_MIT_FRAME_STALE      = 1u << 6;
 static constexpr uint32_t FLAG_TRAJECTORY_DONE      = 1u << 7;
 static constexpr uint32_t FLAG_HEARTBEAT_EXPIRED    = 1u << 8;
 
-struct Config {
-    float velocity_accel_limit;
-    float velocity_decel_limit;
-    float quick_stop_decel_limit;
-    uint32_t can_watchdog_timeout_ms;
-    Controller::TimeoutAction timeout_action;
-    uint32_t heartbeat_timeout_ms;
-};
+// The timeout configuration fields live in the persistent config structs:
+//   - velocity_accel_limit / velocity_decel_limit / quick_stop_decel_limit /
+//     timeout_action  -> Controller::Config_t
+//   - can_watchdog_timeout_ms / heartbeat_timeout_ms -> Axis::Config_t::CANConfig_t
+// They are saved to NVM via config_write_all()/config_read_all(). Only the
+// runtime State below is held in RAM by this namespace.
 
 struct State {
     uint32_t command_deadline_ms = 0;
@@ -36,8 +34,6 @@ struct State {
     bool torque_zero_active = false;
 };
 
-Config& config(Axis& axis);
-const Config& config(const Axis& axis);
 State& state(Axis& axis);
 const State& state(const Axis& axis);
 

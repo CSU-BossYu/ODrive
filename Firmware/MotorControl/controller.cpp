@@ -344,13 +344,12 @@ bool Controller::update() {
             torque_setpoint_ = input_torque_; 
         } break;
         case INPUT_MODE_VEL_RAMP: {
-            const auto& timeout_config = ControlTimeout::config(*axis_);
             float target_vel = ControlTimeout::quick_stop_active(*axis_) ? 0.0f : input_vel_;
             float rate = ControlTimeout::quick_stop_active(*axis_)
-                ? timeout_config.quick_stop_decel_limit
+                ? config_.quick_stop_decel_limit
                 : (std::abs(target_vel) < std::abs(vel_setpoint_)
-                       ? timeout_config.velocity_decel_limit
-                       : timeout_config.velocity_accel_limit);
+                       ? config_.velocity_decel_limit
+                       : config_.velocity_accel_limit);
             float max_step_size = std::abs(current_meas_period * rate);
             float full_step = target_vel - vel_setpoint_;
             float step = std::clamp(full_step, -max_step_size, max_step_size);
@@ -508,8 +507,8 @@ bool Controller::update() {
             adrc_measurement_valid = true;
         }
 
-        if (!adrc_active && pos_integrator_gain_ > 0.0f) {
-            pos_integrator_vel_ += pos_integrator_gain_ * current_meas_period * pos_err;
+        if (!adrc_active && config_.pos_integrator_gain > 0.0f) {
+            pos_integrator_vel_ += config_.pos_integrator_gain * current_meas_period * pos_err;
             const float pos_integrator_limit = std::abs(config_.vel_limit);
             if (std::isfinite(pos_integrator_limit)) {
                 pos_integrator_vel_ = std::clamp(pos_integrator_vel_, -pos_integrator_limit, pos_integrator_limit);

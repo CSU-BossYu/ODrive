@@ -27,6 +27,7 @@ public:
         ControlMode control_mode = CONTROL_MODE_POSITION_CONTROL;  //see: ControlMode_t
         InputMode input_mode = INPUT_MODE_PASSTHROUGH;             //see: InputMode_t
         float pos_gain = 20.0f;                  // [(turn/s) / turn]
+        float pos_integrator_gain = 0.0f;        // [(turn/s) / (turn * s)]
         float vel_gain = 1.0f / 6.0f;            // [Nm/(turn/s)]
         float vel_integrator_gain = 2.0f / 6.0f; // [Nm/(turn/s * s)]
         float vel_limit = 2.0f;                  // [turn/s] Infinity to disable.
@@ -34,6 +35,12 @@ public:
         float vel_integrator_limit = INFINITY;   // Vel. integrator clamping value. Infinity to disable.
         float vel_ramp_rate = 1.0f;              // [(turn/s) / s]
         float torque_ramp_rate = 0.01f;          // Nm / sec
+        // Command/heartbeat watchdog control (persisted). Consumed by
+        // ControlTimeout and the VEL_RAMP input mode in update().
+        float velocity_accel_limit = 0.5f;       // [turn/s²] VEL_RAMP acceleration
+        float velocity_decel_limit = 0.5f;       // [turn/s²] VEL_RAMP deceleration
+        float quick_stop_decel_limit = 1.0f;     // [turn/s²] quick-stop ramp on timeout
+        TimeoutAction timeout_action = TIMEOUT_ACTION_QUICK_STOP_AND_HOLD; // action on watchdog expiry
         bool circular_setpoints = false;
         float circular_setpoint_range = 1.0f;    // Circular range when circular_setpoints is true. [turn]
         uint32_t steps_per_circular_range = 1024;
@@ -156,7 +163,6 @@ public:
 
     float pos_setpoint_ = 0.0f; // [turns]
     float vel_setpoint_ = 0.0f; // [turn/s]
-    float pos_integrator_gain_ = 0.0f;      // [(turn/s) / (turn * s)]
     float pos_integrator_vel_ = 0.0f;       // [turn/s]
     float vel_integrator_torque_ = 0.0f;    // [Nm]
     float torque_setpoint_ = 0.0f;  // [Nm], output-shaft Nm in vernier mode

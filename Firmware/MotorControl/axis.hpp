@@ -52,6 +52,12 @@ public:
         uint32_t node_id = ODRIVE_PRODUCTION_CAN_NODE_ID;
         bool is_extended = false;
         uint32_t heartbeat_rate_ms = 100;
+        // Command/heartbeat watchdog timeouts (persisted). 0 = disabled.
+        // can_watchdog_timeout_ms: fed by motion command frames, triggers
+        // controller.config.timeout_action on expiry.
+        // heartbeat_timeout_ms: fed by master heartbeat/NMT frames.
+        uint32_t can_watchdog_timeout_ms = 0;
+        uint32_t heartbeat_timeout_ms = 0;
         uint32_t encoder_rate_ms = 10;
         uint32_t motor_error_rate_ms = 0;
         uint32_t encoder_error_rate_ms = 0;

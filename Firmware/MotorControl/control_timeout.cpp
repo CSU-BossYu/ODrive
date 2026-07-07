@@ -5,37 +5,10 @@
 
 namespace ControlTimeout {
 
-static Config configs[AXIS_COUNT];
 static State states[AXIS_COUNT];
-static bool configs_initialized[AXIS_COUNT];
 
 static size_t axis_index(const Axis& axis) {
     return static_cast<size_t>(std::clamp(axis.axis_num_, 0, AXIS_COUNT - 1));
-}
-
-static void ensure_config_initialized(size_t index) {
-    if (configs_initialized[index]) {
-        return;
-    }
-    configs[index].velocity_accel_limit = 0.5f;
-    configs[index].velocity_decel_limit = 0.5f;
-    configs[index].quick_stop_decel_limit = 1.0f;
-    configs[index].can_watchdog_timeout_ms = 0;
-    configs[index].timeout_action = Controller::TIMEOUT_ACTION_QUICK_STOP_AND_HOLD;
-    configs[index].heartbeat_timeout_ms = 0;
-    configs_initialized[index] = true;
-}
-
-Config& config(Axis& axis) {
-    size_t index = axis_index(axis);
-    ensure_config_initialized(index);
-    return configs[index];
-}
-
-const Config& config(const Axis& axis) {
-    size_t index = axis_index(axis);
-    ensure_config_initialized(index);
-    return configs[index];
 }
 
 State& state(Axis& axis) {
@@ -47,11 +20,11 @@ const State& state(const Axis& axis) {
 }
 
 Controller::TimeoutAction effective_timeout_action(const Axis& axis) {
-    const Config& cfg = config(axis);
-    if (cfg.timeout_action != Controller::TIMEOUT_ACTION_QUICK_STOP_AND_HOLD) {
-        return cfg.timeout_action;
-    }
     const Controller& controller = axis.controller_;
+    const Controller::TimeoutAction configured = controller.config_.timeout_action;
+    if (configured != Controller::TIMEOUT_ACTION_QUICK_STOP_AND_HOLD) {
+        return configured;
+    }
     if (controller.config_.input_mode == Controller::INPUT_MODE_MIT) {
         return Controller::TIMEOUT_ACTION_TORQUE_ZERO;
     }
@@ -98,7 +71,7 @@ void clear(Axis& axis) {
 
 void feed_command(Axis& axis) {
     State& st = state(axis);
-    const uint32_t timeout_ms = config(axis).can_watchdog_timeout_ms;
+    const uint32_t timeout_ms = axis.config_.can.can_watchdog_timeout_ms;
     if (timeout_ms > 0) {
         st.command_deadline_ms = HAL_GetTick() + timeout_ms;
         if (st.command_watchdog_expired || st.quick_stop_active || st.torque_zero_active) {
@@ -111,7 +84,7 @@ void feed_command(Axis& axis) {
 
 void feed_heartbeat(Axis& axis) {
     State& st = state(axis);
-    const uint32_t timeout_ms = config(axis).heartbeat_timeout_ms;
+    const uint32_t timeout_ms = axis.config_.can.heartbeat_timeout_ms;
     st.heartbeat_deadline_ms = (timeout_ms > 0) ? (HAL_GetTick() + timeout_ms) : 0;
 }
 

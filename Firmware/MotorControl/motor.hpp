@@ -30,7 +30,7 @@ public:
         float torque_lim = std::numeric_limits<float>::infinity();           //[Nm]. 
         // Value used to compute shunt amplifier gains
         float requested_current_range = 60.0f; // [A]
-        float current_control_bandwidth = 1000.0f;  // [rad/s]
+        float current_control_bandwidth = 1500.0f;  // [rad/s]
         float inverter_temp_limit_lower = 100;
         float inverter_temp_limit_upper = 120;
 
@@ -40,8 +40,8 @@ public:
         float acim_autoflux_attack_gain = 10.0f;
         float acim_autoflux_decay_gain = 1.0f;
         
-        bool R_wL_FF_enable = false; // Enable feedforwards for R*I and w*L*I terms
-        bool bEMF_FF_enable = false; // Enable feedforward for bEMF
+        bool R_wL_FF_enable = true; // Enable feedforwards for R*I and w*L*I terms
+        bool bEMF_FF_enable = true; // Enable feedforward for bEMF
 
         float I_bus_hard_min = -INFINITY;
         float I_bus_hard_max = INFINITY;

@@ -326,8 +326,10 @@ OVERSPEED_SNAPSHOT_ITEMS: list[tuple[int, str, bool]] = [
 # Control configuration item IDs (ext sub_cmd 0x0B Get / 0x0C Set).
 # (item, name, is_float). 0x58/0x59/0x5A are readonly; 0x5B setter maps to
 # (ControlMode, InputMode, TimeoutAction); 0x5C is the heartbeat watchdog.
-# 0x5D exposes the position-loop integrator gain. 0x60..0x68 expose the
-# runtime-only ADRC velocity/position/MIT controller and observer state.
+# 0x5D exposes the position-loop integrator gain. All items 0x50-0x5D are
+# persisted to NVM (controller.config / axis.config.can) via
+# save_configuration (cmd 0x03). ADRC runtime state is no longer exposed on
+# the CAN config face.
 CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x50, 'velocity_accel_limit',    True),
     (0x51, 'velocity_decel_limit',    True),
@@ -343,15 +345,6 @@ CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x5B, 'servo_mode',              False),
     (0x5C, 'heartbeat_timeout_ms',    False),
     (0x5D, 'pos_integrator_gain',      True),
-    (0x60, 'adrc_enabled',            False),
-    (0x61, 'adrc_b0',                 True),
-    (0x62, 'adrc_bandwidth',          True),
-    (0x63, 'adrc_pos_gain',           True),
-    (0x64, 'adrc_vel_gain',           True),
-    (0x65, 'adrc_disturbance_limit',  True),
-    (0x66, 'adrc_z1',                 True),
-    (0x67, 'adrc_z2',                 True),
-    (0x68, 'adrc_z3',                 True),
 ]
 
 # control_runtime_state (0x58) flag bits.

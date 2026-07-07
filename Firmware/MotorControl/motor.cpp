@@ -316,6 +316,8 @@ void Motor::update_current_controller_gains() {
 
 bool Motor::apply_config() {
     config_.parent = this;
+    config_.R_wL_FF_enable = true;
+    config_.bEMF_FF_enable = true;
     is_calibrated_ = config_.pre_calibrated;
     update_current_controller_gains();
     return true;

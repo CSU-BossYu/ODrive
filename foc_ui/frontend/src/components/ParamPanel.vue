@@ -44,18 +44,6 @@ const CONTROL_PARAMS: ControlParamDef[] = [
   { key: 'trajectory_done', label: '轨迹完成', unit: '', min: 0, max: 1, step: 1, item: 0x5A, isFloat: false, readonly: true },
 ]
 
-const ADRC_PARAMS: ControlParamDef[] = [
-  { key: 'adrc_enabled', label: 'ADRC启用', unit: '', min: 0, max: 1, step: 1, item: 0x60, isFloat: false },
-  { key: 'adrc_b0', label: 'ADRC b0', unit: '(rev/s²)/Nm', min: 0.001, max: 100000, step: 0.001, item: 0x61, isFloat: true },
-  { key: 'adrc_bandwidth', label: 'ADRC观测带宽', unit: '1/s', min: 1, max: 1000, step: 1, item: 0x62, isFloat: true },
-  { key: 'adrc_pos_gain', label: 'ADRC位置增益', unit: '1/s²', min: 0, max: 100000, step: 1, item: 0x63, isFloat: true },
-  { key: 'adrc_vel_gain', label: 'ADRC速度增益', unit: '1/s', min: 0, max: 10000, step: 0.1, item: 0x64, isFloat: true },
-  { key: 'adrc_disturbance_limit', label: 'ADRC扰动限幅', unit: 'rev/s²', min: 0.001, max: 100000, step: 1, item: 0x65, isFloat: true },
-  { key: 'adrc_z1', label: 'ADRC z1位置', unit: 'rev', min: -1e9, max: 1e9, step: 0.0001, item: 0x66, isFloat: true, readonly: true },
-  { key: 'adrc_z2', label: 'ADRC z2速度', unit: 'rev/s', min: -1e9, max: 1e9, step: 0.0001, item: 0x67, isFloat: true, readonly: true },
-  { key: 'adrc_z3', label: 'ADRC z3扰动', unit: 'rev/s²', min: -1e9, max: 1e9, step: 0.0001, item: 0x68, isFloat: true, readonly: true },
-]
-
 const VERNIER_PARAMS: ControlParamDef[] = [
   { key: 'vernier_aux_correction_bandwidth', label: 'Vernier aux pos BW', unit: '1/s', min: 0, max: 100, step: 0.1, item: 0x36, isFloat: true },
   { key: 'vernier_aux_velocity_bandwidth', label: 'Vernier aux vel BW', unit: '1/s', min: 0, max: 500, step: 0.1, item: 0x37, isFloat: true },
@@ -88,15 +76,6 @@ const controlValues = ref<Record<string, number>>({
   heartbeat_timeout_ms: 0,
   timeout_action: 2,
   servo_mode: 2,
-  adrc_enabled: 1,
-  adrc_b0: 1,
-  adrc_bandwidth: 30,
-  adrc_pos_gain: 100,
-  adrc_vel_gain: 20,
-  adrc_disturbance_limit: 1000,
-  adrc_z1: 0,
-  adrc_z2: 0,
-  adrc_z3: 0,
   control_runtime_state: 0,
   last_timeout_reason: 0,
   trajectory_done: 0,
@@ -112,7 +91,7 @@ const lastResult = ref<Record<string, { ok: boolean; text: string } | null>>(
   Object.fromEntries(PARAMS.map((p) => [p.key, null]))
 )
 const controlResult = ref<Record<string, { ok: boolean; text: string } | null>>(
-  Object.fromEntries([...ADRC_PARAMS, ...CONTROL_PARAMS].map((p) => [p.key, null]))
+  Object.fromEntries(CONTROL_PARAMS.map((p) => [p.key, null]))
 )
 const vernierResult = ref<Record<string, { ok: boolean; text: string } | null>>(
   Object.fromEntries(VERNIER_PARAMS.map((p) => [p.key, null]))
@@ -127,7 +106,7 @@ watch(() => oSocket.controlConfig.value, (cfg) => {
       lastResult.value[p.key] = { ok: true, text: 'read' }
     }
   }
-  for (const p of [...ADRC_PARAMS, ...CONTROL_PARAMS]) {
+  for (const p of CONTROL_PARAMS) {
     const v = cfg[p.key]
     if (typeof v === 'number' && Number.isFinite(v)) {
       controlValues.value[p.key] = p.scale ? v * p.scale : v
@@ -277,28 +256,6 @@ function deviceInfo() {
         <div v-if="vernierResult[p.key]" class="result"
           :class="{ ok: vernierResult[p.key]?.ok, err: !vernierResult[p.key]?.ok }">
           {{ vernierResult[p.key]?.text }}
-        </div>
-      </div>
-
-      <div class="section-heading">
-        <span>ADRC</span>
-        <button @click="readControlConfig">读取</button>
-      </div>
-      <div v-for="p in ADRC_PARAMS" :key="p.key" class="param-row adrc-row">
-        <label :title="`${p.min}..${p.max}`">{{ p.label }}</label>
-        <div class="row">
-          <input
-            type="number" :step="p.step" :min="p.min" :max="p.max"
-            v-model.number="controlValues[p.key]"
-            :disabled="p.readonly"
-            @keyup.enter="applyControl(p)"
-          />
-          <span class="unit">{{ p.unit }}</span>
-          <button @click="applyControl(p)">{{ p.readonly ? '读取' : '设置' }}</button>
-        </div>
-        <div v-if="controlResult[p.key]" class="result"
-          :class="{ ok: controlResult[p.key]?.ok, err: !controlResult[p.key]?.ok }">
-          {{ controlResult[p.key]?.text }}
         </div>
       </div>
 

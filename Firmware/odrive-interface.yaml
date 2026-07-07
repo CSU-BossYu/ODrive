@@ -71,7 +71,8 @@ interfaces:
               This can happen if your brake resistor is disabled or unable to handle the braking current.
               
               Check that `config.enable_brake_resistor` is `True` and that
-              `(V_power_supply / Brake_resistance) > (total motor.config.current_lim + total motor.config.current_lim_margin)`.
+              `(V_power_supply / Brake_resistance)` is above the total configured motor current limit
+              plus the firmware's internal current margin.
           DC_BUS_OVER_CURRENT:
             doc: |
               Too much current was pulled from the power supply. `ibus` exceeded `config.dc_max_positive_current`.
@@ -580,6 +581,12 @@ interfaces:
       node_id: uint32
       is_extended: bool
       heartbeat_rate_ms: uint32
+      can_watchdog_timeout_ms:
+        type: uint32
+        doc: Motion-command watchdog timeout in ms, 0 = disabled. Persisted to NVM.
+      heartbeat_timeout_ms:
+        type: uint32
+        doc: Master heartbeat/NMT watchdog timeout in ms, 0 = disabled. Persisted to NVM.
       encoder_rate_ms: uint32
       motor_error_rate_ms: uint32
       encoder_error_rate_ms: uint32
@@ -712,11 +719,8 @@ interfaces:
           CURRENT_LIMIT_VIOLATION:
             bit: 12
             doc: |
-              The motor current exceeded `motor.config.current_lim + motor.config.current_lim_margin`.
-              The current controller is a PI controller, so it can experience overshoot. The PI gains
-              are automatically calculated based on `config.current_control_bandwidth` and the
-              motor resistance and inductance (pole placement). Some overshoot is normal, so a sensible
-              solution is to increase the current limit margin if your current limit is large.
+              The measured motor current exceeded the firmware's allowed current margin above
+              `motor.config.current_lim`.
           MODULATION_IS_NAN: {bit: 16}
           MOTOR_THERMISTOR_OVER_TEMP: {doc: The motor thermistor measured a temperature above motor.motor_thermistor.config.temp_limit_upper}
           FET_THERMISTOR_OVER_TEMP: {doc: The inverter thermistor measured a temperature above motor.fet_thermistor.config.temp_limit_upper}
@@ -846,10 +850,6 @@ interfaces:
             type: float32
             unit: A
             doc: Maximum commanded current allowed
-          current_lim_margin: 
-            type: float32
-            unit: A
-            doc: Maximum measured current allowed above `current_lim`.  Any value above `current_lim + curren_lim_margin` will throw a `CURRENT_LIMIT_VIOLATION` error.
           torque_lim: 
             type: float32
             unit: N·m
@@ -868,24 +868,11 @@ interfaces:
             doc: |
               The minimum phase current range expected to be measured.  This is used to set the current shunt amplifier gains.
               This should be set > `current_lim + curren_lim_margin`, but as low as possible to maximize precision and accuracy of the controller.
-          current_control_bandwidth: 
-            type: float32
-            c_setter: set_current_control_bandwidth
-            unit: rad/s
-            doc: |
-              Sets the PI gains of the Q and D axis FOC control according to `phase_resistance` and `phase_inductance` to create a critically-damped controller with a -3dB
-              bandwidth at this frequency.
           acim_gain_min_flux: float32
           acim_autoflux_min_Id: float32
           acim_autoflux_enable: bool
           acim_autoflux_attack_gain: float32
           acim_autoflux_decay_gain: float32
-          R_wL_FF_enable: 
-            type: bool
-            doc: Enables automatic feedforward of the R*wL term in the current controller.
-          bEMF_FF_enable: 
-            type: bool
-            doc: Enables automatic feedforward of the bEMF term in the current controller.
           I_bus_hard_min:
             type: float32
             unit: A
@@ -1063,6 +1050,10 @@ interfaces:
             type: float32
             unit: (turn/s) / turn
             doc: units = (turn/s) / turn
+          pos_integrator_gain:
+            type: float32
+            unit: (turn/s) / (turn * s)
+            doc: units = (turn/s) / (turn * s)
           vel_gain:
             type: float32
             unit: N·m / (turn/s)
@@ -1082,12 +1073,27 @@ interfaces:
           vel_limit_tolerance:
             type: float32
             doc: Ratio to `vel_limit`. Infinity to disable.
-          vel_ramp_rate: 
+          vel_ramp_rate:
             type: float32
             unit: turn/s^2
           torque_ramp_rate:
             type: float32
             unit: N·m / sec
+          velocity_accel_limit:
+            type: float32
+            unit: turn/s^2
+            doc: VEL_RAMP acceleration limit used by the command/heartbeat watchdog control. Persisted to NVM.
+          velocity_decel_limit:
+            type: float32
+            unit: turn/s^2
+            doc: VEL_RAMP deceleration limit used by the command/heartbeat watchdog control. Persisted to NVM.
+          quick_stop_decel_limit:
+            type: float32
+            unit: turn/s^2
+            doc: Quick-stop ramp rate applied on command/heartbeat watchdog expiry. Persisted to NVM.
+          timeout_action:
+            type: TimeoutAction
+            doc: Action taken when the command or heartbeat watchdog expires. Persisted to NVM.
           circular_setpoints:
             type: bool
           circular_setpoint_range:
