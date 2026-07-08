@@ -44,7 +44,6 @@ function clearLogs() {
 const QUICK: { label: string; action: () => void }[] = [
   { label: 'Clear Err', action: () => oSocket.clearErrors() },
   { label: 'Estop',     action: () => oSocket.estop() },
-  { label: 'Anticog',   action: () => oSocket.anticoggingStatus() },
   { label: 'Axis Status', action: () => oSocket.extCmd(0x01, 0x00) },
   { label: 'Save Cfg',  action: () => oSocket.extCmd(0x03, 0x00) },
   { label: 'Dev Info',  action: () => oSocket.extCmd(0x05, 0x01) },

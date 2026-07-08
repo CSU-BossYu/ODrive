@@ -23,7 +23,6 @@ class CANSimple {
         MSG_SET_INPUT_VEL,
         MSG_SET_INPUT_TORQUE,
         MSG_SET_LIMITS,
-        MSG_START_ANTICOGGING,
         MSG_SET_TRAJ_VEL_LIMIT,
         MSG_SET_TRAJ_ACCEL_LIMITS,
         MSG_SET_TRAJ_INERTIA,
@@ -94,8 +93,6 @@ class CANSimple {
     bool handle_get_device_info(const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_get_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_set_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
-    bool handle_get_anticogging_status(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
-    bool handle_set_anticogging_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_get_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_set_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
@@ -104,7 +101,6 @@ class CANSimple {
     static void nmt_callback(const Axis& axis, const can_Message_t& msg);
     static void estop_callback(Axis& axis, const can_Message_t& msg);
     static void clear_errors_callback(Axis& axis, const can_Message_t& msg);
-    static void start_anticogging_callback(const Axis& axis, const can_Message_t& msg);
 
     static constexpr uint8_t NUM_NODE_ID_BITS = 6;
     static constexpr uint8_t NUM_CMD_ID_BITS = 11 - NUM_NODE_ID_BITS;

@@ -296,7 +296,7 @@ class ODriveService:
         if (now - self._last_system_error_req_ts) < ERROR_DETAIL_INTERVAL_S:
             return
         self._last_system_error_req_ts = now
-        resp = await self.ext_command(ExtSubCmd.GET_ANTICOGGING_STATUS, 0x06,
+        resp = await self.ext_command(ExtSubCmd.GET_DEVICE_INFO, 0x07,
                                       ExtType.UINT32, 0, timeout=0.25)
         if resp.get('status') == ExtStatus.OK:
             self.cache.errors.odrive_error = int(resp.get('value', 0))
@@ -432,11 +432,6 @@ class ODriveService:
         await self._send_cmd(CmdId.REBOOT, b'')
         if self.on_log:
             self.on_log('[CMD] reboot')
-
-    async def start_anticogging(self) -> None:
-        await self._send_cmd(CmdId.START_ANTICOGGING, b'')
-        if self.on_log:
-            self.on_log('[CMD] start_anticogging')
 
     async def _send_cmd(self, cmd_id: CmdId | int, data: bytes) -> None:
         """Send a CAN command via executor to avoid blocking the event loop."""

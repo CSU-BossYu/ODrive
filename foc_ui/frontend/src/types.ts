@@ -338,13 +338,6 @@ export interface ExtCmdOut {
   type: 'ext_cmd'; sub_cmd: number; item: number
   ext_type?: number; value?: number; timeout?: number
 }
-export interface AnticoggingStartOut { type: 'anticogging_start' }
-export interface AnticoggingStatusOut { type: 'anticogging_status' }
-export interface AnticoggingConfigOut {
-  type: 'anticogging_config'
-  enabled?: boolean; pre_calibrated?: boolean
-  pos_threshold?: number; vel_threshold?: number; reset?: boolean
-}
 export interface SetPollHzOut { type: 'set_poll_hz'; hz: number }
 export interface GetOverspeedSnapshotOut { type: 'get_overspeed_snapshot' }
 export interface GetControlConfigOut { type: 'get_control_config' }
@@ -360,7 +353,6 @@ export interface PingOut { type: 'ping' }
 export type ODriveOutboundMsg =
   | SetStateOut | SetModeOut | SetPosOut | SetVelOut | SetTorqueOut
   | MitOut | SetGainOut | SetLimitsOut | ClearErrorsOut | EstopOut
-  | RebootOut | ExtCmdOut | AnticoggingStartOut | AnticoggingStatusOut
-  | AnticoggingConfigOut | SetPollHzOut | RecStartOut | RecStopOut
+  | RebootOut | ExtCmdOut | SetPollHzOut | RecStartOut | RecStopOut
   | GetOverspeedSnapshotOut | GetControlConfigOut | SetControlConfigOut
   | SetServoModeOut | PingOut

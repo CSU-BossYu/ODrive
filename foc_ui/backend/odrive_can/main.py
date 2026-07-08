@@ -484,9 +484,6 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
             await ws.send_text(json.dumps(
                 {'type': 'ext_resp', 'ext_type': ext_type, **result}))
 
-        elif kind == 'anticogging_start':
-            await svc.start_anticogging()
-
         elif kind == 'get_overspeed_snapshot':
             # Read the fault-instant snapshot captured by firmware on OVERSPEED.
             # Held until clear_errors. ~32 ext round-trips (~100-200ms).
@@ -511,41 +508,6 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
             ext_type = result.pop('type', 0)
             await ws.send_text(json.dumps(
                 {'type': 'ext_resp', 'ext_type': ext_type, **result}))
-
-        elif kind == 'anticogging_status':
-            # Request all status items
-            for item in [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]:
-                result = await svc.ext_command(
-                    ExtSubCmd.GET_ANTICOGGING_STATUS, item)
-                ext_type = result.pop('type', 0)
-                await ws.send_text(json.dumps(
-                    {'type': 'ext_resp', 'ext_type': ext_type, **result}))
-
-        elif kind == 'anticogging_config':
-            if 'enabled' in obj:
-                await svc.ext_command(
-                    ExtSubCmd.SET_ANTICOGGING_CONFIG,
-                    0x01, ExtType.UINT32,
-                    1 if obj['enabled'] else 0)
-            if 'pre_calibrated' in obj:
-                await svc.ext_command(
-                    ExtSubCmd.SET_ANTICOGGING_CONFIG,
-                    0x02, ExtType.UINT32,
-                    1 if obj['pre_calibrated'] else 0)
-            if 'pos_threshold' in obj:
-                await svc.ext_command(
-                    ExtSubCmd.SET_ANTICOGGING_CONFIG,
-                    0x03, ExtType.FLOAT32,
-                    obj['pos_threshold'])
-            if 'vel_threshold' in obj:
-                await svc.ext_command(
-                    ExtSubCmd.SET_ANTICOGGING_CONFIG,
-                    0x04, ExtType.FLOAT32,
-                    obj['vel_threshold'])
-            if obj.get('reset'):
-                await svc.ext_command(
-                    ExtSubCmd.SET_ANTICOGGING_CONFIG,
-                    0x05, ExtType.UINT32, 1)
 
         elif kind == 'set_poll_hz':
             hz = max(POLL_HZ_MIN, min(POLL_HZ_MAX, float(obj['hz'])))

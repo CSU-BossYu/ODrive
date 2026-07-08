@@ -48,7 +48,6 @@ class CmdId(IntEnum):
     SET_INPUT_VEL           = 0x00D
     SET_INPUT_TORQUE        = 0x00E
     SET_LIMITS              = 0x00F
-    START_ANTICOGGING       = 0x010
     SET_TRAJ_VEL_LIMIT      = 0x011
     SET_TRAJ_ACCEL_LIMITS   = 0x012
     SET_TRAJ_INERTIA        = 0x013
@@ -218,8 +217,6 @@ class ExtSubCmd(IntEnum):
     GET_DEVICE_INFO         = 0x05
     GET_BASIC_CONFIG        = 0x06
     SET_BASIC_CONFIG        = 0x07
-    GET_ANTICOGGING_STATUS  = 0x08
-    SET_ANTICOGGING_CONFIG  = 0x09
     GET_VERNIER_DIAGNOSTICS = 0x0A
     GET_CONTROL_CONFIG      = 0x0B
     SET_CONTROL_CONFIG      = 0x0C
@@ -257,22 +254,6 @@ class TimeoutAction(IntEnum):
     TORQUE_ZERO          = 3
     FAULT_DISABLE        = 4
 
-
-# Anticogging status item IDs (sub_cmd 0x08)
-ANTICOG_STATUS_FLAGS         = 0x01  # uint32: bit0=calib, bit1=valid, bit2=precal, bit3=enabled
-ANTICOG_STATUS_CALIB_INDEX   = 0x02  # uint32
-ANTICOG_STATUS_POS_THRESH    = 0x03  # float32
-ANTICOG_STATUS_VEL_THRESH    = 0x04  # float32
-ANTICOG_STATUS_COGGING_RATIO = 0x05  # float32
-ANTICOG_STATUS_SYSTEM_ERROR  = 0x06  # uint32
-ANTICOG_STATUS_MAP_ENTRY     = 0x10  # float32 (index in value field)
-
-# Anticogging config item IDs (sub_cmd 0x09)
-ANTICOG_CFG_ENABLED        = 0x01  # uint32
-ANTICOG_CFG_PRE_CALIBRATED = 0x02  # uint32
-ANTICOG_CFG_POS_THRESH     = 0x03  # float32
-ANTICOG_CFG_VEL_THRESH     = 0x04  # float32
-ANTICOG_CFG_RESET          = 0x05  # uint32 (nonzero resets)
 
 # Vernier diagnostic item IDs (sub_cmd 0x0A)
 VERNIER_FOC_BAD_TIMING = 0x30

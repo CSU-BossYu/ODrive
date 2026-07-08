@@ -74,10 +74,6 @@ void Encoder::setup() {
                 vernier_resolver_.init(make_vernier_resolver_config());
             }
         }
-
-        if (axis_->controller_.config_.anticogging.pre_calibrated) {
-            axis_->controller_.anticogging_valid_ = true;
-        }
     }
 }
 

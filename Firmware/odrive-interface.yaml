@@ -932,12 +932,11 @@ interfaces:
       trajectory_done: 
         type: readonly bool
         doc: Indicates the last commanded Trapezoidal Trajectory movement is complete.
-      vel_integrator_torque: 
+      vel_integrator_torque:
         type: float32
         unit: N·m
         doc: The accumulated value of the velocity loop integrator
-      anticogging_valid: bool
-      autotuning_phase: 
+      autotuning_phase:
         type: float32
         unit: rad
         doc: The current phase angle of the `INPUT_MODE_TUNING` sine wave generator
@@ -1029,16 +1028,6 @@ interfaces:
             c_setter: set_input_filter_bandwidth
             brief: The desired bandwidth for `INPUT_MODE_POS_FILTER`.
             doc: Sets the position filter's P and I gains to emulate a critically-damped 2nd order mass-spring-damper motion.
-          anticogging:
-            c_is_class: False
-            attributes:
-              index: readonly uint32
-              pre_calibrated: bool
-              calib_anticogging: readonly bool
-              calib_pos_threshold: float32
-              calib_vel_threshold: float32
-              cogging_ratio: readonly float32
-              anticogging_enabled: bool
           mechanical_power_bandwidth:
             type: float32
             doc: "Bandwidth for mechanical power estimate. Used for spinout detection"
@@ -1081,9 +1070,6 @@ interfaces:
             If false, the increment is applied relative to `pos_setpoint`, which
             usually corresponds roughly to the current position of the axis.'
           }
-      start_anticogging_calibration:
-      remove_anticogging_bias: {out: {val: float32}}
-      get_anticogging_value: {in: {index: uint32}, out: {val: float32}}
 
 
   ODrive.Encoder:

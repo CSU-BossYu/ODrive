@@ -108,9 +108,6 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
         case MSG_SET_LIMITS:
             set_limits_callback(axis, msg);
             break;
-        case MSG_START_ANTICOGGING:
-            start_anticogging_callback(axis, msg);
-            break;
         case MSG_SET_TRAJ_INERTIA:
             set_traj_inertia_callback(axis, msg);
             break;
@@ -287,10 +284,6 @@ void CANSimple::set_limits_callback(Axis& axis, const can_Message_t& msg) {
                      axis.controller_.config_.vel_limit);
     }
     axis.motor_.config_.current_lim = can_getSignal<float>(msg, 32, 32, true);
-}
-
-void CANSimple::start_anticogging_callback(const Axis& axis, const can_Message_t& msg) {
-    axis.controller_.start_anticogging_calibration();
 }
 
 void CANSimple::set_traj_vel_limit_callback(Axis& axis, const can_Message_t& msg) {
@@ -577,8 +570,6 @@ bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) 
         case 0x05: return handle_get_device_info(msg, txmsg);
         case 0x06: return handle_get_basic_config(axis, msg, txmsg);
         case 0x07: return handle_set_basic_config(axis, msg, txmsg);
-        case 0x08: return handle_get_anticogging_status(axis, msg, txmsg);
-        case 0x09: return handle_set_anticogging_config(axis, msg, txmsg);
         case 0x0A: return handle_get_vernier_diagnostics(axis, msg, txmsg);
         case 0x0B: return handle_get_control_config(axis, msg, txmsg);
         case 0x0C: return handle_set_control_config(axis, msg, txmsg);
@@ -708,6 +699,9 @@ bool CANSimple::handle_get_device_info(const can_Message_t& msg, can_Message_t& 
             break;
         case 0x06:  // user_config_loaded: NVM bytes loaded on boot; 0 = load failed (running defaults)
             value = odrv.user_config_loaded_;
+            break;
+        case 0x07:  // system_error: ODrive board-level error word (DC_BUS_UNDER/OVER_VOLTAGE, etc.)
+            value = static_cast<uint32_t>(odrv.error_);
             break;
         default:
             status = EXT_STATUS_UNKNOWN;
@@ -1474,147 +1468,5 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
 
     txmsg.buf[2] = status;
     txmsg.buf[3] = type;
-    return canbus_->send_message(txmsg);
-}
-
-// =====================================================================
-// 0x08: GET_ANTICOGGING_STATUS
-//
-// item 0x01: flags
-//   bit0 calib_anticogging, bit1 anticogging_valid, bit2 pre_calibrated,
-//   bit3 anticogging_enabled
-// item 0x02: calibration index [0..3600]
-// item 0x03: calib_pos_threshold [encoder counts]
-// item 0x04: calib_vel_threshold [encoder counts/s]
-// item 0x05: cogging_ratio [turn/index]
-// item 0x06: odrv.error
-// item 0x10: cogging_map[index], where request value is the uint32 index
-// =====================================================================
-bool CANSimple::handle_get_anticogging_status(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
-    const uint8_t item_id = msg.buf[1];
-    uint8_t status = EXT_STATUS_OK;
-    uint8_t type = EXT_TYPE_UINT32;
-
-    txmsg.buf[0] = 0x08;
-    txmsg.buf[1] = item_id;
-
-    switch (item_id) {
-        case 0x01: {
-            uint32_t flags = 0;
-            if (axis.controller_.config_.anticogging.calib_anticogging) flags |= (1 << 0);
-            if (axis.controller_.anticogging_valid_)                    flags |= (1 << 1);
-            if (axis.controller_.config_.anticogging.pre_calibrated)     flags |= (1 << 2);
-            if (axis.controller_.config_.anticogging.anticogging_enabled) flags |= (1 << 3);
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, flags, 32, 32, true);
-            break;
-        }
-        case 0x02:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, axis.controller_.config_.anticogging.index, 32, 32, true);
-            break;
-        case 0x03:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, axis.controller_.config_.anticogging.calib_pos_threshold, 32, 32, true);
-            break;
-        case 0x04:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, axis.controller_.config_.anticogging.calib_vel_threshold, 32, 32, true);
-            break;
-        case 0x05:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, axis.encoder_.getCoggingRatio(), 32, 32, true);
-            break;
-        case 0x06:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(odrv.error_), 32, 32, true);
-            break;
-        case 0x10: {
-            uint32_t index = can_getSignal<uint32_t>(msg, 32, 32, true);
-            type = EXT_TYPE_FLOAT32;
-            if (index >= 3600) {
-                status = EXT_STATUS_INVALID_VALUE;
-                can_setSignal<float>(txmsg, 0.0f, 32, 32, true);
-            } else {
-                can_setSignal<float>(txmsg, axis.controller_.config_.anticogging.cogging_map[index], 32, 32, true);
-            }
-            break;
-        }
-        default:
-            status = EXT_STATUS_UNKNOWN;
-            can_setSignal<uint32_t>(txmsg, 0, 32, 32, true);
-            break;
-    }
-
-    txmsg.buf[2] = status;
-    txmsg.buf[3] = type;
-    return canbus_->send_message(txmsg);
-}
-
-// =====================================================================
-// 0x09: SET_ANTICOGGING_CONFIG
-//
-// item 0x01: anticogging_enabled (uint32/bool)
-// item 0x02: pre_calibrated (uint32/bool)
-// item 0x03: calib_pos_threshold [encoder counts] (float32)
-// item 0x04: calib_vel_threshold [encoder counts/s] (float32)
-// item 0x05: reset calibration state/map index (uint32, nonzero resets)
-// =====================================================================
-bool CANSimple::handle_set_anticogging_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
-    const uint8_t item_id = msg.buf[1];
-    const uint8_t req_type = msg.buf[2];
-    uint8_t status = EXT_STATUS_OK;
-
-    txmsg.buf[0] = 0x09;
-    txmsg.buf[1] = item_id;
-    txmsg.buf[3] = req_type;
-
-    if (any_axis_armed()) {
-        txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
-        return canbus_->send_message(txmsg);
-    }
-
-    switch (item_id) {
-        case 0x01: {
-            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            axis.controller_.config_.anticogging.anticogging_enabled = can_getSignal<uint32_t>(msg, 32, 32, true) != 0;
-            break;
-        }
-        case 0x02: {
-            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            bool value = can_getSignal<uint32_t>(msg, 32, 32, true) != 0;
-            axis.controller_.config_.anticogging.pre_calibrated = value;
-            axis.controller_.anticogging_valid_ = value;
-            break;
-        }
-        case 0x03: {
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.controller_.config_.anticogging.calib_pos_threshold = value;
-            break;
-        }
-        case 0x04: {
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.controller_.config_.anticogging.calib_vel_threshold = value;
-            break;
-        }
-        case 0x05: {
-            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            if (can_getSignal<uint32_t>(msg, 32, 32, true) != 0) {
-                axis.controller_.config_.anticogging.index = 0;
-                axis.controller_.config_.anticogging.calib_anticogging = false;
-                axis.controller_.anticogging_valid_ = false;
-            }
-            break;
-        }
-        default:
-            status = EXT_STATUS_UNKNOWN;
-            break;
-    }
-
-    txmsg.buf[2] = status;
     return canbus_->send_message(txmsg);
 }

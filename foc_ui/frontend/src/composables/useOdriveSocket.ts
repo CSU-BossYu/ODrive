@@ -8,7 +8,6 @@ import type {
   ODriveInboundMsg, ODriveOutboundMsg,
   ODriveStatusMsg, ODriveTelemetryMsg, ODriveHeartbeatMsg,
   ODriveExtRespMsg, LogMsg,
-  AnticoggingConfigOut,
 } from '../types'
 
 const MAX_LOGS = 1000
@@ -48,9 +47,6 @@ interface ODriveSocket {
   getControlConfig: () => void
   setControlConfig: (item: number, value: number, isFloat?: boolean) => void
   setServoMode: (mode: number) => void
-  anticoggingStart: () => void
-  anticoggingStatus: () => void
-  anticoggingConfig: (cfg: Partial<AnticoggingConfigOut>) => void
   setPollHz: (hz: number) => void
   recStart: (path?: string) => void
   recStop: () => void
@@ -74,7 +70,7 @@ export function useOdriveSocket(): ODriveSocket {
   const extResponses = ref<ODriveExtRespMsg[]>([])
   // Monotonic counter incremented on every ext_resp. Watching .length stops
   // firing once the ring buffer is full (push+shift keeps length constant),
-  // so AnticoggingPanel watches this instead.
+  // so components watch this instead.
   const extSeq = ref(0)
   // Recording state mirrored from backend rec_state messages so the UI stays
   // in sync with what the backend is actually doing (not just what we asked).
@@ -279,11 +275,6 @@ export function useOdriveSocket(): ODriveSocket {
     send({ type: 'set_control_config', item, value, is_float: isFloat })
   }
   function setServoMode(mode: number) { send({ type: 'set_servo_mode', mode }) }
-  function anticoggingStart() { send({ type: 'anticogging_start' }) }
-  function anticoggingStatus() { send({ type: 'anticogging_status' }) }
-  function anticoggingConfig(cfg: Partial<AnticoggingConfigOut>) {
-    send({ type: 'anticogging_config', ...cfg })
-  }
   function setPollHz(hz: number) { send({ type: 'set_poll_hz', hz }) }
   function recStart(path?: string) { send({ type: 'rec', action: 'start', path }) }
   function recStop() { send({ type: 'rec', action: 'stop' }) }
@@ -299,7 +290,6 @@ export function useOdriveSocket(): ODriveSocket {
     setState, setMode, setPos, setVel, setTorque, sendMit,
     setGain, setLimits, clearErrors, estop, reboot,
     extCmd, getControlConfig, setControlConfig, setServoMode,
-    anticoggingStart, anticoggingStatus, anticoggingConfig,
     setPollHz, recStart, recStop, getOverspeedSnapshot, fetchUserConfigLoaded, fetchProtocolVersion, clearLogs,
   }
   connect()

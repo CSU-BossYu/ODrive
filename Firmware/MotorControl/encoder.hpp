@@ -211,14 +211,6 @@ public:
     uint32_t mt6826s_vernier_sample_counter_ = 0;
     bool mt6826s_pair_valid_ = false;
 
-    float getCoggingRatio() const {
-        return 1.0f / (3600.0f * vernier_motor_turns_per_output_turn());
-    }
-
-    float getCoggingCalibrationCpr() const {
-        return (float)config_.cpr * vernier_motor_turns_per_output_turn();
-    }
-
 };
 
 #endif // __ENCODER_HPP

@@ -5,17 +5,6 @@
 
 class Controller : public ODriveIntf::ControllerIntf {
 public:
-    struct Anticogging_t {
-        uint32_t index = 0;
-        float cogging_map[3600];
-        bool pre_calibrated = false;
-        bool calib_anticogging = false;
-        float calib_pos_threshold = 1.0f;
-        float calib_vel_threshold = 1.0f;
-        float cogging_ratio = 1.0f;
-        bool anticogging_enabled = true;
-    };
-
     struct Autotuning_t {
         float frequency = 0.0f;
         float pos_amplitude = 0.0f;
@@ -47,7 +36,6 @@ public:
         float inertia = 0.0f;                    // [Nm/(turn/s^2)]
         float input_filter_bandwidth = 2.0f;     // [1/s]
         float homing_speed = 0.25f;              // [turn/s]
-        Anticogging_t anticogging;
         float gain_scheduling_width = 10.0f;
         bool enable_gain_scheduling = false;
         bool enable_vel_limit = true;
@@ -87,15 +75,6 @@ public:
     // Trajectory-Planned control
     void move_to_pos(float goal_point);
     void move_incremental(float displacement, bool from_goal_point);
-    
-    // TODO: make this more similar to other calibration loops
-    void start_anticogging_calibration();
-    float remove_anticogging_bias();
-    bool anticogging_calibration(float pos_estimate, float vel_estimate);
-    
-    float get_anticogging_value(uint32_t index) {
-        return (index < 3600) ? config_.anticogging.cogging_map[index] : 0.0f;
-    }
 
     void update_filter_gains();
     void reset_adrc();
@@ -201,10 +180,6 @@ public:
     
     bool trajectory_done_ = true;
 
-    bool anticogging_valid_ = false;
-    bool anticogging_calibration_initialized_ = false;
-    uint32_t anticogging_start_index_ = 0;
-    float anticogging_start_pos_ = 0.0f;
     float mechanical_power_ = 0.0f; // [W]
     float electrical_power_ = 0.0f; // [W]
     float overspeed_time_ = 0.0f; // [s]

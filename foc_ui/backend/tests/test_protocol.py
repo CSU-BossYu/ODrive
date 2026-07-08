@@ -331,16 +331,16 @@ class TestExtendedCommand:
         assert len(data) == 8
 
     def test_encode_float_write(self):
-        data = encode_extended_request(ExtSubCmd.SET_ANTICOGGING_CONFIG,
+        data = encode_extended_request(ExtSubCmd.SET_BASIC_CONFIG,
                                        0x03, ExtType.FLOAT32, 1.5)
-        assert data[0] == 0x09
+        assert data[0] == 0x07
         assert data[1] == 0x03
         assert data[2] == ExtType.FLOAT32
         val = struct.unpack_from('<f', data, 4)[0]
         assert val == pytest.approx(1.5)
 
     def test_encode_uint_write(self):
-        data = encode_extended_request(ExtSubCmd.SET_ANTICOGGING_CONFIG,
+        data = encode_extended_request(ExtSubCmd.SET_BASIC_CONFIG,
                                        0x01, ExtType.UINT32, 1)
         val = struct.unpack_from('<I', data, 4)[0]
         assert val == 1

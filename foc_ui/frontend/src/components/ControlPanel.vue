@@ -43,12 +43,8 @@ const mitKd = ref(0)
 const mitTorque = ref(0)
 const calibrationNotice = ref('')
 const calibrationNoticeKind = ref<'dim' | 'ok' | 'warn' | 'err'>('dim')
-const activeCalibration = ref<'full' | 'motor' | 'encoder' | 'anticog' | null>(null)
+const activeCalibration = ref<'full' | 'motor' | 'encoder' | null>(null)
 const calibrationStartedAt = ref(0)
-const anticogCfgEnabled = ref(false)
-const anticogCfgPreCalibrated = ref(false)
-const anticogCfgPosThreshold = ref(1.0)
-const anticogCfgVelThreshold = ref(1.0)
 
 const streamMode = ref<ModeKey | null>(null)
 const streamHz = ref(20)
@@ -119,17 +115,6 @@ const calibrationResults = computed(() => calibrationResultDefs.map((d) => {
   const r = latestExtResponse(0x04, d.item)
   return { ...d, status: r?.status, value: r?.value }
 }))
-const anticogStatusFlags = computed(() => latestExtResponse(0x08, 0x01)?.value ?? 0)
-const anticogIndex = computed(() => latestExtResponse(0x08, 0x02)?.value ?? 0)
-const anticogPosThreshold = computed(() => latestExtResponse(0x08, 0x03)?.value ?? 0)
-const anticogVelThreshold = computed(() => latestExtResponse(0x08, 0x04)?.value ?? 0)
-const anticogCoggingRatio = computed(() => latestExtResponse(0x08, 0x05)?.value ?? 0)
-const anticogSystemError = computed(() => latestExtResponse(0x08, 0x06)?.value ?? 0)
-const isAnticogCalibrating = computed(() => !!(anticogStatusFlags.value & (1 << 0)))
-const isAnticogValid = computed(() => !!(anticogStatusFlags.value & (1 << 1)))
-const isAnticogPreCalibrated = computed(() => !!(anticogStatusFlags.value & (1 << 2)))
-const isAnticogEnabled = computed(() => !!(anticogStatusFlags.value & (1 << 3)))
-const anticogProgress = computed(() => Math.max(0, Math.min(100, (safeNumber(anticogIndex.value) / 3600) * 100)))
 
 const cAxisErrs = computed(() => decodeAxisErrors(oSocket.heartbeat.value?.axis_error ?? 0))
 const cOdriveErrs = computed(() => decodeOdriveSystemErrors(oSocket.latest.value?.ch.odrv_err ?? 0))
@@ -341,59 +326,14 @@ function saveConfiguration() {
   setCalibrationNotice('已请求保存配置，控制器可能会重启', 'warn')
 }
 
-function startAnticoggingCalibration() {
-  stopStreaming(true)
-  requestedMode.value = null
-  activeCalibration.value = 'anticog'
-  calibrationStartedAt.value = Date.now()
-  oSocket.clearErrors()
-  oSocket.setServoMode(2)
-  oSocket.setMode(3, 5)
-  oSocket.setState(8)
-  setCalibrationNotice('齿槽转矩校准准备中：切入位置闭环', 'warn')
-  window.setTimeout(() => {
-    oSocket.anticoggingStart()
-    setCalibrationNotice('齿槽转矩校准已启动，正在采集 map', 'warn')
-    startCalibrationPolling()
-  }, 250)
-}
-
-function applyAnticoggingConfig(field: 'enabled' | 'pre_calibrated' | 'pos_threshold' | 'vel_threshold' | 'reset') {
-  const cfg: Record<string, unknown> = {}
-  if (field === 'enabled') cfg.enabled = anticogCfgEnabled.value
-  if (field === 'pre_calibrated') cfg.pre_calibrated = anticogCfgPreCalibrated.value
-  if (field === 'pos_threshold') cfg.pos_threshold = safeNumber(anticogCfgPosThreshold.value)
-  if (field === 'vel_threshold') cfg.vel_threshold = safeNumber(anticogCfgVelThreshold.value)
-  if (field === 'reset') cfg.reset = true
-  oSocket.anticoggingConfig(cfg as any)
-  setCalibrationNotice(`已发送齿槽配置：${field}`, 'warn')
-  window.setTimeout(() => readCalibrationResult(false), 250)
-}
-
 function evaluateCalibrationStatus() {
   const action = activeCalibration.value
   if (!action) return
   const elapsedMs = Date.now() - calibrationStartedAt.value
-  if (allErrors.value.length || (action === 'anticog' && anticogSystemError.value)) {
-    const detail = action === 'anticog' && anticogSystemError.value
-      ? `，system_error=0x${Math.trunc(anticogSystemError.value).toString(16)}`
-      : ''
-    setCalibrationNotice(`校准失败：检测到错误${detail}`, 'err')
+  if (allErrors.value.length) {
+    setCalibrationNotice('校准失败：检测到错误', 'err')
     activeCalibration.value = null
     stopCalibrationPolling()
-    return
-  }
-
-  if (action === 'anticog') {
-    if (isAnticogCalibrating.value) {
-      setCalibrationNotice(`齿槽转矩校准中：${Math.round(anticogProgress.value)}% (${Math.trunc(anticogIndex.value)}/3600)`, 'warn')
-      return
-    }
-    if (isAnticogValid.value && elapsedMs > 800) {
-      setCalibrationNotice('齿槽转矩校准成功：map 有效', 'ok')
-      activeCalibration.value = null
-      stopCalibrationPolling()
-    }
     return
   }
 
@@ -439,28 +379,9 @@ watch([
   axisState,
   isMotorCalibrated,
   isEncoderReady,
-  isAnticogCalibrating,
-  isAnticogValid,
-  anticogSystemError,
   () => allErrors.value.length,
 ], () => {
   evaluateCalibrationStatus()
-})
-
-watch(isAnticogEnabled, (value) => {
-  anticogCfgEnabled.value = value
-})
-
-watch(isAnticogPreCalibrated, (value) => {
-  anticogCfgPreCalibrated.value = value
-})
-
-watch(anticogPosThreshold, (value) => {
-  if (Number.isFinite(value) && value > 0) anticogCfgPosThreshold.value = value
-})
-
-watch(anticogVelThreshold, (value) => {
-  if (Number.isFinite(value) && value > 0) anticogCfgVelThreshold.value = value
 })
 
 onBeforeUnmount(() => {
@@ -585,7 +506,7 @@ onBeforeUnmount(() => {
       <div class="card-head">
         <div>
           <div class="card-title">校准</div>
-          <div class="card-sub">完整校准不包含齿槽转矩；齿槽 map 需要单独启动</div>
+          <div class="card-sub">完整校准包含电机相序与编码器相零位标定</div>
         </div>
         <button @click="readCalibrationResult()" :disabled="!oSocket.ready.value">读取状态</button>
       </div>
@@ -607,46 +528,6 @@ onBeforeUnmount(() => {
             <strong>{{ r.status === 0 && r.value != null ? format(r.value, r.item <= 0x02 ? 6 : 0) : '--' }}</strong>
             <em>{{ r.unit }}</em>
           </div>
-        </div>
-      </div>
-
-      <div class="calibration-section">
-        <div class="section-title">齿槽转矩</div>
-        <div class="calibration-actions">
-          <button @click="startAnticoggingCalibration" class="warn" :disabled="!oSocket.ready.value">开始齿槽校准</button>
-          <button @click="applyAnticoggingConfig('reset')" :disabled="!oSocket.ready.value">重置 map</button>
-          <button @click="applyAnticoggingConfig('enabled')" :disabled="!oSocket.ready.value">
-            {{ anticogCfgEnabled ? '启用补偿' : '禁用补偿' }}
-          </button>
-        </div>
-        <div class="calibration-status">
-          <span class="pill" :class="isAnticogEnabled ? 'ok' : 'dim'">Comp {{ isAnticogEnabled ? 'ON' : 'OFF' }}</span>
-          <span class="pill" :class="isAnticogValid ? 'ok' : 'dim'">Map {{ isAnticogValid ? 'Valid' : '--' }}</span>
-          <span class="pill" :class="isAnticogPreCalibrated ? 'ok' : 'dim'">Precal {{ isAnticogPreCalibrated ? 'YES' : '--' }}</span>
-          <span class="pill" :class="isAnticogCalibrating ? 'warn' : 'dim'">Index {{ Math.trunc(anticogIndex) }}/3600</span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill" :style="{ width: `${anticogProgress}%` }"></div>
-        </div>
-        <div class="anticog-grid">
-          <label>位置阈值 (counts)
-            <input type="number" step="0.1" v-model.number="anticogCfgPosThreshold" @keyup.enter="applyAnticoggingConfig('pos_threshold')" />
-          </label>
-          <label>速度阈值 (counts/s)
-            <input type="number" step="0.1" v-model.number="anticogCfgVelThreshold" @keyup.enter="applyAnticoggingConfig('vel_threshold')" />
-          </label>
-          <button @click="applyAnticoggingConfig('pos_threshold')" :disabled="!oSocket.ready.value">set pos</button>
-          <button @click="applyAnticoggingConfig('vel_threshold')" :disabled="!oSocket.ready.value">set vel</button>
-        </div>
-        <label class="check-row">
-          <input type="checkbox" v-model="anticogCfgPreCalibrated" @change="applyAnticoggingConfig('pre_calibrated')" />
-          齿槽 map 预校准有效
-        </label>
-        <div class="calibration-results compact">
-          <div><span>pos_threshold</span><strong>{{ format(anticogPosThreshold, 4) }}</strong><em>counts</em></div>
-          <div><span>vel_threshold</span><strong>{{ format(anticogVelThreshold, 4) }}</strong><em>counts/s</em></div>
-          <div><span>cogging_ratio</span><strong>{{ format(anticogCoggingRatio, 6) }}</strong><em>turn</em></div>
-          <div><span>system_error</span><strong>0x{{ Math.trunc(anticogSystemError).toString(16).padStart(8, '0') }}</strong><em></em></div>
         </div>
       </div>
 
@@ -931,29 +812,6 @@ onBeforeUnmount(() => {
   font-style: normal;
   font-size: 10px;
 }
-.progress-track {
-  height: 7px;
-  overflow: hidden;
-  background: rgba(15, 23, 42, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 999px;
-}
-.progress-fill {
-  height: 100%;
-  min-width: 0;
-  background: var(--warn);
-  transition: width 0.2s ease;
-}
-.anticog-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  align-items: end;
-}
-.anticog-grid label {
-  display: grid;
-  gap: 4px;
-}
 .check-row {
   display: flex;
   align-items: center;
@@ -1015,6 +873,6 @@ onBeforeUnmount(() => {
 @media (max-width: 1280px) {
   .mode-cards { grid-template-columns: 1fr; }
   .stream-row { grid-template-columns: 1fr; }
-  .calibration-actions, .anticog-grid { grid-template-columns: 1fr; }
+  .calibration-actions { grid-template-columns: 1fr; }
 }
 </style>

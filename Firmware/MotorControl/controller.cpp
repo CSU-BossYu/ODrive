@@ -3,7 +3,6 @@
 #include "control_timeout.hpp"
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 
 // Position deadband (hardcoded, not a config item). Zeros pos_err within this
 // many turns so the position loop doesn't hunt on sub-count jitter at the
@@ -121,83 +120,6 @@ void Controller::move_incremental(float displacement, bool from_input_pos = true
     input_pos_updated();
 }
 
-void Controller::start_anticogging_calibration() {
-    // Ensure the cogging map was correctly allocated earlier and that the motor is capable of calibrating
-    if (axis_->error_ == Axis::ERROR_NONE) {
-        config_.anticogging.index = 0;
-        anticogging_calibration_initialized_ = false;
-        anticogging_valid_ = false;
-        config_.anticogging.calib_anticogging = true;
-    }
-}
-
-float Controller::remove_anticogging_bias()
-{
-    auto& cogmap = config_.anticogging.cogging_map;
-    
-    auto sum = std::accumulate(std::begin(cogmap), std::end(cogmap), 0.0f);
-    auto average = sum / std::size(cogmap);
-
-    for(auto& val : cogmap) {
-        val -= average;
-    }
-
-    return average;
-}
-
-
-/*
- * This anti-cogging implementation iterates through each encoder position,
- * waits for zero velocity & position error,
- * then samples the current required to maintain that position.
- * 
- * This holding current is added as a feedforward term in the control loop.
- */
-bool Controller::anticogging_calibration(float pos_estimate, float vel_estimate) {
-    const float cogging_ratio = axis_->encoder_.getCoggingRatio();
-    const float calibration_cpr = axis_->encoder_.getCoggingCalibrationCpr();
-
-    if (!anticogging_calibration_initialized_) {
-        const float grid_position = floorf(pos_estimate / cogging_ratio);
-        const int32_t grid_index = (int32_t)grid_position;
-        anticogging_start_index_ = (uint32_t)mod(grid_index, 3600);
-        anticogging_start_pos_ = grid_position * cogging_ratio;
-        anticogging_calibration_initialized_ = true;
-        input_pos_ = anticogging_start_pos_;
-        input_vel_ = 0.0f;
-        input_torque_ = 0.0f;
-        input_pos_updated();
-        return false;
-    }
-
-    float pos_err = input_pos_ - pos_estimate;
-    if (std::abs(pos_err) <= config_.anticogging.calib_pos_threshold / calibration_cpr &&
-        std::abs(vel_estimate) < config_.anticogging.calib_vel_threshold / calibration_cpr) {
-        const uint32_t map_index = (anticogging_start_index_ + config_.anticogging.index) % 3600;
-        config_.anticogging.cogging_map[map_index] = vel_integrator_torque_;
-        ++config_.anticogging.index;
-    }
-    if (config_.anticogging.index < 3600) {
-        config_.control_mode = CONTROL_MODE_POSITION_CONTROL;
-        input_pos_ = anticogging_start_pos_ + config_.anticogging.index * cogging_ratio;
-        input_vel_ = 0.0f;
-        input_torque_ = 0.0f;
-        input_pos_updated();
-        return false;
-    } else {
-        config_.anticogging.index = 0;
-        config_.control_mode = CONTROL_MODE_POSITION_CONTROL;
-        input_pos_ = anticogging_start_pos_;
-        input_vel_ = 0.0f;
-        input_torque_ = 0.0f;
-        input_pos_updated();
-        anticogging_valid_ = true;
-        anticogging_calibration_initialized_ = false;
-        config_.anticogging.calib_anticogging = false;
-        return true;
-    }
-}
-
 void Controller::set_input_pos_and_steps(float const pos) {
     input_pos_ = pos;
     if (config_.circular_setpoints) {
@@ -310,9 +232,6 @@ bool Controller::update() {
     std::optional<float> pos_wrap = pos_wrap_src_.present();
     std::optional<float> vel_estimate = vel_estimate_src_.present();
 
-    std::optional<float> anticogging_pos_estimate = axis_->encoder_.pos_estimate_.present();
-    std::optional<float> anticogging_vel_estimate = axis_->encoder_.vel_estimate_.present();
-
     if (axis_->step_dir_active_) {
         if (config_.circular_setpoints) {
             if (!pos_wrap.has_value()) {
@@ -323,15 +242,6 @@ bool Controller::update() {
         } else {
             input_pos_ = (float)(axis_->steps_) / (float)(config_.steps_per_circular_range);
         }
-    }
-
-    if (config_.anticogging.calib_anticogging) {
-        if (!anticogging_pos_estimate.has_value() || !anticogging_vel_estimate.has_value()) {
-            set_error(ERROR_INVALID_ESTIMATE);
-            return false;
-        }
-        // non-blocking
-        anticogging_calibration(*anticogging_pos_estimate, *anticogging_vel_estimate);
     }
 
     // TODO also enable circular deltas for 2nd order filter, etc.
@@ -418,7 +328,6 @@ bool Controller::update() {
                 torque_setpoint_ = traj_step.Ydd * config_.inertia;
                 axis_->trap_traj_.t_ += current_meas_period;
             }
-            anticogging_pos_estimate = pos_setpoint_; // FF the position setpoint instead of the pos_estimate
         } break;
         case INPUT_MODE_TUNING: {
             autotuning_phase_ = wrap_pm_pi(autotuning_phase_ + (2.0f * M_PI * autotuning_.frequency * current_meas_period));
@@ -618,19 +527,6 @@ bool Controller::update() {
 
     // Velocity control
     float torque = torque_setpoint_;
-
-    // Anti-cogging is enabled after calibration
-    // We get the current position and apply a current feed-forward
-    // ensuring that we handle negative encoder positions properly (-1 == motor->encoder.encoder_cpr - 1)
-    if (anticogging_valid_ && config_.anticogging.anticogging_enabled) {
-        if (!anticogging_pos_estimate.has_value()) {
-            set_error(ERROR_INVALID_ESTIMATE);
-            return false;
-        }
-        float anticogging_pos = *anticogging_pos_estimate / axis_->encoder_.getCoggingRatio();
-        const int32_t anticogging_index = (int32_t)floorf(anticogging_pos);
-        torque += config_.anticogging.cogging_map[mod(anticogging_index, 3600)];
-    }
 
     float v_err = 0.0f;
     if (mit_adrc_active) {

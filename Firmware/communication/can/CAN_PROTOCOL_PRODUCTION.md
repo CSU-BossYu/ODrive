@@ -43,7 +43,6 @@ The generated DBC is `tools/odrive-cansimple.dbc`.
 | `0x00D` | Set_Input_Vel | Master -> Axis0 | implemented |
 | `0x00E` | Set_Input_Torque | Master -> Axis0 | implemented |
 | `0x00F` | Set_Limits | Master -> Axis0 | implemented |
-| `0x010` | Start_Anticogging | Master -> Axis0 | implemented |
 | `0x011` | Set_Traj_Vel_Limit | Master -> Axis0 | implemented |
 | `0x012` | Set_Traj_Accel_Limits | Master -> Axis0 | implemented |
 | `0x013` | Set_Traj_Inertia | Master -> Axis0 | implemented |
@@ -206,8 +205,6 @@ Subcommands:
 | `0x05` | Get_Device_Info | implemented |
 | `0x06` | Get_Basic_Config | implemented |
 | `0x07` | Set_Basic_Config | implemented |
-| `0x08` | Get_Anticogging_Status | implemented |
-| `0x09` | Set_Anticogging_Config | implemented |
 | `0x0A` | Get_Vernier_Diagnostics | implemented |
 | `0x0B` | Get_Control_Config | implemented |
 | `0x0C` | Set_Control_Config | implemented |
@@ -219,7 +216,9 @@ The current extended protocol version is returned by subcommand `0x05`, item
 Get_Device_Info items: `0x01` protocol_version, `0x02` fw_version,
 `0x03` hw_version, `0x04`/`0x05` serial_number low/high 32 bits, `0x06`
 user_config_loaded (uint32; NVM bytes loaded on boot, 0 = load failed and the
-device is running factory defaults -- reconfigure and `save_configuration`).
+device is running factory defaults -- reconfigure and `save_configuration`),
+`0x07` system_error (uint32; ODrive board-level error word, e.g.
+DC_BUS_UNDER/OVER_VOLTAGE).
 
 ## Basic configuration extended items
 
@@ -254,32 +253,6 @@ controller gains (`0x30`-`0x32`, `0x35`) which are live-tunable.
 | `0x42` | float32 | brake_resistance [ohm] (GET-only, baked) |
 | `0x43` | float32 | dc_bus_undervoltage_trip_level [V] (GET-only, baked) |
 | `0x44` | float32 | dc_bus_overvoltage_trip_level [V] (GET-only, baked) |
-
-## Anticogging extended items
-
-Subcommand `0x08`, Get_Anticogging_Status:
-
-| Item | Type | Meaning |
-| --- | --- | --- |
-| `0x01` | uint32 | flags: bit0 calib_anticogging, bit1 valid, bit2 pre_calibrated, bit3 enabled |
-| `0x02` | uint32 | calibration index |
-| `0x03` | float32 | calibration position threshold, encoder counts |
-| `0x04` | float32 | calibration velocity threshold, encoder counts/s |
-| `0x05` | float32 | cogging ratio, turns/index |
-| `0x06` | uint32 | ODrive system error |
-| `0x10` | float32 | cogging_map[index], request value is index in byte4..7 |
-
-Subcommand `0x09`, Set_Anticogging_Config:
-
-| Item | Type | Meaning |
-| --- | --- | --- |
-| `0x01` | uint32 | anticogging_enabled |
-| `0x02` | uint32 | pre_calibrated, also sets runtime valid flag |
-| `0x03` | float32 | calibration position threshold |
-| `0x04` | float32 | calibration velocity threshold |
-| `0x05` | uint32 | nonzero resets calibration state/index |
-
-Setters return `BUSY_ARMED` while the motor is armed.
 
 ## Control configuration extended items
 
