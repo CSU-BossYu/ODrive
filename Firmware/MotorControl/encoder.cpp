@@ -27,6 +27,26 @@ static uint32_t spi_prescaler_from_divisor(uint16_t divisor) {
 bool Encoder::apply_config(ODriveIntf::MotorIntf::MotorType motor_type) {
     config_.parent = this;
 
+    // Encoder/vernier model constants are baked per motor model
+    // (production_config.h). Force-overwrite on every boot so NVM never
+    // holds a stale/wrong value. Per-unit calibration (phase_offset,
+    // vernier_main/aux_offset, pre_calibrated) is NOT overwritten.
+    config_.mode = static_cast<Mode>(ODRIVE_PRODUCTION_ENCODER_MODE);
+    config_.cpr = ODRIVE_PRODUCTION_ENCODER_CPR;
+    config_.abs_spi_cs_gpio_pin = ODRIVE_PRODUCTION_ABS_SPI_CS_GPIO_PIN;
+    config_.abs_spi_aux_cs_gpio_pin = ODRIVE_PRODUCTION_ABS_SPI_AUX_CS_GPIO_PIN;
+    config_.vernier_virtual_cpr = ODRIVE_PRODUCTION_VERNIER_VIRTUAL_CPR;
+    config_.vernier_main_ratio = ODRIVE_PRODUCTION_VERNIER_MAIN_RATIO;
+    config_.vernier_aux_ratio = ODRIVE_PRODUCTION_VERNIER_AUX_RATIO;
+    config_.vernier_main_reversed = ODRIVE_PRODUCTION_VERNIER_MAIN_REVERSED;
+    config_.vernier_aux_reversed = ODRIVE_PRODUCTION_VERNIER_AUX_REVERSED;
+    config_.vernier_output_reversed = ODRIVE_PRODUCTION_VERNIER_OUTPUT_REVERSED;
+    config_.vernier_use_phase_difference = ODRIVE_PRODUCTION_VERNIER_USE_PHASE_DIFFERENCE;
+    config_.mt6826s_spi_mode = ODRIVE_PRODUCTION_MT6826S_SPI_MODE;
+    config_.mt6826s_spi_prescaler = ODRIVE_PRODUCTION_MT6826S_SPI_PRESCALER;
+    config_.vernier_err_accept = ODRIVE_PRODUCTION_VERNIER_ERR_ACCEPT;
+    config_.vernier_err_reject = ODRIVE_PRODUCTION_VERNIER_ERR_REJECT;
+
     update_pll_gains();
 
     if (config_.pre_calibrated) {

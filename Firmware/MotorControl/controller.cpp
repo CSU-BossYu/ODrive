@@ -5,6 +5,16 @@
 #include <cmath>
 #include <numeric>
 
+// Position deadband (hardcoded, not a config item). Zeros pos_err within this
+// many turns so the position loop doesn't hunt on sub-count jitter at the
+// target. Sized for a 6-axis arm with ~0.1mm end-effector accuracy:
+//   - MT6826S 32768 cpr * 42:1 gear = 1,376,256 counts/output-rev
+//     => 1 count ≈ 1.4μm at a 300mm link, ≈ 2.7μm at 600mm.
+//   - 3 counts ≈ 4-8μm at the tip: ~5-8% of the 0.1mm budget (and ~15-20% of
+//     the per-joint RSS budget 0.1mm/√6), while covering a few LSB of
+//     magnetic-encoder noise. Calibrate up if jitter, down if accuracy sags.
+constexpr float kPosDeadbandTurns = 3.0f / (32768.0f * 42.0f);  // ≈ 2.18e-6 turn
+
 bool Controller::apply_config() {
     config_.parent = this;
     update_filter_gains();
@@ -438,6 +448,9 @@ bool Controller::update() {
             float vel_estimate_rad = *vel_estimate * 2.0f * M_PI;
 
             float pos_err = mit_pos_rad_ - pos_estimate_rad;
+            if (std::abs(pos_err) < kPosDeadbandTurns) {
+                pos_err = 0.0f;  // position deadband: suppress sub-count jitter
+            }
             float vel_err = mit_vel_rad_per_s_ - vel_estimate_rad;
 
             torque_setpoint_ =
@@ -505,6 +518,12 @@ bool Controller::update() {
             adrc_pos_estimate = *pos_estimate_linear;
             adrc_vel_estimate = *vel_estimate;
             adrc_measurement_valid = true;
+        }
+
+        // Position deadband: zeros pos_err within kPosDeadbandTurns so the
+        // position P+I and gain scheduling see zero error at the target.
+        if (std::abs(pos_err) < kPosDeadbandTurns) {
+            pos_err = 0.0f;
         }
 
         if (!adrc_active && config_.pos_integrator_gain > 0.0f) {

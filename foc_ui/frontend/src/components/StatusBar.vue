@@ -162,7 +162,7 @@ function fmt(v: number, digits = 2): string {
     <div class="divider"></div>
     <div class="readings">
       <div class="reading"><span class="k">Vbus</span><span class="v">{{ fmt(vbus, 1) }}</span><span class="u">V</span></div>
-      <div class="reading"><span class="k">速度</span><span class="v">{{ fmt(velocityRpm, 1) }}</span><span class="u">rpm</span></div>
+      <div class="reading"><span class="k">速度</span><span class="v">{{ fmt(velocityRpm, 2) }}</span><span class="u">rpm</span></div>
       <div class="reading"><span class="k">Iq</span><span class="v">{{ fmt(iq, 3) }}</span><span class="u">A</span></div>
       <div class="reading"><span class="k">Ibus</span><span class="v">{{ fmt(ibus, 3) }}</span><span class="u">A</span></div>
     </div>

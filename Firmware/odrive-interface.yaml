@@ -321,41 +321,8 @@ interfaces:
         unit: Amps
         doc: |
           The bus current allowed to flow back to the power supply before the brake resistor module will start shunting current.
-      brake_resistance:
-        type: float32
-        unit: ohm
-        brief: Value of the brake resistor connected to the ODrive.
-        doc: |
-          If you set this to a lower value than the true brake resistance
-          then the ODrive will not meed the `max_regen_current` constraint
-          during braking, that is it will sink more than `max_regen_current`
-          into the power supply. Some power supplies don't like this.
-
-          If you set this to a higher value than the true brake resistance
-          then the ODrive will unnecessarily burn more power than required
-          during braking.
-      enable_brake_resistor:
-        type: bool
-        brief: Enable/disable the use of a brake resistor.
-        doc: |
-          Setting this to False even though a brake resistor is connected is
-          harmless. Setting this to True even though no brake resistor is
-          connected can break the power supply.
-          Changes to this value require a reboot to take effect.
-
-      dc_bus_undervoltage_trip_level:
-        type: float32
-        unit: V
-        brief: Minimum voltage below which the motor stops operating.
-      dc_bus_overvoltage_trip_level:
-        type: float32
-        unit: V
-        brief: Maximum voltage above which the motor stops operating.
-        doc: |
-          This protects against cases in which the power supply fails to dissipate
-          the brake power if the brake resistor is disabled.
-          The default is 26V for the 24V board version and 52V for the 48V board version.
-
+      # brake_resistance / enable_brake_resistor / dc_bus_*_trip_level are
+      # baked in production_config.h (per-product hardware constants).
       enable_dc_bus_overvoltage_ramp:
         type: bool
         status: experimental
@@ -829,24 +796,9 @@ interfaces:
             doc: |
               Indicates to the ODrive that the parameters `config.phase_resistance` and `config.phase_inductance` are valid at system start.
               If these are valid and `pre_calibrated` is set to `True`, motor calibration can be skipped.
-          pole_pairs: 
-            type: int32
-            doc: |
-              The number of pole pairs in the motor.
-              Note this is equal to 1/2 of the number of magnets (not coils!) in a typical hobby motor.
-          calibration_current:
-            type: float32
-            doc: The current used to measure resistance during `AXIS_STATE_MOTOR_CALIBRATION`.
-          resistance_calib_max_voltage: 
-            type: float32
-            doc: |
-              The maximum voltage allowed during `AXIS_STATE_MOTOR_CALIBRATION`.
-              This should be set to less than `(0.5 * vbus_voltage)`, but high enough to satisfy V=IR during motor calibration, where I is `config.calibration_current` and R is `config.phase_resistance`
           phase_inductance: {type: float32, unit: henry, c_setter: set_phase_inductance}
           phase_resistance: {type: float32, unit: ohm, c_setter: set_phase_resistance}
-          torque_constant: {type: float32, unit: N·m/A}
-          motor_type: MotorType
-          current_lim: 
+          current_lim:
             type: float32
             unit: A
             doc: Maximum commanded current allowed
@@ -1219,26 +1171,8 @@ interfaces:
       config:
         c_is_class: False
         attributes:
-          mode: Mode
-          abs_spi_cs_gpio_pin: 
-            type: uint16
-            c_setter: set_abs_spi_cs_gpio_pin
-            doc: Make sure that the GPIO is in `GPIO_MODE_DIGITAL`.
-          abs_spi_aux_cs_gpio_pin:
-            type: uint16
-            c_setter: set_abs_spi_aux_cs_gpio_pin
-            doc: Auxiliary chip-select GPIO for dual MT6826S vernier diagnostics.
-          cpr: 
-            type: int32
-            doc: Counts per Revolution of the encoder.  This is 4x the Pulses per Revolution.
-          vernier_main_ratio:
-            type: float32
-            c_setter: set_vernier_main_ratio
-            doc: Main encoder revolutions per vernier output turn.
-          vernier_aux_ratio:
-            type: float32
-            c_setter: set_vernier_aux_ratio
-            doc: Auxiliary encoder revolutions per vernier output turn.
+          # Encoder/vernier model params (mode, cpr, abs_spi_cs, vernier
+          # geometry/SPI/thresholds) are baked in production_config.h.
           vernier_main_offset:
             type: float32
             c_setter: set_vernier_main_offset
@@ -1247,39 +1181,6 @@ interfaces:
             type: float32
             c_setter: set_vernier_aux_offset
             doc: Auxiliary encoder phase offset in turns.
-          vernier_main_reversed:
-            type: bool
-            c_setter: set_vernier_main_reversed
-          vernier_aux_reversed:
-            type: bool
-            c_setter: set_vernier_aux_reversed
-          vernier_use_phase_difference:
-            type: bool
-            c_setter: set_vernier_use_phase_difference
-            doc: Use the direct Vernier phase-difference resolver independently of output coordinate reversal.
-          vernier_output_reversed:
-            type: bool
-            c_setter: set_vernier_output_reversed
-            doc: Reverse the resolved vernier output coordinate without changing raw sensor phase direction.
-          mt6826s_spi_mode:
-            type: uint16
-            c_setter: set_mt6826s_spi_mode
-            doc: SPI mode for MT6826S diagnostics. Datasheet default is mode 3.
-          vernier_virtual_cpr:
-            type: int32
-            doc: Counts per resolved vernier output turn for diagnostics.
-          vernier_err_accept:
-            type: float32
-            c_setter: set_vernier_err_accept
-            doc: Residual threshold below which a vernier observation is accepted.
-          vernier_err_reject:
-            type: float32
-            c_setter: set_vernier_err_reject
-            doc: Residual threshold above which a vernier observation is rejected.
-          mt6826s_spi_prescaler:
-            type: uint16
-            c_setter: set_mt6826s_spi_prescaler
-            doc: SPI baudrate prescaler divisor for MT6826S diagnostics.
           phase_offset: int32
           phase_offset_float: float32
           direction: int32

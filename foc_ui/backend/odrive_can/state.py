@@ -48,6 +48,8 @@ class HeartbeatState:
 class EncoderState:
     pos_estimate: float = 0.0   # rev
     vel_estimate: float = 0.0   # rev/s
+    shadow_count: int = 0       # cumulative encoder count (linear, from Get_Encoder_Count)
+    count_in_cpr: int = 0       # encoder count modulo cpr (0..cpr-1)
     last_ts: float = 0.0
 
 
@@ -105,6 +107,8 @@ class AxisCache:
         return {
             'pos':        self.encoder.pos_estimate,
             'vel':        self.encoder.vel_estimate,
+            'shadow_count': self.encoder.shadow_count,
+            'count_in_cpr': self.encoder.count_in_cpr,
             'iq_sp':      self.iq.iq_setpoint,
             'iq_meas':    self.iq.iq_measured,
             'vbus':       self.bus.vbus,
@@ -150,6 +154,8 @@ class AxisCache:
             'controller_flags': self.heartbeat.controller_flags,
             'pos_turns': self.encoder.pos_estimate,
             'vel_turns_per_s': self.encoder.vel_estimate,
+            'shadow_count': self.encoder.shadow_count,
+            'count_in_cpr': self.encoder.count_in_cpr,
             'iq_setpoint': self.iq.iq_setpoint,
             'iq_measured': self.iq.iq_measured,
             'vbus': self.bus.vbus,
@@ -197,6 +203,8 @@ ODRIVE_CHANNELS: list[ODriveChannelDef] = [
     ODriveChannelDef(19, 'mit_stale',  'MIT stale',      '',      'state'),
     ODriveChannelDef(20, 'running',    'Running',        '',      'state'),
     ODriveChannelDef(21, 'ctrl_flags', 'Control flags',  'bits',  'state'),
+    ODriveChannelDef(22, 'shadow_count', 'Encoder count', 'count', 'pos'),
+    ODriveChannelDef(23, 'count_in_cpr', 'Count in CPR',  'count', 'pos'),
 ]
 
 ODRIVE_CHANNEL_BY_KEY: dict[str, ODriveChannelDef] = {

@@ -16,12 +16,12 @@ public:
     // example: current_lim and calibration_current will instead determine the maximum voltage applied to the motor.
     struct Config_t {
         bool pre_calibrated = false; // can be set to true to indicate that all values here are valid
-        int32_t pole_pairs = 14;
+        int32_t pole_pairs = ODRIVE_PRODUCTION_POLE_PAIRS;
         float calibration_current = ODRIVE_PRODUCTION_MOTOR_CALIBRATION_CURRENT;    // [A]
-        float resistance_calib_max_voltage = 2.0f; // [V] - You may need to increase this if this voltage isn't sufficient to drive calibration_current through the motor.
+        float resistance_calib_max_voltage = ODRIVE_PRODUCTION_RESISTANCE_CALIB_MAX_VOLTAGE; // [V] - You may need to increase this if this voltage isn't sufficient to drive calibration_current through the motor.
         float phase_inductance = 0.0f;        // to be set by measure_phase_inductance
         float phase_resistance = 0.0f;        // to be set by measure_phase_resistance
-        float torque_constant = 0.04f;         // [Nm/A] for PM motors, [Nm/A^2] for induction motors. Equal to 8.27/Kv of the motor
+        float torque_constant = ODRIVE_PRODUCTION_TORQUE_CONSTANT;         // [Nm/A] for PM motors, [Nm/A^2] for induction motors. Equal to 8.27/Kv of the motor
         MotorType motor_type = MOTOR_TYPE_HIGH_CURRENT;
         // Read out max_allowed_current to see max supported value for current_lim.
         // float current_lim = 70.0f; //[A]
@@ -29,10 +29,10 @@ public:
         float current_lim_margin = 8.0f;    // Maximum violation of current_lim
         float torque_lim = std::numeric_limits<float>::infinity();           //[Nm]. 
         // Value used to compute shunt amplifier gains
-        float requested_current_range = 60.0f; // [A]
+        float requested_current_range = ODRIVE_PRODUCTION_REQUESTED_CURRENT_RANGE; // [A]
         float current_control_bandwidth = 1500.0f;  // [rad/s]
-        float inverter_temp_limit_lower = 100;
-        float inverter_temp_limit_upper = 120;
+        float inverter_temp_limit_lower = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_LOWER;
+        float inverter_temp_limit_upper = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_UPPER;
 
         float acim_gain_min_flux = 10; // [A]
         float acim_autoflux_min_Id = 10; // [A]

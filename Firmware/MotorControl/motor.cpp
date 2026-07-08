@@ -318,6 +318,17 @@ bool Motor::apply_config() {
     config_.parent = this;
     config_.R_wL_FF_enable = true;
     config_.bEMF_FF_enable = true;
+    // Motor-model constants are baked per motor model (production_config.h).
+    // Force-overwrite on every boot so NVM never holds a stale/wrong value.
+    // Load-dependent tuning (current_lim, gains) is NOT overwritten here.
+    config_.motor_type = static_cast<MotorType>(ODRIVE_PRODUCTION_MOTOR_TYPE);
+    config_.pole_pairs = ODRIVE_PRODUCTION_POLE_PAIRS;
+    config_.torque_constant = ODRIVE_PRODUCTION_TORQUE_CONSTANT;
+    config_.calibration_current = ODRIVE_PRODUCTION_MOTOR_CALIBRATION_CURRENT;
+    config_.resistance_calib_max_voltage = ODRIVE_PRODUCTION_RESISTANCE_CALIB_MAX_VOLTAGE;
+    config_.requested_current_range = ODRIVE_PRODUCTION_REQUESTED_CURRENT_RANGE;
+    config_.inverter_temp_limit_lower = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_LOWER;
+    config_.inverter_temp_limit_upper = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_UPPER;
     is_calibrated_ = config_.pre_calibrated;
     update_current_controller_gains();
     return true;

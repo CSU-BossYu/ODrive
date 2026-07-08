@@ -543,28 +543,12 @@ static constexpr uint8_t  EXT_STATUS_INVALID_TYPE = 3;
 static constexpr uint8_t  EXT_STATUS_INVALID_VALUE = 4;
 static constexpr uint8_t  EXT_STATUS_BUSY_ARMED  = 5;
 
-static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000102;  // v1.2
+static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000103;  // v1.3
 
 // ---- utility --------------------------------------------------------
 static bool any_axis_armed() {
     return std::any_of(axes.begin(), axes.end(),
         [](auto& a) { return a.motor_.is_armed_; });
-}
-
-static bool is_valid_motor_type(uint32_t value) {
-    return value == Motor::MOTOR_TYPE_HIGH_CURRENT
-        || value == Motor::MOTOR_TYPE_GIMBAL
-        || value == Motor::MOTOR_TYPE_ACIM;
-}
-
-static bool is_valid_encoder_mode(uint32_t value) {
-    switch (value) {
-        case Encoder::MODE_SPI_ABS_MT6826S:
-        case Encoder::MODE_SPI_ABS_MT6826S_VERNIER:
-            return true;
-        default:
-            return false;
-    }
 }
 
 static bool is_positive_finite(float value) {
@@ -573,11 +557,6 @@ static bool is_positive_finite(float value) {
 
 static bool is_nonnegative_finite(float value) {
     return std::isfinite(value) && value >= 0.0f;
-}
-
-static bool is_valid_spi_prescaler_divisor(uint32_t value) {
-    return value == 2 || value == 4 || value == 8 || value == 16
-        || value == 32 || value == 64 || value == 128 || value == 256;
 }
 
 // ---- dispatcher -----------------------------------------------------
@@ -755,33 +734,23 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
     txmsg.buf[1] = param_id;
 
     switch (param_id) {
-        // --- motor ---
+        // --- motor/encoder model (baked in production_config.h, GET-only) ---
         case 0x10: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(axis.motor_.config_.motor_type), 32, 32, true); break;
         case 0x11: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.motor_.config_.pole_pairs, 32, 32, true); break;
-        case 0x12: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.calibration_current, 32, 32, true); break;
-        case 0x13: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.resistance_calib_max_voltage, 32, 32, true); break;
-        case 0x14: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.current_lim, 32, 32, true); break;
         case 0x15: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.torque_constant, 32, 32, true); break;
-        // --- encoder ---
         case 0x20: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(axis.encoder_.config_.mode), 32, 32, true); break;
         case 0x21: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.encoder_.config_.cpr, 32, 32, true); break;
-        case 0x22: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.abs_spi_cs_gpio_pin, 32, 32, true); break;
+        // --- product hardware (baked, GET-only) ---
+        case 0x42: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   odrv.config_.brake_resistance, 32, 32, true); break;
+        case 0x43: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   odrv.config_.dc_bus_undervoltage_trip_level, 32, 32, true); break;
+        case 0x44: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   odrv.config_.dc_bus_overvoltage_trip_level, 32, 32, true); break;
+        // --- motor (customer-tunable) ---
+        case 0x14: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.current_lim, 32, 32, true); break;
+        // --- encoder (per-unit calibration + tuning) ---
         case 0x23: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.bandwidth, 32, 32, true); break;
-        case 0x24: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.abs_spi_aux_cs_gpio_pin, 32, 32, true); break;
-        case 0x25: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.encoder_.config_.vernier_virtual_cpr, 32, 32, true); break;
-        case 0x26: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_main_ratio, 32, 32, true); break;
-        case 0x27: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_aux_ratio, 32, 32, true); break;
         case 0x28: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_main_offset, 32, 32, true); break;
         case 0x29: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_aux_offset, 32, 32, true); break;
-        case 0x2A: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_main_reversed ? 1u : 0u, 32, 32, true); break;
-        case 0x2B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_aux_reversed ? 1u : 0u, 32, 32, true); break;
-        case 0x2C: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.mt6826s_spi_mode, 32, 32, true); break;
-        case 0x2D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_err_accept, 32, 32, true); break;
-        case 0x2E: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.encoder_.config_.vernier_err_reject, 32, 32, true); break;
-        case 0x2F: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.mt6826s_spi_prescaler, 32, 32, true); break;
-        case 0x33: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_output_reversed ? 1u : 0u, 32, 32, true); break;
-        case 0x34: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.encoder_.config_.vernier_use_phase_difference ? 1u : 0u, 32, 32, true); break;
-        // --- controller ---
+        // --- controller gains (customer-tunable) ---
         case 0x30: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.pos_gain, 32, 32, true); break;
         case 0x31: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_gain, 32, 32, true); break;
         case 0x32: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.controller_.config_.vel_integrator_gain, 32, 32, true); break;
@@ -809,42 +778,18 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
     txmsg.buf[1] = param_id;
     txmsg.buf[3] = req_type;
 
-    // Refuse writes while any motor is armed
-    if (any_axis_armed()) {
+    // Refuse writes while any motor is armed, except for live-tunable gains
+    // (0x30 pos_gain, 0x31 vel_gain, 0x32 vel_integrator_gain, 0x35
+    // pos_integrator_gain) which are safe to adjust mid-motion.
+    bool is_gain = (param_id == 0x30 || param_id == 0x31 || param_id == 0x32 || param_id == 0x35);
+    if (any_axis_armed() && !is_gain) {
         txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
         return canbus_->send_message(txmsg);
     }
 
     switch (param_id) {
-        // --- motor ---
-        case 0x10: {  // motor_type (uint32)
-            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
-            if (!is_valid_motor_type(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.motor_.config_.motor_type = static_cast<Motor::MotorType>(value);
-            break;
-        }
-        case 0x11: {  // pole_pairs (int32)
-            if (req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            int32_t value = can_getSignal<int32_t>(msg, 32, 32, true);
-            if (value <= 0) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.motor_.config_.pole_pairs = value;
-            break;
-        }
-        case 0x12: {  // calibration_current (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.motor_.config_.calibration_current = value;
-            break;
-        }
-        case 0x13: {  // resistance_calib_max_voltage (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.motor_.config_.resistance_calib_max_voltage = value;
-            break;
-        }
+        // Motor model params (0x10-0x13, 0x15) are baked in production_config.h.
+        // --- motor (customer-tunable) ---
         case 0x14: {  // current_lim (float32)
             if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
             float value = can_getSignal<float>(msg, 32, 32, true);
@@ -852,68 +797,15 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             axis.motor_.config_.current_lim = value;
             break;
         }
-        case 0x15: {  // torque_constant (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.motor_.config_.torque_constant = value;
-            break;
-        }
-        // --- encoder ---
-        case 0x20: {  // encoder mode (uint32)
-            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
-            if (!is_valid_encoder_mode(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.mode = static_cast<Encoder::Mode>(value);
-            break;
-        }
-        case 0x21: {  // cpr (int32)
-            if (req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            int32_t value = can_getSignal<int32_t>(msg, 32, 32, true);
-            if (value <= 0) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.cpr = value;
-            break;
-        }
-        case 0x22: {  // abs_spi_cs_gpio_pin (uint32, stored as uint16)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
-            if (value >= GPIO_COUNT) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_abs_spi_cs_gpio_pin(static_cast<uint16_t>(value));
-            break;
-        }
+        // Encoder/vernier model params (0x20-0x22, 0x24-0x27, 0x2A-0x2F, 0x33, 0x34)
+        // are baked in production_config.h. Per-unit offsets (0x28/0x29) and
+        // encoder bandwidth (0x23) remain customer/calibration-settable.
+        // --- encoder (per-unit calibration + tuning) ---
         case 0x23: {  // encoder bandwidth (float32)
             if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
             float value = can_getSignal<float>(msg, 32, 32, true);
             if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
             axis.encoder_.config_.set_bandwidth(value);
-            break;
-        }
-        case 0x24: {  // abs_spi_aux_cs_gpio_pin (uint32, stored as uint16)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
-            if (value >= GPIO_COUNT) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_abs_spi_aux_cs_gpio_pin(static_cast<uint16_t>(value));
-            break;
-        }
-        case 0x25: {  // vernier_virtual_cpr (int32)
-            if (req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            int32_t value = can_getSignal<int32_t>(msg, 32, 32, true);
-            if (value <= 0) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.vernier_virtual_cpr = value;
-            break;
-        }
-        case 0x26: {  // vernier_main_ratio (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_vernier_main_ratio(value);
-            break;
-        }
-        case 0x27: {  // vernier_aux_ratio (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_vernier_aux_ratio(value);
             break;
         }
         case 0x28: {  // vernier_main_offset (float32)
@@ -928,54 +820,6 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
             float value = can_getSignal<float>(msg, 32, 32, true);
             if (!std::isfinite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
             axis.encoder_.config_.set_vernier_aux_offset(value);
-            break;
-        }
-        case 0x2A: {  // vernier_main_reversed (uint32 as bool)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            axis.encoder_.config_.set_vernier_main_reversed(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
-            break;
-        }
-        case 0x2B: {  // vernier_aux_reversed (uint32 as bool)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            axis.encoder_.config_.set_vernier_aux_reversed(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
-            break;
-        }
-        case 0x2C: {  // mt6826s_spi_mode (uint32, 0..3)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
-            if (value > 3u) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_mt6826s_spi_mode(static_cast<uint16_t>(value));
-            break;
-        }
-        case 0x2D: {  // vernier_err_accept (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_vernier_err_accept(value);
-            break;
-        }
-        case 0x2E: {  // vernier_err_reject (float32)
-            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            float value = can_getSignal<float>(msg, 32, 32, true);
-            if (!is_positive_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_vernier_err_reject(value);
-            break;
-        }
-        case 0x2F: {  // mt6826s_spi_prescaler (uint32 divisor)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
-            if (!is_valid_spi_prescaler_divisor(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
-            axis.encoder_.config_.set_mt6826s_spi_prescaler(static_cast<uint16_t>(value));
-            break;
-        }
-        case 0x33: {  // vernier_output_reversed (uint32 as bool)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            axis.encoder_.config_.set_vernier_output_reversed(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
-            break;
-        }
-        case 0x34: {  // vernier_use_phase_difference (uint32 as bool)
-            if (req_type != EXT_TYPE_UINT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            axis.encoder_.config_.set_vernier_use_phase_difference(can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
             break;
         }
         // --- controller ---
@@ -1092,8 +936,10 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
 
     // Refuse writes while any motor is armed -- these are persistent config
     // fields (ramp limits, watchdog timeouts, timeout_action, servo_mode,
-    // profile limits, pos_integrator_gain). Disarm, edit, save, re-enter.
-    if (any_axis_armed()) {
+    // profile limits). Disarm, edit, save, re-enter. pos_integrator_gain
+    // (0x5D) is a gain and stays live-tunable.
+    bool is_gain = (param_id == 0x5D);
+    if (any_axis_armed() && !is_gain) {
         txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
         return canbus_->send_message(txmsg);
     }

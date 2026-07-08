@@ -145,7 +145,7 @@ class TestSnapshot:
 
 class TestChannelTable:
     def test_channel_count(self):
-        assert len(ODRIVE_CHANNELS) == 22
+        assert len(ODRIVE_CHANNELS) == 24
 
     def test_channel_by_key(self):
         assert ODRIVE_CHANNEL_BY_KEY['pos'].label == 'Position'

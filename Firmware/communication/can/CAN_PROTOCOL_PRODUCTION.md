@@ -214,7 +214,7 @@ Subcommands:
 | `0x0D..0x1F` | Reserved | reserved for production protocol growth |
 
 The current extended protocol version is returned by subcommand `0x05`, item
-`0x01`, and is `0x00000102`.
+`0x01`, and is `0x00000103`.
 
 Get_Device_Info items: `0x01` protocol_version, `0x02` fw_version,
 `0x03` hw_version, `0x04`/`0x05` serial_number low/high 32 bits, `0x06`
@@ -224,26 +224,36 @@ device is running factory defaults -- reconfigure and `save_configuration`).
 ## Basic configuration extended items
 
 Subcommands `0x06` and `0x07`, Get/Set_Basic_Config, use the same item IDs.
-Setters return `BUSY_ARMED` while the motor is armed.
+Motor/encoder model parameters are baked per motor model in
+`production_config.h`. The identity params (motor_type, pole_pairs,
+torque_constant, encoder mode/cpr, brake_resistance, dc_bus thresholds) are
+exposed GET-only (readable for verification, return `UNKNOWN` on set). The
+remaining model params (calibration_current, resistance_calib_max_voltage,
+encoder CS, vernier geometry/SPI/thresholds) are not exposed at all.
 
-Vernier encoder items:
+Setters return `BUSY_ARMED` while the motor is armed, except for the
+controller gains (`0x30`-`0x32`, `0x35`) which are live-tunable.
 
 | Item | Type | Meaning |
 | --- | --- | --- |
-| `0x25` | int32 | vernier_virtual_cpr |
-| `0x26` | float32 | vernier_main_ratio |
-| `0x27` | float32 | vernier_aux_ratio |
-| `0x28` | float32 | vernier_main_offset |
-| `0x29` | float32 | vernier_aux_offset |
-| `0x2A` | uint32 | vernier_main_reversed, bool |
-| `0x2B` | uint32 | vernier_aux_reversed, bool |
-| `0x2D` | float32 | vernier_err_accept |
-| `0x2E` | float32 | vernier_err_reject |
-| `0x33` | uint32 | vernier_output_reversed, bool |
-| `0x34` | uint32 | vernier_use_phase_difference, bool |
-| `0x36` | float32 | vernier_aux_correction_bandwidth [1/s], 0 disables aux position correction |
-| `0x37` | float32 | vernier_aux_velocity_bandwidth [1/s], 0 keeps motor-side velocity feedback |
-| `0x38` | float32 | vernier_aux_max_correction [turn/sample], 0 disables aux position correction |
+| `0x10` | uint32 | motor_type (GET-only, baked) |
+| `0x11` | int32 | pole_pairs (GET-only, baked) |
+| `0x15` | float32 | torque_constant [Nm/A] (GET-only, baked) |
+| `0x20` | uint32 | encoder mode (GET-only, baked) |
+| `0x21` | int32 | encoder cpr (GET-only, baked) |
+| `0x14` | float32 | motor current_lim [A] (customer-tunable per load) |
+| `0x23` | float32 | encoder bandwidth [rad/s] |
+| `0x28` | float32 | vernier_main_offset [turn] (per-unit calibration) |
+| `0x29` | float32 | vernier_aux_offset [turn] (per-unit calibration) |
+| `0x30` | float32 | pos_gain [(turn/s)/turn] (live-tunable) |
+| `0x31` | float32 | vel_gain [Nm/(turn/s)] (live-tunable) |
+| `0x32` | float32 | vel_integrator_gain [Nm/(turn/s)/s] (live-tunable) |
+| `0x35` | float32 | pos_integrator_gain [(turn/s)/(turn*s)] (live-tunable) |
+| `0x40` | float32 | dc_max_negative_current [A] |
+| `0x41` | float32 | dc_max_positive_current [A] |
+| `0x42` | float32 | brake_resistance [ohm] (GET-only, baked) |
+| `0x43` | float32 | dc_bus_undervoltage_trip_level [V] (GET-only, baked) |
+| `0x44` | float32 | dc_bus_overvoltage_trip_level [V] (GET-only, baked) |
 
 ## Anticogging extended items
 

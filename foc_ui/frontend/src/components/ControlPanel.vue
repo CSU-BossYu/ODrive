@@ -79,6 +79,8 @@ const isStreaming = computed(() => streamMode.value === selectedMode.value)
 
 const posDeg = computed(() => (oSocket.latest.value?.ch.pos ?? 0) * 360)
 const velRpmActual = computed(() => (oSocket.latest.value?.ch.vel ?? 0) * 60)
+const shadowCount = computed(() => oSocket.latest.value?.ch.shadow_count ?? 0)
+const countInCpr = computed(() => oSocket.latest.value?.ch.count_in_cpr ?? 0)
 const iq = computed(() => oSocket.latest.value?.ch.iq_meas ?? 0)
 const vbus = computed(() => oSocket.latest.value?.ch.vbus ?? 0)
 const ibus = computed(() => oSocket.latest.value?.ch.ibus ?? 0)
@@ -510,6 +512,11 @@ onBeforeUnmount(() => {
         闭环前置条件未满足：{{ closedLoopBlockers.join(' / ') }}
       </div>
 
+      <div class="encoder-readout">
+        <div><span>累计 count</span><strong>{{ shadowCount }}</strong><em>count</em></div>
+        <div><span>count (CPR)</span><strong>{{ countInCpr }}</strong><em>count</em></div>
+      </div>
+
       <div v-if="selectedMode === 'position'" class="mode-fields">
         <div class="explain">目标是输出轴绝对角度，不是增量移动。360 deg = 1 圈。</div>
         <div class="conversion">当前输入：{{ format(safeNumber(posTargetDeg), 2) }} deg = {{ format(targetPosTurns, 4) }} 圈</div>
@@ -567,8 +574,8 @@ onBeforeUnmount(() => {
     <div class="telemetry-card">
       <div class="card-title">当前读数</div>
       <div class="telemetry-grid">
-        <div><span>位置</span><strong>{{ format(posDeg, 2) }}</strong><em>deg</em></div>
-        <div><span>速度</span><strong>{{ format(velRpmActual, 1) }}</strong><em>rpm</em></div>
+        <div><span>位置</span><strong>{{ format(posDeg, 4) }}</strong><em>deg</em></div>
+        <div><span>速度</span><strong>{{ format(velRpmActual, 3) }}</strong><em>rpm</em></div>
         <div><span>Iq</span><strong>{{ format(iq, 3) }}</strong><em>A</em></div>
         <div><span>母线</span><strong>{{ format(vbus, 1) }}</strong><em>V</em></div>
       </div>
@@ -826,6 +833,35 @@ onBeforeUnmount(() => {
   font-size: 14px;
 }
 .telemetry-grid em {
+  color: var(--fg-dim);
+  font-style: normal;
+  font-size: 10px;
+}
+.encoder-readout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.encoder-readout div {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 5px;
+  padding: 7px 8px;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 5px;
+}
+.encoder-readout span {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.encoder-readout strong {
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.encoder-readout em {
   color: var(--fg-dim);
   font-style: normal;
   font-size: 10px;

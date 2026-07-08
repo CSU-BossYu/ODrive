@@ -151,6 +151,13 @@ static bool config_apply_all() {
                && motors[i].motor_thermistor_.apply_config()
                && axes[i].apply_config();
     }
+    // ODrive-level hardware constants baked per product (production_config.h).
+    // ODrive has no apply_config(); force-overwrite here so NVM never holds a
+    // stale/wrong brake-resistor / dc-bus threshold value.
+    odrv.config_.brake_resistance = ODRIVE_PRODUCTION_BRAKE_RESISTANCE;
+    odrv.config_.enable_brake_resistor = ODRIVE_PRODUCTION_ENABLE_BRAKE_RESISTOR;
+    odrv.config_.dc_bus_undervoltage_trip_level = ODRIVE_PRODUCTION_DC_BUS_UNDERVOLTAGE;
+    odrv.config_.dc_bus_overvoltage_trip_level = ODRIVE_PRODUCTION_DC_BUS_OVERVOLTAGE;
     return success;
 }
 

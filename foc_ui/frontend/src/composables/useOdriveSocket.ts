@@ -14,7 +14,7 @@ import type {
 const MAX_LOGS = 1000
 const MAX_EXT = 100
 // Firmware CAN extended-protocol version this UI expects (device info 0x05/0x01).
-export const EXPECTED_PROTOCOL_VERSION = 0x00000102
+export const EXPECTED_PROTOCOL_VERSION = 0x00000103
 
 interface ODriveSocket {
   connected: Ref<boolean>

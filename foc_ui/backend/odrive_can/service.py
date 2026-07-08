@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable, Optional
 from .protocol import (
     CmdId, AxisState, ControlMode, InputMode,
     ExtSubCmd, ExtStatus, ExtType,
-    decode_heartbeat, decode_encoder_estimates, decode_iq, decode_bus_vi,
+    decode_heartbeat, decode_encoder_estimates, decode_encoder_count, decode_iq, decode_bus_vi,
     decode_motor_error, decode_encoder_error, decode_controller_error,
     decode_extended_response,
     encode_set_axis_state, encode_set_controller_mode,
@@ -175,6 +175,13 @@ class ODriveService:
                 self.cache.encoder.vel_estimate = d['vel_estimate']
                 self.cache.encoder.last_ts = ts
 
+        elif cmd_id == CmdId.GET_ENCODER_COUNT:
+            d = decode_encoder_count(data)
+            if d:
+                self.cache.encoder.shadow_count = d['shadow_count']
+                self.cache.encoder.count_in_cpr = d['count_in_cpr']
+                self.cache.encoder.last_ts = ts
+
         elif cmd_id == CmdId.GET_IQ:
             d = decode_iq(data)
             if d:
@@ -253,6 +260,7 @@ class ODriveService:
             try:
                 # Stagger requests to spread bus load
                 await self._send_request(CmdId.GET_ENCODER_ESTIMATES)
+                await self._send_request(CmdId.GET_ENCODER_COUNT)
                 await asyncio.sleep(third)
 
                 await self._send_request(CmdId.GET_IQ)

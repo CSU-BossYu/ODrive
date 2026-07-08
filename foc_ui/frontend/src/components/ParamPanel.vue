@@ -53,6 +53,32 @@ PARAMS.splice(1, 0, {
   step: 0.001,
 })
 
+// Motor-model identity (baked in production_config.h, GET-only). Read-only
+// display so the customer can verify the build (pole_pairs, torque_constant,
+// encoder type, brake/dc-bus thresholds). Not settable from the UI.
+interface MotorModelParamDef {
+  key: string; label: string; unit: string; item: number
+  format?: (v: number) => string
+}
+function motorTypeName(v: number): string {
+  return ({ 0: 'HIGH_CURRENT', 1: 'GIMBAL', 2: 'ACIM' } as Record<number, string>)[v] ?? `(${v})`
+}
+function encoderModeName(v: number): string {
+  if (v === 0x106) return 'MT6826S_VERNIER'
+  if (v === 0x105) return 'MT6826S'
+  return `0x${v.toString(16)}`
+}
+const MOTOR_MODEL_PARAMS: MotorModelParamDef[] = [
+  { key: 'motor_type', label: '电机类型', unit: '', item: 0x10, format: motorTypeName },
+  { key: 'pole_pairs', label: '极对数', unit: '', item: 0x11 },
+  { key: 'torque_constant', label: '力矩常数', unit: 'Nm/A', item: 0x15 },
+  { key: 'encoder_mode', label: '编码器模式', unit: '', item: 0x20, format: encoderModeName },
+  { key: 'encoder_cpr', label: '编码器 CPR', unit: '', item: 0x21 },
+  { key: 'brake_resistance', label: '制动电阻', unit: 'Ω', item: 0x42 },
+  { key: 'dc_bus_undervoltage', label: '欠压保护', unit: 'V', item: 0x43 },
+  { key: 'dc_bus_overvoltage', label: '过压保护', unit: 'V', item: 0x44 },
+]
+
 const values = ref<Record<string, number>>({
   pos_gain: 20, vel_gain: 0.5, vel_integrator_gain: 10,
   vel_limit: 60, current_limit: 3, poll_hz: 20,
@@ -74,6 +100,8 @@ const controlValues = ref<Record<string, number>>({
   last_timeout_reason: 0,
   trajectory_done: 0,
 })
+
+const motorModelValues = ref<Record<string, number>>({})
 
 const lastResult = ref<Record<string, { ok: boolean; text: string } | null>>(
   Object.fromEntries(PARAMS.map((p) => [p.key, null]))
@@ -99,6 +127,17 @@ watch(() => oSocket.controlConfig.value, (cfg) => {
     }
   }
 }, { deep: true })
+
+watch(() => oSocket.extSeq.value, () => {
+  const list = oSocket.extResponses.value
+  const resp = list[list.length - 1]
+  if (!resp || resp.sub_cmd !== 0x06) return
+  const p = MOTOR_MODEL_PARAMS.find((item) => item.item === resp.item)
+  if (!p) return
+  if (resp.status === 0 && typeof resp.value === 'number' && Number.isFinite(resp.value)) {
+    motorModelValues.value[p.key] = resp.value
+  }
+})
 
 function apply(p: ParamDef) {
   const v = values.value[p.key]
@@ -141,6 +180,10 @@ function readControlConfig() {
   oSocket.getControlConfig()
 }
 
+function readMotorModel() {
+  MOTOR_MODEL_PARAMS.forEach((p) => oSocket.extCmd(0x06, p.item))
+}
+
 function applyControl(p: ControlParamDef) {
   if (p.readonly) {
     readControlConfig()
@@ -179,6 +222,18 @@ function deviceInfo() {
       <button @click="deviceInfo" title="Get device info">Info</button>
     </div>
     <div class="param-list">
+      <div class="section-heading">
+        <span>电机型号 (只读)</span>
+        <button @click="readMotorModel">读取</button>
+      </div>
+      <div v-for="p in MOTOR_MODEL_PARAMS" :key="p.key" class="param-row motor-model-row">
+        <label>{{ p.label }}</label>
+        <div class="row">
+          <span class="motor-model-value">{{ motorModelValues[p.key] !== undefined ? (p.format ? p.format(motorModelValues[p.key]) : motorModelValues[p.key]) : '--' }}</span>
+          <span class="unit">{{ p.unit }}</span>
+        </div>
+      </div>
+
       <div v-for="p in PARAMS" :key="p.key" class="param-row">
         <label :title="`${p.min}..${p.max}`">{{ p.label }}</label>
         <div class="row">
@@ -227,6 +282,16 @@ function deviceInfo() {
 .param-row {
   display: flex; flex-direction: column; gap: 2px;
   padding-bottom: 4px; border-bottom: 1px solid var(--border);
+}
+.motor-model-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+  flex: 1;
+  padding: 2px 4px;
+  background: var(--bg-2);
+  border-radius: 3px;
+  min-height: 16px;
 }
 .unit { font-size: 10px; color: var(--fg-dim); min-width: 36px; text-align: right; }
 .section-heading {
