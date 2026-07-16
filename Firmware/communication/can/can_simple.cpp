@@ -536,7 +536,7 @@ static constexpr uint8_t  EXT_STATUS_INVALID_TYPE = 3;
 static constexpr uint8_t  EXT_STATUS_INVALID_VALUE = 4;
 static constexpr uint8_t  EXT_STATUS_BUSY_ARMED  = 5;
 
-static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x00000103;  // v1.3
+static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x0000010B;  // v1.11
 
 // ---- utility --------------------------------------------------------
 static bool any_axis_armed() {
@@ -573,8 +573,74 @@ bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) 
         case 0x0A: return handle_get_vernier_diagnostics(axis, msg, txmsg);
         case 0x0B: return handle_get_control_config(axis, msg, txmsg);
         case 0x0C: return handle_set_control_config(axis, msg, txmsg);
+        case 0x0F: return handle_calibration_session(axis, msg, txmsg);
         default:   return false;
     }
+}
+
+// =====================================================================
+// 0x0F: CALIBRATION_SESSION
+//
+// Read items 0x00-0x06 expose the runtime transaction envelope. Mutating
+// items are accepted only while disarmed. They do not write persistent
+// calibration values; A/B Calibration Blob staging is a later layer.
+// =====================================================================
+bool CANSimple::handle_calibration_session(Axis& axis, const can_Message_t& msg,
+                                           can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    const uint8_t req_type = msg.buf[2];
+    uint8_t status = EXT_STATUS_OK;
+    uint32_t value = 0;
+
+    txmsg.buf[0] = 0x0F;
+    txmsg.buf[1] = item_id;
+    txmsg.buf[3] = EXT_TYPE_UINT32;
+
+    const bool mutating = item_id >= 0x10 && item_id <= 0x16;
+    if (mutating && any_axis_armed()) {
+        status = EXT_STATUS_BUSY_ARMED;
+    } else if (mutating && item_id <= 0x13 && req_type != EXT_TYPE_UINT32) {
+        status = EXT_STATUS_INVALID_TYPE;
+    } else {
+        const uint32_t request_value = mutating
+            ? can_getSignal<uint32_t>(msg, 32, 32, true)
+            : 0;
+        bool ok = true;
+        switch (item_id) {
+            case 0x00: value = CalibrationSession::kSchemaVersion; break;
+            case 0x01: value = axis.calibration_session_.session_id(); break;
+            case 0x02: value = axis.calibration_session_.state(); break;
+            case 0x03: value = axis.calibration_session_.stage(); break;
+            case 0x04: value = axis.calibration_session_.failure_code(); break;
+            case 0x05: value = axis.calibration_session_.flags(); break;
+            case 0x06: value = axis.calibration_session_.transition_count(); break;
+            case 0x10: ok = axis.calibration_session_.begin(request_value); break;
+            case 0x11:
+                if (request_value > CalibrationSession::STATE_STALE) {
+                    ok = false;
+                } else {
+                    ok = axis.calibration_session_.transition(
+                        static_cast<CalibrationSession::State>(request_value));
+                }
+                break;
+            case 0x12: ok = axis.calibration_session_.set_stage(request_value); break;
+            case 0x13: ok = axis.calibration_session_.fail(request_value); break;
+            case 0x14: ok = axis.calibration_session_.abort(); break;
+            case 0x15: ok = axis.calibration_session_.mark_stale(); break;
+            case 0x16: ok = axis.calibration_session_.reset(); break;
+            default: status = EXT_STATUS_UNKNOWN; ok = false; break;
+        }
+        if (status == EXT_STATUS_OK && !ok) {
+            status = EXT_STATUS_INVALID_VALUE;
+        }
+        if (item_id >= 0x10 && item_id <= 0x16) {
+            value = axis.calibration_session_.state();
+        }
+    }
+
+    txmsg.buf[2] = status;
+    can_setSignal<uint32_t>(txmsg, value, 32, 32, true);
+    return canbus_->send_message(txmsg);
 }
 
 // =====================================================================

@@ -34,6 +34,7 @@ from .protocol import (
     OVERSPEED_SNAPSHOT_ITEMS,
     CONTROL_CONFIG_ITEMS,
     ServoControlMode,
+    CalibrationSessionItem, CalibrationSessionState,
 )
 from .state import AxisCache
 from .transport import CanTransport
@@ -472,6 +473,67 @@ class ODriveService:
                     'sub_cmd': sub_cmd, 'item': item}
         finally:
             self._ext_pending.pop(key, None)
+
+    async def read_calibration_session(self) -> dict:
+        """Read the firmware's runtime calibration transaction envelope."""
+        result: dict[str, Any] = {}
+        fields = (
+            ('schema_version', CalibrationSessionItem.SCHEMA_VERSION),
+            ('session_id', CalibrationSessionItem.SESSION_ID),
+            ('state', CalibrationSessionItem.STATE),
+            ('stage', CalibrationSessionItem.STAGE),
+            ('failure_code', CalibrationSessionItem.FAILURE_CODE),
+            ('flags', CalibrationSessionItem.FLAGS),
+            ('transition_count', CalibrationSessionItem.TRANSITION_COUNT),
+        )
+        for name, item in fields:
+            response = await self.ext_command(ExtSubCmd.CALIBRATION_SESSION, item)
+            if response.get('status') != ExtStatus.OK:
+                return {
+                    'ok': False,
+                    'error': f'calibration session read failed at {name}',
+                    'response': response,
+                }
+            result[name] = int(response.get('value', 0))
+        try:
+            result['state_name'] = CalibrationSessionState(result['state']).name
+        except ValueError:
+            result['state_name'] = 'UNKNOWN'
+        result['ok'] = True
+        return result
+
+    async def begin_calibration_session(self, session_id: int = 0) -> dict:
+        return await self.ext_command(
+            ExtSubCmd.CALIBRATION_SESSION, CalibrationSessionItem.BEGIN,
+            ExtType.UINT32, int(session_id))
+
+    async def transition_calibration_session(
+            self, state: CalibrationSessionState) -> dict:
+        return await self.ext_command(
+            ExtSubCmd.CALIBRATION_SESSION, CalibrationSessionItem.TRANSITION,
+            ExtType.UINT32, int(state))
+
+    async def set_calibration_stage(self, stage: int) -> dict:
+        return await self.ext_command(
+            ExtSubCmd.CALIBRATION_SESSION, CalibrationSessionItem.SET_STAGE,
+            ExtType.UINT32, int(stage))
+
+    async def fail_calibration_session(self, failure_code: int) -> dict:
+        return await self.ext_command(
+            ExtSubCmd.CALIBRATION_SESSION, CalibrationSessionItem.FAIL,
+            ExtType.UINT32, int(failure_code))
+
+    async def abort_calibration_session(self) -> dict:
+        return await self.ext_command(
+            ExtSubCmd.CALIBRATION_SESSION, CalibrationSessionItem.ABORT)
+
+    async def mark_calibration_stale(self) -> dict:
+        return await self.ext_command(
+            ExtSubCmd.CALIBRATION_SESSION, CalibrationSessionItem.MARK_STALE)
+
+    async def reset_calibration_session(self) -> dict:
+        return await self.ext_command(
+            ExtSubCmd.CALIBRATION_SESSION, CalibrationSessionItem.RESET)
 
     async def read_overspeed_snapshot(self) -> dict:
         """Read the OverspeedSnapshot captured at the last overspeed fault.

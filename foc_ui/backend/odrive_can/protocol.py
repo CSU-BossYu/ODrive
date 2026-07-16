@@ -220,6 +220,39 @@ class ExtSubCmd(IntEnum):
     GET_VERNIER_DIAGNOSTICS = 0x0A
     GET_CONTROL_CONFIG      = 0x0B
     SET_CONTROL_CONFIG      = 0x0C
+    CALIBRATION_SESSION     = 0x0F
+
+
+class CalibrationSessionState(IntEnum):
+    EMPTY      = 0
+    COLLECTING = 1
+    COLLECTED  = 2
+    FITTING    = 3
+    IDENTIFIED = 4
+    VALIDATING = 5
+    VALIDATED  = 6
+    STAGED     = 7
+    COMMITTED  = 8
+    FAILED     = 9
+    ABORTED    = 10
+    STALE      = 11
+
+
+class CalibrationSessionItem(IntEnum):
+    SCHEMA_VERSION   = 0x00
+    SESSION_ID       = 0x01
+    STATE            = 0x02
+    STAGE            = 0x03
+    FAILURE_CODE     = 0x04
+    FLAGS            = 0x05
+    TRANSITION_COUNT = 0x06
+    BEGIN            = 0x10
+    TRANSITION       = 0x11
+    SET_STAGE        = 0x12
+    FAIL             = 0x13
+    ABORT            = 0x14
+    MARK_STALE       = 0x15
+    RESET            = 0x16
 
 
 class ExtStatus(IntEnum):

@@ -13,6 +13,7 @@ class Axis;
 #include "low_level.h"
 #include "utils.hpp"
 #include "task_timer.hpp"
+#include "calibration_session.hpp"
 #include <production_config.h>
 
 #include <array>
@@ -176,6 +177,7 @@ public:
     Endstop& max_endstop_;
     MechanicalBrake& mechanical_brake_;
     TaskTimes task_times_;
+    CalibrationSession calibration_session_;
 
     osThreadId thread_id_ = 0;
     const uint32_t stack_size_ = 2048; // Bytes
