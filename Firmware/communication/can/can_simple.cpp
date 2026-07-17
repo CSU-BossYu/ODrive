@@ -3,6 +3,7 @@
 
 #include "debug_counters.hpp"
 #include "control_timeout.hpp"
+#include "../calibration_transport.hpp"
 #include <odrive_main.h>
 #include <algorithm>
 #include <cmath>
@@ -54,12 +55,52 @@ void CANSimple::handle_can_message(const can_Message_t& msg) {
 
 void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
     const uint32_t cmd = get_cmd_id(msg.id);
+
+    // Reject malformed frames before feeding watchdogs or reading payload
+    // bytes. A short CAN frame must never reuse stale bytes from a prior RX.
+    const auto has_dlc = [&](uint8_t length) {
+        return !msg.rtr && msg.len == length;
+    };
+    bool valid_frame = false;
+    switch (cmd) {
+        case MSG_CO_NMT_CTRL:              valid_frame = has_dlc(0); break;
+        case MSG_ODRIVE_HEARTBEAT:         valid_frame = has_dlc(8); break;
+        case MSG_ODRIVE_ESTOP:             valid_frame = has_dlc(0); break;
+        case MSG_GET_MOTOR_ERROR:
+        case MSG_GET_ENCODER_ERROR:
+        case MSG_GET_ENCODER_ESTIMATES:
+        case MSG_GET_ENCODER_COUNT:
+        case MSG_GET_IQ:
+        case MSG_GET_BUS_VOLTAGE_CURRENT:
+        case MSG_GET_CONTROLLER_ERROR:     valid_frame = msg.rtr || has_dlc(0); break;
+        case MSG_SET_AXIS_NODE_ID:
+        case MSG_SET_AXIS_REQUESTED_STATE:
+        case MSG_SET_INPUT_TORQUE:
+        case MSG_SET_TRAJ_VEL_LIMIT:
+        case MSG_SET_TRAJ_INERTIA:
+        case MSG_SET_LINEAR_COUNT:
+        case MSG_SET_POS_GAIN:             valid_frame = has_dlc(4); break;
+        case MSG_SET_INPUT_POS:
+        case MSG_SET_INPUT_VEL:
+        case MSG_SET_CONTROLLER_MODES:
+        case MSG_SET_LIMITS:
+        case MSG_SET_TRAJ_ACCEL_LIMITS:
+        case MSG_SET_VEL_GAINS:
+        case MSG_EXTENDED_COMMAND:
+        case MSG_SET_MIT_CONTROL:          valid_frame = has_dlc(8); break;
+        case MSG_RESET_ODRIVE:
+        case MSG_CLEAR_ERRORS:             valid_frame = has_dlc(0); break;
+        case MSG_GET_ADC_VOLTAGE:          valid_frame = has_dlc(1); break;
+        case MSG_SET_AXIS_STARTUP_CONFIG:  valid_frame = false; break;
+        default:                           valid_frame = false; break;
+    }
+    if (!valid_frame) {
+        return;
+    }
+
     axis.watchdog_feed();
     switch (cmd) {
         case MSG_CO_NMT_CTRL:
-            ControlTimeout::feed_heartbeat(axis);
-            break;
-        case MSG_CO_HEARTBEAT_CMD:
             ControlTimeout::feed_heartbeat(axis);
             break;
         case MSG_ODRIVE_HEARTBEAT:
@@ -157,10 +198,6 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
     }
 }
 
-void CANSimple::nmt_callback(const Axis& axis, const can_Message_t& msg) {
-    // Not implemented
-}
-
 void CANSimple::estop_callback(Axis& axis, const can_Message_t& msg) {
     axis.error_ |= Axis::ERROR_ESTOP_REQUESTED;
 }
@@ -202,7 +239,10 @@ bool CANSimple::get_controller_error_callback(const Axis& axis) {
 }
 
 void CANSimple::set_axis_nodeid_callback(Axis& axis, const can_Message_t& msg) {
-    axis.config_.can.node_id = can_getSignal<uint32_t>(msg, 0, 32, true);
+    const uint32_t node_id = can_getSignal<uint32_t>(msg, 0, 32, true);
+    if (node_id < (1u << NUM_NODE_ID_BITS)) {
+        axis.config_.can.node_id = node_id;
+    }
 }
 
 void CANSimple::set_axis_requested_state_callback(Axis& axis, const can_Message_t& msg) {
@@ -249,16 +289,25 @@ bool CANSimple::get_encoder_count_callback(const Axis& axis) {
 }
 
 void CANSimple::set_input_pos_callback(Axis& axis, const can_Message_t& msg) {
-    axis.controller_.set_input_pos_and_steps(can_getSignal<float>(msg, 0, 32, true));
-    axis.controller_.input_vel_ = can_getSignal<int16_t>(msg, 32, 16, true, 0.001f, 0);
-    axis.controller_.input_torque_ = can_getSignal<int16_t>(msg, 48, 16, true, 0.001f, 0);
-    axis.controller_.input_pos_updated();
+    const float pos = can_getSignal<float>(msg, 0, 32, true);
+    const float vel = can_getSignal<int16_t>(msg, 32, 16, true, 0.001f, 0);
+    const float torque = can_getSignal<int16_t>(msg, 48, 16, true, 0.001f, 0);
+    CRITICAL_SECTION() {
+        axis.controller_.set_input_pos_and_steps(pos);
+        axis.controller_.input_vel_ = vel;
+        axis.controller_.input_torque_ = torque;
+        axis.controller_.input_pos_updated();
+    }
     ControlTimeout::feed_command(axis);
 }
 
 void CANSimple::set_input_vel_callback(Axis& axis, const can_Message_t& msg) {
-    axis.controller_.input_vel_ = can_getSignal<float>(msg, 0, 32, true);
-    axis.controller_.input_torque_ = can_getSignal<float>(msg, 32, 32, true);
+    const float vel = can_getSignal<float>(msg, 0, 32, true);
+    const float torque = can_getSignal<float>(msg, 32, 32, true);
+    CRITICAL_SECTION() {
+        axis.controller_.input_vel_ = vel;
+        axis.controller_.input_torque_ = torque;
+    }
     ControlTimeout::feed_command(axis);
 }
 
@@ -269,9 +318,13 @@ void CANSimple::set_input_torque_callback(Axis& axis, const can_Message_t& msg) 
 
 void CANSimple::set_controller_modes_callback(Axis& axis, const can_Message_t& msg) {
     Controller::ControlMode const mode = static_cast<Controller::ControlMode>(can_getSignal<int32_t>(msg, 0, 32, true));
-    axis.controller_.config_.control_mode = static_cast<Controller::ControlMode>(mode);
-    axis.controller_.config_.input_mode = static_cast<Controller::InputMode>(can_getSignal<int32_t>(msg, 32, 32, true));
-    axis.controller_.control_mode_updated();
+    const Controller::InputMode input_mode =
+        static_cast<Controller::InputMode>(can_getSignal<int32_t>(msg, 32, 32, true));
+    CRITICAL_SECTION() {
+        axis.controller_.config_.control_mode = static_cast<Controller::ControlMode>(mode);
+        axis.controller_.config_.input_mode = input_mode;
+        axis.controller_.control_mode_updated();
+    }
     ControlTimeout::feed_command(axis);
 }
 
@@ -343,6 +396,15 @@ static inline float mit_uint_to_float(uint32_t raw, float min, float max, uint32
     return min + scale * static_cast<float>(raw);
 }
 
+static inline float mit_uint_to_float_zero_center(uint32_t raw, float min, float max, uint32_t bits) {
+    const uint32_t center_low = ((1u << bits) - 1u) >> 1;
+    const uint32_t center_high = center_low + 1u;
+    if (raw == center_low || raw == center_high) {
+        return 0.0f;
+    }
+    return mit_uint_to_float(raw, min, max, bits);
+}
+
 void CANSimple::set_mit_control_callback(Axis& axis, const can_Message_t& msg) {
     // MIT frames are exactly 8 bytes; ignore malformed frames silently.
     if (msg.len != 8) {
@@ -356,11 +418,11 @@ void CANSimple::set_mit_control_callback(Axis& axis, const can_Message_t& msg) {
     uint16_t kd_int = static_cast<uint16_t>((b[5] << 4) | (b[6] >> 4));
     uint16_t t_int  = static_cast<uint16_t>(((b[6] & 0x0F) << 8) | b[7]);
 
-    float p_des = mit_uint_to_float(p_int,  MIT_P_MIN,  MIT_P_MAX,  16);
-    float v_des = mit_uint_to_float(v_int,  MIT_V_MIN,  MIT_V_MAX,  12);
+    float p_des = mit_uint_to_float_zero_center(p_int, MIT_P_MIN, MIT_P_MAX, 16);
+    float v_des = mit_uint_to_float_zero_center(v_int, MIT_V_MIN, MIT_V_MAX, 12);
     float kp    = mit_uint_to_float(kp_int, MIT_KP_MIN, MIT_KP_MAX, 12);
     float kd    = mit_uint_to_float(kd_int, MIT_KD_MIN, MIT_KD_MAX, 12);
-    float t_ff  = mit_uint_to_float(t_int,  MIT_T_MIN,  MIT_T_MAX,  12);
+    float t_ff  = mit_uint_to_float_zero_center(t_int, MIT_T_MIN, MIT_T_MAX, 12);
 
     // Hand the decoded values to the controller. The controller only acts on
     // them when input_mode == INPUT_MODE_MIT; otherwise this just updates the
@@ -535,6 +597,7 @@ static constexpr uint8_t  EXT_STATUS_READONLY    = 2;
 static constexpr uint8_t  EXT_STATUS_INVALID_TYPE = 3;
 static constexpr uint8_t  EXT_STATUS_INVALID_VALUE = 4;
 static constexpr uint8_t  EXT_STATUS_BUSY_ARMED  = 5;
+static constexpr uint8_t  EXT_STATUS_STORAGE_ERROR = 6;
 
 static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x0000010B;  // v1.11
 
@@ -573,6 +636,8 @@ bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) 
         case 0x0A: return handle_get_vernier_diagnostics(axis, msg, txmsg);
         case 0x0B: return handle_get_control_config(axis, msg, txmsg);
         case 0x0C: return handle_set_control_config(axis, msg, txmsg);
+        case 0x0D: return handle_vernier_calibration(axis, msg, txmsg);
+        case 0x0E: return handle_get_fault_snapshot(axis, msg, txmsg);
         case 0x0F: return handle_calibration_session(axis, msg, txmsg);
         default:   return false;
     }
@@ -581,25 +646,26 @@ bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) 
 // =====================================================================
 // 0x0F: CALIBRATION_SESSION
 //
-// Read items 0x00-0x06 expose the runtime transaction envelope. Mutating
-// items are accepted only while disarmed. They do not write persistent
-// calibration values; A/B Calibration Blob staging is a later layer.
+// One public command family controls calibration. The host starts or aborts a
+// job and reads status/results; internal stages are advanced by firmware only.
 // =====================================================================
 bool CANSimple::handle_calibration_session(Axis& axis, const can_Message_t& msg,
                                            can_Message_t& txmsg) {
     const uint8_t item_id = msg.buf[1];
     const uint8_t req_type = msg.buf[2];
     uint8_t status = EXT_STATUS_OK;
+    uint8_t response_type = EXT_TYPE_UINT32;
     uint32_t value = 0;
 
     txmsg.buf[0] = 0x0F;
     txmsg.buf[1] = item_id;
-    txmsg.buf[3] = EXT_TYPE_UINT32;
 
-    const bool mutating = item_id >= 0x10 && item_id <= 0x16;
-    if (mutating && any_axis_armed()) {
+    const bool mutating = item_id == 0x10 || item_id == 0x11;
+    // START requires an idle, disarmed system. ABORT must remain available
+    // after a calibration has armed the motor.
+    if (item_id == 0x10 && any_axis_armed()) {
         status = EXT_STATUS_BUSY_ARMED;
-    } else if (mutating && item_id <= 0x13 && req_type != EXT_TYPE_UINT32) {
+    } else if (item_id == 0x10 && req_type != EXT_TYPE_UINT32) {
         status = EXT_STATUS_INVALID_TYPE;
     } else {
         const uint32_t request_value = mutating
@@ -614,31 +680,219 @@ bool CANSimple::handle_calibration_session(Axis& axis, const can_Message_t& msg,
             case 0x04: value = axis.calibration_session_.failure_code(); break;
             case 0x05: value = axis.calibration_session_.flags(); break;
             case 0x06: value = axis.calibration_session_.transition_count(); break;
-            case 0x10: ok = axis.calibration_session_.begin(request_value); break;
-            case 0x11:
-                if (request_value > CalibrationSession::STATE_STALE) {
-                    ok = false;
-                } else {
-                    ok = axis.calibration_session_.transition(
-                        static_cast<CalibrationSession::State>(request_value));
-                }
+            case 0x07: value = axis.calibration_session_.request_options(); break;
+            case 0x08: value = axis.calibration_session_.progress_permille(); break;
+            case 0x09: value = axis.calibration_record_buffer_.size(); break;
+            case 0x0A: value = axis.calibration_record_buffer_.dropped_count(); break;
+            case 0x0B: value = axis.calibration_record_buffer_.high_watermark(); break;
+            case 0x0C: value = axis.calibration_record_buffer_.capacity(); break;
+            case 0x0D: value = calibration_transport_stats.frames_sent; break;
+            case 0x0E: value = calibration_transport_stats.queue_retries; break;
+            case 0x0F: value = calibration_transport_stats.disconnect_waits; break;
+            case 0x20: value = axis.calibration_pending_result_.validity; break;
+            case 0x21: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.phase_resistance,
+                            sizeof(value));
+            } break;
+            case 0x22: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.phase_inductance,
+                            sizeof(value));
+            } break;
+            case 0x23:
+                response_type = EXT_TYPE_INT32;
+                value = static_cast<uint32_t>(
+                    axis.calibration_pending_result_.encoder_direction);
                 break;
-            case 0x12: ok = axis.calibration_session_.set_stage(request_value); break;
-            case 0x13: ok = axis.calibration_session_.fail(request_value); break;
-            case 0x14: ok = axis.calibration_session_.abort(); break;
-            case 0x15: ok = axis.calibration_session_.mark_stale(); break;
-            case 0x16: ok = axis.calibration_session_.reset(); break;
+            case 0x24:
+                response_type = EXT_TYPE_INT32;
+                value = static_cast<uint32_t>(
+                    axis.calibration_pending_result_.phase_offset);
+                break;
+            case 0x25: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.phase_offset_float,
+                            sizeof(value));
+            } break;
+            case 0x26: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.effective_ratio_scale,
+                            sizeof(value));
+            } break;
+            case 0x27: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.geometry_raw_rms,
+                            sizeof(value));
+            } break;
+            case 0x28: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.geometry_corrected_rms,
+                            sizeof(value));
+            } break;
+            case 0x29: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.geometry_direction_peak_to_peak,
+                    sizeof(value));
+            } break;
+            case 0x2A:
+                value = axis.calibration_pending_result_.geometry_used_samples;
+                break;
+            case 0x2B: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.flux_linkage,
+                            sizeof(value));
+            } break;
+            case 0x2C: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.torque_constant,
+                            sizeof(value));
+            } break;
+            case 0x2D: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.flux_sample_stddev,
+                            sizeof(value));
+            } break;
+            case 0x2E:
+                value = axis.calibration_pending_result_.flux_used_samples;
+                break;
+            case 0x2F:
+                response_type = EXT_TYPE_INT32;
+                value = static_cast<uint32_t>(
+                    axis.calibration_pending_result_.pole_pairs);
+                break;
+            case 0x30: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value, &axis.calibration_pending_result_.output_inertia,
+                            sizeof(value));
+            } break;
+            case 0x31: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.friction_coulomb_pos,
+                            sizeof(value));
+            } break;
+            case 0x32: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.friction_coulomb_neg,
+                            sizeof(value));
+            } break;
+            case 0x33: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.friction_viscous_pos,
+                            sizeof(value));
+            } break;
+            case 0x34: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.friction_viscous_neg,
+                            sizeof(value));
+            } break;
+            case 0x35: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.mechanical_residual_rms_torque,
+                    sizeof(value));
+            } break;
+            case 0x36:
+                value = axis.calibration_pending_result_.mechanical_used_samples;
+                break;
+            case 0x37: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.electrical_delay,
+                            sizeof(value));
+            } break;
+            case 0x38: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.delay_residual_phase_offset,
+                    sizeof(value));
+            } break;
+            case 0x39: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.delay_residual_rms,
+                            sizeof(value));
+            } break;
+            case 0x3A:
+                value = axis.calibration_pending_result_.delay_used_samples;
+                break;
+            case 0x3B:
+                value = axis.calibration_pending_result_.mechanical_attempted_samples;
+                break;
+            case 0x3C:
+                value = axis.calibration_pending_result_.mechanical_rejected_invalid;
+                break;
+            case 0x3D:
+                value = axis.calibration_pending_result_.mechanical_rejected_saturated;
+                break;
+            case 0x3E:
+                value = axis.calibration_pending_result_.mechanical_rejected_low_velocity;
+                break;
+            case 0x3F: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(&value,
+                            &axis.calibration_pending_result_.mechanical_max_abs_velocity,
+                            sizeof(value));
+            } break;
+            case 0x40:
+                value = axis.calibration_pending_result_.mechanical_rejected_timing;
+                break;
+            case 0x41:
+                value = axis.calibration_pending_result_.delay_attempted_samples;
+                break;
+            case 0x42:
+                value = axis.calibration_pending_result_.delay_rejected_invalid;
+                break;
+            case 0x43:
+                value = axis.calibration_pending_result_.delay_rejected_saturated;
+                break;
+            case 0x44:
+                value = axis.calibration_pending_result_.delay_rejected_speed;
+                break;
+            case 0x45:
+                value = axis.calibration_pending_result_.delay_rejected_emf;
+                break;
+            case 0x46:
+                value = axis.calibration_pending_result_.delay_rejected_phase;
+                break;
+            case 0x47: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.delay_max_abs_electrical_speed,
+                    sizeof(value));
+            } break;
+            case 0x10: ok = axis.start_calibration_session(request_value); break;
+            case 0x11: ok = axis.abort_calibration_session(); break;
             default: status = EXT_STATUS_UNKNOWN; ok = false; break;
         }
         if (status == EXT_STATUS_OK && !ok) {
             status = EXT_STATUS_INVALID_VALUE;
         }
-        if (item_id >= 0x10 && item_id <= 0x16) {
+        if (mutating) {
             value = axis.calibration_session_.state();
         }
     }
 
     txmsg.buf[2] = status;
+    txmsg.buf[3] = response_type;
     can_setSignal<uint32_t>(txmsg, value, 32, 32, true);
     return canbus_->send_message(txmsg);
 }
@@ -700,13 +954,10 @@ bool CANSimple::handle_save_configuration(can_Message_t& txmsg) {
         return canbus_->send_message(txmsg);
     }
 
-    txmsg.buf[2] = EXT_STATUS_OK;
-    canbus_->send_message(txmsg);
-
-    // save_configuration() calls NVIC_SystemReset() after writing.
-    // The ACK above should have been transmitted by now.
-    odrv.save_configuration();
-    return true;
+    txmsg.buf[2] = odrv.save_configuration()
+        ? EXT_STATUS_OK
+        : EXT_STATUS_STORAGE_ERROR;
+    return canbus_->send_message(txmsg);
 }
 
 // =====================================================================
@@ -795,7 +1046,7 @@ bool CANSimple::handle_get_basic_config(Axis& axis, const can_Message_t& msg, ca
 
     switch (param_id) {
         // --- motor/encoder model (baked in production_config.h, GET-only) ---
-        case 0x10: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(axis.motor_.config_.motor_type), 32, 32, true); break;
+        case 0x10: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, 0U, 32, 32, true); break; // PMSM/BLDC current-control model
         case 0x11: type = EXT_TYPE_INT32;   can_setSignal<int32_t>(txmsg,  axis.motor_.config_.pole_pairs, 32, 32, true); break;
         case 0x15: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg,   axis.motor_.config_.torque_constant, 32, 32, true); break;
         case 0x20: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(axis.encoder_.config_.mode), 32, 32, true); break;
@@ -952,6 +1203,10 @@ bool CANSimple::handle_set_basic_config(Axis& axis, const can_Message_t& msg, ca
 // item 0x5B: servo_mode (uint32 enum)
 // item 0x5C: heartbeat_timeout_ms (uint32)
 // item 0x5D: pos_integrator_gain (float32)
+// item 0x60: vel_limit (float32)
+// item 0x61: vel_limit_tolerance (float32)
+// item 0x62: enable_vel_limit (uint32 bool)
+// item 0x63: enable_torque_mode_vel_limit (uint32 bool)
 // =====================================================================
 bool CANSimple::handle_get_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
     const uint8_t param_id = msg.buf[1];
@@ -977,6 +1232,26 @@ bool CANSimple::handle_get_control_config(Axis& axis, const can_Message_t& msg, 
         case 0x5B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, static_cast<uint32_t>(ControlTimeout::derive_servo_mode(axis)), 32, 32, true); break;
         case 0x5C: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.config_.can.heartbeat_timeout_ms, 32, 32, true); break;
         case 0x5D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.pos_integrator_gain, 32, 32, true); break;
+        case 0x60: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.vel_limit, 32, 32, true); break;
+        case 0x61: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.vel_limit_tolerance, 32, 32, true); break;
+        case 0x62: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.controller_.config_.enable_vel_limit ? 1u : 0u, 32, 32, true); break;
+        case 0x63: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.controller_.config_.enable_torque_mode_vel_limit ? 1u : 0u, 32, 32, true); break;
+        case 0x6D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.adrc_trim_slew_rate, 32, 32, true); break;
+        case 0x6E: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.controller_.config_.enable_adrc ? 1u : 0u, 32, 32, true); break;
+        case 0x6F: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.adrc_trim_torque_limit, 32, 32, true); break;
+        case 0x70: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.controller_.config_.enable_friction_compensation ? 1u : 0u, 32, 32, true); break;
+        case 0x7C: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, axis.controller_.config_.enable_mit_friction_compensation ? 1u : 0u, 32, 32, true); break;
+        case 0x71: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_pos_deadband, 32, 32, true); break;
+        case 0x72: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_vel_deadband, 32, 32, true); break;
+        case 0x73: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_stribeck_vel, 32, 32, true); break;
+        case 0x74: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_static_pos, 32, 32, true); break;
+        case 0x75: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_static_neg, 32, 32, true); break;
+        case 0x76: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_coulomb_pos, 32, 32, true); break;
+        case 0x77: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_coulomb_neg, 32, 32, true); break;
+        case 0x78: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_viscous_pos, 32, 32, true); break;
+        case 0x79: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_viscous_neg, 32, 32, true); break;
+        case 0x7A: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_max_torque, 32, 32, true); break;
+        case 0x7B: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, axis.controller_.config_.friction_torque_slew_rate, 32, 32, true); break;
         default:   status = EXT_STATUS_UNKNOWN; can_setSignal<uint32_t>(txmsg, 0, 32, 32, true); break;
     }
 
@@ -996,8 +1271,10 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
 
     // Refuse writes while any motor is armed -- these are persistent config
     // fields (ramp limits, watchdog timeouts, timeout_action, servo_mode,
-    // profile limits). Disarm, edit, save, re-enter. pos_integrator_gain
-    // (0x5D) is a gain and stays live-tunable.
+    // profile limits, controller velocity limits 0x60-0x63, ADRC trim params
+    // 0x6D-0x6F, friction-compensation params 0x70-0x7C). Disarm, edit,
+    // save, re-enter. pos_integrator_gain (0x5D) is a gain and stays
+    // live-tunable.
     bool is_gain = (param_id == 0x5D);
     if (any_axis_armed() && !is_gain) {
         txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
@@ -1100,7 +1377,9 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
         }
         case 0x5C: {
             if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
-            axis.config_.can.heartbeat_timeout_ms = can_getSignal<uint32_t>(msg, 32, 32, true);
+            const uint32_t value = can_getSignal<uint32_t>(msg, 32, 32, true);
+            if (value != 0 && value < 250) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.config_.can.heartbeat_timeout_ms = value;
             ControlTimeout::feed_heartbeat(axis);
             break;
         }
@@ -1110,6 +1389,147 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
             if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
             axis.controller_.config_.pos_integrator_gain = value;
             axis.controller_.pos_integrator_vel_ = 0.0f;
+            break;
+        }
+        case 0x60: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            // Allow +inf to disable vel limiting (controller.hpp: vel_limit
+            // "Infinity to disable"). Reject 0/negative/NaN/-inf.
+            if (!(value > 0.0f)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.vel_limit = value;
+            // Replicate the SET_LIMITS(0x00F) side effect: clamp the trajectory
+            // planner's vel_limit down to the controller vel_limit so a lowered
+            // limit doesn't leave the planner commanding above it. +inf leaves
+            // trap_traj_.vel_limit unchanged (min(x, +inf) == x).
+            axis.trap_traj_.config_.vel_limit =
+                std::min(axis.trap_traj_.config_.vel_limit, value);
+            break;
+        }
+        case 0x61: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            // Tolerance is a ratio >= 1.0; +inf disables the overspeed check
+            // (controller.hpp: vel_limit_tolerance "Infinity to disable").
+            if (!(value >= 1.0f)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.vel_limit_tolerance = value;
+            break;
+        }
+        case 0x62: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.controller_.config_.enable_vel_limit = (can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            break;
+        }
+        case 0x63: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.controller_.config_.enable_torque_mode_vel_limit = (can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            break;
+        }
+        case 0x6D: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.adrc_trim_slew_rate = value;
+            break;
+        }
+        case 0x6E: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.controller_.config_.enable_adrc = (can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            axis.controller_.reset_adrc();
+            break;
+        }
+        case 0x6F: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.adrc_trim_torque_limit = value;
+            break;
+        }
+        case 0x70: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.controller_.config_.enable_friction_compensation = (can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            break;
+        }
+        case 0x7C: {
+            if (req_type != EXT_TYPE_UINT32 && req_type != EXT_TYPE_INT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            axis.controller_.config_.enable_mit_friction_compensation = (can_getSignal<uint32_t>(msg, 32, 32, true) != 0);
+            break;
+        }
+        case 0x71: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_pos_deadband = value;
+            break;
+        }
+        case 0x72: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_vel_deadband = value;
+            break;
+        }
+        case 0x73: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_stribeck_vel = value;
+            break;
+        }
+        case 0x74: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_static_pos = value;
+            break;
+        }
+        case 0x75: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_static_neg = value;
+            break;
+        }
+        case 0x76: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_coulomb_pos = value;
+            break;
+        }
+        case 0x77: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_coulomb_neg = value;
+            break;
+        }
+        case 0x78: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_viscous_pos = value;
+            break;
+        }
+        case 0x79: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!is_nonnegative_finite(value)) { status = EXT_STATUS_INVALID_VALUE; break; }
+            axis.controller_.config_.friction_viscous_neg = value;
+            break;
+        }
+        case 0x7A: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!(value >= 0.0f)) { status = EXT_STATUS_INVALID_VALUE; break; }  // allow +inf to disable
+            axis.controller_.config_.friction_max_torque = value;
+            break;
+        }
+        case 0x7B: {
+            if (req_type != EXT_TYPE_FLOAT32) { status = EXT_STATUS_INVALID_TYPE; break; }
+            float value = can_getSignal<float>(msg, 32, 32, true);
+            if (!(value >= 0.0f)) { status = EXT_STATUS_INVALID_VALUE; break; }  // allow +inf to disable
+            axis.controller_.config_.friction_torque_slew_rate = value;
             break;
         }
         case 0x58:
@@ -1123,6 +1543,80 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
     }
 
     txmsg.buf[2] = status;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// Fault-snapshot items 0x40-0x5F (controller OVERSPEED snapshot captured at
+// fault time, held until clear_errors). Shared by 0x0E GET_FAULT_SNAPSHOT
+// (the clean home) and 0x0A GET_VERNIER_DIAGNOSTICS (deprecated compat —
+// hosts should use 0x0E). Returns true if item_id is a fault-snapshot item
+// (sets type + signal); false otherwise.
+// =====================================================================
+static bool fill_fault_snapshot_item(const Controller::OverspeedSnapshot& overspeed,
+                                     uint8_t item_id, can_Message_t& txmsg,
+                                     uint8_t& type) {
+    switch (item_id) {
+        case 0x40: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.valid ? 1u : 0u, 32, 32, true); return true;
+        case 0x41: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.control_loop_count, 32, 32, true); return true;
+        case 0x42: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.timestamp, 32, 32, true); return true;
+        case 0x43: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.vel_estimate, 32, 32, true); return true;
+        case 0x44: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.vel_limit, 32, 32, true); return true;
+        case 0x45: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.vel_limit_tolerance, 32, 32, true); return true;
+        case 0x46: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.pos_estimate_linear, 32, 32, true); return true;
+        case 0x47: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.pos_setpoint, 32, 32, true); return true;
+        case 0x48: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.vel_setpoint, 32, 32, true); return true;
+        case 0x49: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.input_pos, 32, 32, true); return true;
+        case 0x4A: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.input_vel, 32, 32, true); return true;
+        case 0x4B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.input_mode, 32, 32, true); return true;
+        case 0x4C: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.control_mode, 32, 32, true); return true;
+        case 0x4D: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_state, 32, 32, true); return true;
+        case 0x4E: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_valid, 32, 32, true); return true;
+        case 0x4F: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_locked, 32, 32, true); return true;
+        case 0x50: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_accepted_aux, 32, 32, true); return true;
+        case 0x51: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_degraded, 32, 32, true); return true;
+        case 0x52: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.resolver_position_turns, 32, 32, true); return true;
+        case 0x53: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.resolver_residual, 32, 32, true); return true;
+        case 0x54: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.encoder_vel_estimate, 32, 32, true); return true;
+        case 0x55: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.pair_sequence, 32, 32, true); return true;
+        case 0x56: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.pair_valid, 32, 32, true); return true;
+        case 0x57: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.output_estimate_valid, 32, 32, true); return true;
+        case 0x58: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_pos_estimate, 32, 32, true); return true;
+        case 0x59: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_vel_estimate, 32, 32, true); return true;
+        case 0x5A: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_sample_dt, 32, 32, true); return true;
+        case 0x5B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.output_pair_sequence, 32, 32, true); return true;
+        case 0x5C: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.encoder_pos_estimate, 32, 32, true); return true;
+        case 0x5D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.pos_estimate_circular, 32, 32, true); return true;
+        case 0x5E: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.torque_setpoint, 32, 32, true); return true;
+        case 0x5F: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.input_torque, 32, 32, true); return true;
+        default: return false;
+    }
+}
+
+// =====================================================================
+// 0x0E: GET_FAULT_SNAPSHOT
+//
+// Clean home for the controller OVERSPEED/fault snapshot (items 0x40-0x5F),
+// captured at the last OVERSPEED fault and held until clear_errors.
+// 0x0A GET_VERNIER_DIAGNOSTICS still serves these items for backward compat
+// (deprecated); hosts should read fault snapshots here.
+// =====================================================================
+bool CANSimple::handle_get_fault_snapshot(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type = EXT_TYPE_UINT32;
+    const Controller::OverspeedSnapshot& overspeed = axis.controller_.get_overspeed_snapshot();
+
+    txmsg.buf[0] = 0x0E;
+    txmsg.buf[1] = item_id;
+
+    if (!fill_fault_snapshot_item(overspeed, item_id, txmsg, type)) {
+        status = EXT_STATUS_UNKNOWN;
+        can_setSignal<uint32_t>(txmsg, 0, 32, 32, true);
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
     return canbus_->send_message(txmsg);
 }
 
@@ -1142,6 +1636,7 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
 // item 0x0A: aux_error_count (uint32)
 // item 0x0B: resolver_state placeholder (uint32)
 // item 0x0C: pair_error_count (uint32)
+// item 0x0D..0x0F: complete ControlLoop IRQ last/max/count, CPU cycles (uint32)
 // item 0x10: main_raw_003_006, little-endian byte pack (uint32)
 // item 0x11: aux_raw_003_006, little-endian byte pack (uint32)
 // item 0x12: main_crc_recv_calc, received in bits[7:0], calculated in bits[15:8] (uint32)
@@ -1163,6 +1658,12 @@ bool CANSimple::handle_set_control_config(Axis& axis, const can_Message_t& msg, 
 // item 0x22: encoder_pos_circular (float32)
 // item 0x2C: output_pair_vel_estimate (float32)
 // item 0x2D: output_last_aux_correction (float32)
+// item 0x2E: pair request-to-publish latency, CPU cycles (uint32)
+// item 0x2F: maximum pair request-to-publish latency, CPU cycles (uint32)
+// item 0x31..0x33: complete control-loop last/max/count (uint32)
+// item 0x39..0x3B: complete control-loop budget crossings at 50/70/85 percent (uint32)
+// item 0x3C: diagnostic cycle-counter frequency in Hz (uint32)
+// item 0x3D..0x3E: main encoder publish-to-consume age last/max, CPU cycles (uint32)
 // item 0x40..0x5F: controller OVERSPEED snapshot captured at fault time
 // =====================================================================
 static uint32_t pack_mt6826s_raw(const Mt6826sSpi::Sample& sample) {
@@ -1361,141 +1862,49 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
             type = EXT_TYPE_FLOAT32;
             can_setSignal<float>(txmsg, snapshot.output_last_aux_correction, 32, 32, true);
             break;
-        case 0x40:
+        case 0x0D:
             type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.valid ? 1u : 0u, 32, 32, true);
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_isr_total.length_, 32, 32, true);
             break;
-        case 0x41:
+        case 0x0E:
             type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.control_loop_count, 32, 32, true);
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_isr_total.max_length_, 32, 32, true);
             break;
-        case 0x42:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.timestamp, 32, 32, true);
-            break;
-        case 0x43:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.vel_estimate, 32, 32, true);
-            break;
-        case 0x44:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.vel_limit, 32, 32, true);
-            break;
-        case 0x45:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.vel_limit_tolerance, 32, 32, true);
-            break;
-        case 0x46:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.pos_estimate_linear, 32, 32, true);
-            break;
-        case 0x47:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.pos_setpoint, 32, 32, true);
-            break;
-        case 0x48:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.vel_setpoint, 32, 32, true);
-            break;
-        case 0x49:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.input_pos, 32, 32, true);
-            break;
-        case 0x4A:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.input_vel, 32, 32, true);
-            break;
-        case 0x4B:
+        case 0x0F:
             type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.input_mode, 32, 32, true);
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_isr_total.count_, 32, 32, true);
             break;
-        case 0x4C:
+        case 0x2E:
             type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.control_mode, 32, 32, true);
+            can_setSignal<uint32_t>(txmsg, snapshot.pair_transaction_cycles, 32, 32, true);
             break;
-        case 0x4D:
+        case 0x2F:
             type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.resolver_state, 32, 32, true);
+            can_setSignal<uint32_t>(txmsg, snapshot.max_pair_transaction_cycles, 32, 32, true);
             break;
-        case 0x4E:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.resolver_valid, 32, 32, true);
-            break;
-        case 0x4F:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.resolver_locked, 32, 32, true);
-            break;
-        case 0x50:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.resolver_accepted_aux, 32, 32, true);
-            break;
-        case 0x51:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.resolver_degraded, 32, 32, true);
-            break;
-        case 0x52:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.resolver_position_turns, 32, 32, true);
-            break;
-        case 0x53:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.resolver_residual, 32, 32, true);
-            break;
-        case 0x54:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.encoder_vel_estimate, 32, 32, true);
-            break;
-        case 0x55:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.pair_sequence, 32, 32, true);
-            break;
-        case 0x56:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.pair_valid, 32, 32, true);
-            break;
-        case 0x57:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.output_estimate_valid, 32, 32, true);
-            break;
-        case 0x58:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.output_pos_estimate, 32, 32, true);
-            break;
-        case 0x59:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.output_vel_estimate, 32, 32, true);
-            break;
-        case 0x5A:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.output_sample_dt, 32, 32, true);
-            break;
-        case 0x5B:
-            type = EXT_TYPE_UINT32;
-            can_setSignal<uint32_t>(txmsg, overspeed.output_pair_sequence, 32, 32, true);
-            break;
-        case 0x5C:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.encoder_pos_estimate, 32, 32, true);
-            break;
-        case 0x5D:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.pos_estimate_circular, 32, 32, true);
-            break;
-        case 0x5E:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.torque_setpoint, 32, 32, true);
-            break;
-        case 0x5F:
-            type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, overspeed.input_torque, 32, 32, true);
-            break;
-        // Debug counters (0x30-0x39)
+        // Fault-snapshot items 0x40-0x5F are handled by the default branch
+        // below via fill_fault_snapshot_item() (shared with 0x0E
+        // GET_FAULT_SNAPSHOT). Kept here for backward compat (deprecated;
+        // hosts should use 0x0E).
+        // Debug counters and timing diagnostics (0x30-0x3E)
         case 0x30: {
             type = EXT_TYPE_UINT32;
             uint32_t v = g_debug.foc_bad_timing_cnt;
             can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
             break;
         }
+        case 0x31:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_loop_total.length_, 32, 32, true);
+            break;
+        case 0x32:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_loop_total.max_length_, 32, 32, true);
+            break;
+        case 0x33:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_loop_total.count_, 32, 32, true);
+            break;
         case 0x34: {
             type = EXT_TYPE_UINT32;
             uint32_t v = g_debug.cl_adc_fail_pre_cnt;
@@ -1526,8 +1935,148 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
             can_setSignal<uint32_t>(txmsg, v, 32, 32, true);
             break;
         }
+        case 0x39:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_loop_total.over_50pct_count_, 32, 32, true);
+            break;
+        case 0x3A:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_loop_total.over_70pct_count_, 32, 32, true);
+            break;
+        case 0x3B:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, odrv.task_times_.control_loop_total.over_85pct_count_, 32, 32, true);
+            break;
+        case 0x3C:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, TIM_1_8_CLOCK_HZ, 32, 32, true);
+            break;
+        case 0x3D:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.main_sample_age_cycles, 32, 32, true);
+            break;
+        case 0x3E:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.max_main_sample_age_cycles, 32, 32, true);
+            break;
+        default:
+            // 0x40-0x5F: fault snapshot (deprecated compat — use 0x0E).
+            // Other unknown items: UNKNOWN status.
+            if (item_id >= 0x40 && item_id <= 0x5F) {
+                if (!fill_fault_snapshot_item(overspeed, item_id, txmsg, type))
+                    status = EXT_STATUS_UNKNOWN;
+            } else {
+                status = EXT_STATUS_UNKNOWN;
+                can_setSignal<uint32_t>(txmsg, 0, 32, 32, true);
+            }
+            break;
+    }
+
+    txmsg.buf[2] = status;
+    txmsg.buf[3] = type;
+    return canbus_->send_message(txmsg);
+}
+
+// =====================================================================
+// 0x0D: VERNIER_CALIBRATION
+//
+// item 0x00: reset captured points (uint32 response: point_count)
+// item 0x01: capture latest valid main/aux static point (uint32: point_count)
+// item 0x02: fit aux offset, value=float32 search_radius turns (float32: score)
+// item 0x03: apply pending fit to RAM config (uint32: 1 on success)
+// item 0x04: point_count (uint32)
+// item 0x05: fit_valid (uint32/bool)
+// item 0x06: fitted_main_offset (float32)
+// item 0x07: fitted_aux_offset (float32)
+// item 0x08: fit_score RMS residual (float32)
+// item 0x09: fit_worst_residual (float32)
+// item 0x0A: max_points (uint32)
+// =====================================================================
+bool CANSimple::handle_vernier_calibration(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg) {
+    const uint8_t item_id = msg.buf[1];
+    const uint8_t req_type = msg.buf[2];
+    uint8_t status = EXT_STATUS_OK;
+    uint8_t type = EXT_TYPE_UINT32;
+
+    txmsg.buf[0] = 0x0D;
+    txmsg.buf[1] = item_id;
+
+    // RESET (0x00), FIT (0x02), and APPLY (0x03) mutate calibration/config
+    // state and stay guarded while armed. CAPTURE (0x01) only stores latest
+    // encoder samples while armed so the host can capture each held target
+    // without arm/disarm cycles.
+    const bool mutating = item_id == 0x00 || item_id == 0x02 || item_id == 0x03;
+    if (mutating && any_axis_armed()) {
+        txmsg.buf[2] = EXT_STATUS_BUSY_ARMED;
+        txmsg.buf[3] = type;
+        can_setSignal<uint32_t>(txmsg, 0, 32, 32, true);
+        return canbus_->send_message(txmsg);
+    }
+
+    switch (item_id) {
+        case 0x00:
+            axis.encoder_.reset_vernier_calibration();
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, axis.encoder_.get_vernier_calibration_point_count(), 32, 32, true);
+            break;
+        case 0x01:
+            type = EXT_TYPE_UINT32;
+            if (!axis.encoder_.capture_vernier_calibration_point()) {
+                status = EXT_STATUS_INVALID_VALUE;
+            }
+            can_setSignal<uint32_t>(txmsg, axis.encoder_.get_vernier_calibration_point_count(), 32, 32, true);
+            break;
+        case 0x02: {
+            type = EXT_TYPE_FLOAT32;
+            float search_radius = 0.05f;
+            if (req_type == EXT_TYPE_FLOAT32) {
+                search_radius = can_getSignal<float>(msg, 32, 32, true);
+            } else if (req_type != 0) {
+                status = EXT_STATUS_INVALID_TYPE;
+            }
+            if (status == EXT_STATUS_OK && !axis.encoder_.fit_vernier_aux_offset(search_radius)) {
+                status = EXT_STATUS_INVALID_VALUE;
+            }
+            can_setSignal<float>(txmsg, axis.encoder_.get_vernier_calibration_fit_score(), 32, 32, true);
+        } break;
+        case 0x03:
+            type = EXT_TYPE_UINT32;
+            if (!axis.encoder_.apply_vernier_calibration_fit()) {
+                status = EXT_STATUS_INVALID_VALUE;
+            }
+            can_setSignal<uint32_t>(txmsg, status == EXT_STATUS_OK ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x04:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, axis.encoder_.get_vernier_calibration_point_count(), 32, 32, true);
+            break;
+        case 0x05:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, axis.encoder_.get_vernier_calibration_fit_valid() ? 1u : 0u, 32, 32, true);
+            break;
+        case 0x06:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, axis.encoder_.get_vernier_calibration_fitted_main_offset(), 32, 32, true);
+            break;
+        case 0x07:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, axis.encoder_.get_vernier_calibration_fitted_aux_offset(), 32, 32, true);
+            break;
+        case 0x08:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, axis.encoder_.get_vernier_calibration_fit_score(), 32, 32, true);
+            break;
+        case 0x09:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, axis.encoder_.get_vernier_calibration_worst_residual(), 32, 32, true);
+            break;
+        case 0x0A:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, Encoder::kVernierCalibrationMaxPoints, 32, 32, true);
+            break;
         default:
             status = EXT_STATUS_UNKNOWN;
+            type = EXT_TYPE_UINT32;
             can_setSignal<uint32_t>(txmsg, 0, 32, 32, true);
             break;
     }

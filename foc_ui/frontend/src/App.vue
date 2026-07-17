@@ -6,6 +6,7 @@ import { ref } from 'vue'
 import StatusBar from './components/StatusBar.vue'
 import WaveformPanel from './components/WaveformPanel.vue'
 import ControlPanel from './components/ControlPanel.vue'
+import CalibrationPanel from './components/CalibrationPanel.vue'
 import ParamPanel from './components/ParamPanel.vue'
 import LogConsole from './components/LogConsole.vue'
 import OverspeedPanel from './components/OverspeedPanel.vue'
@@ -23,6 +24,7 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
     <div class="workspace">
       <div class="left-col">
         <ControlPanel />
+        <CalibrationPanel />
       </div>
       <div class="center-col">
         <div class="waveform-wrap">

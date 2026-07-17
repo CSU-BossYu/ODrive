@@ -6,11 +6,21 @@ import { ref, watch } from 'vue'
 import { useOdriveSocket } from '../composables/useOdriveSocket'
 
 const oSocket = useOdriveSocket()
+const EXT_FLOAT32 = 1
+const EXT_UINT32 = 3
+const SUB_GET_BASIC = 0x06
+const SUB_SET_BASIC = 0x07
+const SUB_GET_CONTROL = 0x0B
+const SUB_SET_CONTROL = 0x0C
 
 interface ParamDef {
   key: string; label: string; unit: string
   min: number; max: number; step: number
   scale?: number
+  item?: number
+  readSubCmd?: number
+  setSubCmd?: number
+  isFloat?: boolean
 }
 
 interface ControlParamDef extends ParamDef {
@@ -28,6 +38,22 @@ const PARAMS: ParamDef[] = [
   { key: 'poll_hz',             label: '轮询频率',       unit: 'Hz',          min: 5, max: 100, step: 1 },
 ]
 
+Object.assign(PARAMS.find((p) => p.key === 'pos_gain')!, {
+  item: 0x30, readSubCmd: SUB_GET_BASIC, setSubCmd: SUB_SET_BASIC, isFloat: true,
+})
+Object.assign(PARAMS.find((p) => p.key === 'vel_gain')!, {
+  item: 0x31, readSubCmd: SUB_GET_BASIC, setSubCmd: SUB_SET_BASIC, isFloat: true,
+})
+Object.assign(PARAMS.find((p) => p.key === 'vel_integrator_gain')!, {
+  item: 0x32, readSubCmd: SUB_GET_BASIC, setSubCmd: SUB_SET_BASIC, isFloat: true,
+})
+Object.assign(PARAMS.find((p) => p.key === 'vel_limit')!, {
+  min: 0.1, item: 0x60, readSubCmd: SUB_GET_CONTROL, setSubCmd: SUB_SET_CONTROL, isFloat: true,
+})
+Object.assign(PARAMS.find((p) => p.key === 'current_limit')!, {
+  item: 0x14, readSubCmd: SUB_GET_BASIC, setSubCmd: SUB_SET_BASIC, isFloat: true,
+})
+
 const CONTROL_PARAMS: ControlParamDef[] = [
   { key: 'profile_vel_limit', label: '位置规划最高速度', unit: 'rpm', min: 0, max: 1800, step: 10, item: 0x55, isFloat: true, scale: 60 },
   { key: 'profile_accel_limit', label: '位置规划加速度', unit: 'rpm/s', min: 0, max: 60000, step: 10, item: 0x56, isFloat: true, scale: 60 },
@@ -36,13 +62,23 @@ const CONTROL_PARAMS: ControlParamDef[] = [
   { key: 'velocity_decel_limit', label: '速度模式减速度', unit: 'rpm/s', min: 0, max: 60000, step: 10, item: 0x51, isFloat: true, scale: 60 },
   { key: 'quick_stop_decel_limit', label: '快速停止减速度', unit: 'rpm/s', min: 0, max: 120000, step: 10, item: 0x52, isFloat: true, scale: 60 },
   { key: 'can_watchdog_timeout_ms', label: '命令超时', unit: 'ms', min: 0, max: 60000, step: 10, item: 0x53, isFloat: false },
-  { key: 'heartbeat_timeout_ms', label: '心跳超时', unit: 'ms', min: 0, max: 60000, step: 10, item: 0x5C, isFloat: false },
+  { key: 'heartbeat_timeout_ms', label: '心跳超时（0或≥250）', unit: 'ms', min: 0, max: 60000, step: 50, item: 0x5C, isFloat: false },
   { key: 'timeout_action', label: '超时动作', unit: '', min: 0, max: 4, step: 1, item: 0x54, isFloat: false },
   { key: 'servo_mode', label: '伺服模式', unit: '', min: 0, max: 3, step: 1, item: 0x5B, isFloat: false },
   { key: 'control_runtime_state', label: '运行标志', unit: 'bits', min: 0, max: 0xffffffff, step: 1, item: 0x58, isFloat: false, readonly: true },
   { key: 'last_timeout_reason', label: '上次超时原因', unit: '', min: 0, max: 0xffffffff, step: 1, item: 0x59, isFloat: false, readonly: true },
   { key: 'trajectory_done', label: '轨迹完成', unit: '', min: 0, max: 1, step: 1, item: 0x5A, isFloat: false, readonly: true },
+  // ADRC disturbance trim (armed-guarded — disarm to IDLE before setting).
+  { key: 'enable_adrc', label: 'ADRC 使能', unit: '', min: 0, max: 1, step: 1, item: 0x6E, isFloat: false },
+  { key: 'adrc_trim_torque_limit', label: 'ADRC 补偿上限', unit: 'Nm', min: 0, max: 5, step: 0.01, item: 0x6F, isFloat: true },
+  { key: 'adrc_trim_slew_rate', label: 'ADRC 补偿斜率', unit: 'Nm/s', min: 0, max: 100, step: 0.01, item: 0x6D, isFloat: true },
 ]
+
+CONTROL_PARAMS.splice(13, 0,
+  { key: 'vel_limit_tolerance', label: '速度保护容差', unit: 'x', min: 1, max: 10, step: 0.05, item: 0x61, isFloat: true },
+  { key: 'enable_vel_limit', label: '速度限制使能', unit: '', min: 0, max: 1, step: 1, item: 0x62, isFloat: false },
+  { key: 'enable_torque_mode_vel_limit', label: '力矩模式限速', unit: '', min: 0, max: 1, step: 1, item: 0x63, isFloat: false },
+)
 
 PARAMS.splice(1, 0, {
   key: 'pos_integrator_gain',
@@ -51,6 +87,10 @@ PARAMS.splice(1, 0, {
   min: 0,
   max: 100,
   step: 0.001,
+  item: 0x5D,
+  readSubCmd: SUB_GET_CONTROL,
+  setSubCmd: SUB_SET_CONTROL,
+  isFloat: true,
 })
 
 // Motor-model identity (baked in production_config.h, GET-only). Read-only
@@ -99,6 +139,12 @@ const controlValues = ref<Record<string, number>>({
   control_runtime_state: 0,
   last_timeout_reason: 0,
   trajectory_done: 0,
+  vel_limit_tolerance: 1.2,
+  enable_vel_limit: 1,
+  enable_torque_mode_vel_limit: 1,
+  enable_adrc: 1,
+  adrc_trim_torque_limit: 0.5,
+  adrc_trim_slew_rate: 0.05,
 })
 
 const motorModelValues = ref<Record<string, number>>({})
@@ -128,14 +174,70 @@ watch(() => oSocket.controlConfig.value, (cfg) => {
   }
 }, { deep: true })
 
+function extTypeFor(isFloat?: boolean) {
+  return isFloat ? EXT_FLOAT32 : EXT_UINT32
+}
+
+function statusText(resp: { status: number; error?: string }) {
+  if (resp.status === 0) return 'ok'
+  if (resp.status === 5) return 'BUSY_ARMED'
+  if (resp.status === 4) return 'INVALID_VALUE'
+  if (resp.status === 3) return 'INVALID_TYPE'
+  if (resp.status === 2) return 'READONLY'
+  if (resp.status === 1) return 'UNKNOWN'
+  return resp.error || `status ${resp.status}`
+}
+
+function applyReadValue(target: Record<string, number>, p: ParamDef, value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return false
+  target[p.key] = p.scale ? value * p.scale : value
+  return true
+}
+
 watch(() => oSocket.extSeq.value, () => {
   const list = oSocket.extResponses.value
   const resp = list[list.length - 1]
-  if (!resp || resp.sub_cmd !== 0x06) return
-  const p = MOTOR_MODEL_PARAMS.find((item) => item.item === resp.item)
-  if (!p) return
-  if (resp.status === 0 && typeof resp.value === 'number' && Number.isFinite(resp.value)) {
-    motorModelValues.value[p.key] = resp.value
+  if (!resp) return
+
+  if (resp.sub_cmd === SUB_GET_BASIC) {
+    const modelParam = MOTOR_MODEL_PARAMS.find((item) => item.item === resp.item)
+    if (modelParam && resp.status === 0 && typeof resp.value === 'number' && Number.isFinite(resp.value)) {
+      motorModelValues.value[modelParam.key] = resp.value
+    }
+
+    const p = PARAMS.find((item) => item.readSubCmd === SUB_GET_BASIC && item.item === resp.item)
+    if (p) {
+      const ok = resp.status === 0 && applyReadValue(values.value, p, resp.value)
+      lastResult.value[p.key] = { ok, text: ok ? 'read' : statusText(resp) }
+    }
+    return
+  }
+
+  if (resp.sub_cmd === SUB_SET_BASIC) {
+    const p = PARAMS.find((item) => item.setSubCmd === SUB_SET_BASIC && item.item === resp.item)
+    if (p) lastResult.value[p.key] = { ok: resp.status === 0, text: statusText(resp) }
+    return
+  }
+
+  if (resp.sub_cmd === SUB_GET_CONTROL) {
+    const p = PARAMS.find((item) => item.readSubCmd === SUB_GET_CONTROL && item.item === resp.item)
+    if (p) {
+      const ok = resp.status === 0 && applyReadValue(values.value, p, resp.value)
+      lastResult.value[p.key] = { ok, text: ok ? 'read' : statusText(resp) }
+    }
+    const cp = CONTROL_PARAMS.find((item) => item.item === resp.item)
+    if (cp) {
+      const ok = resp.status === 0 && applyReadValue(controlValues.value, cp, resp.value)
+      controlResult.value[cp.key] = { ok, text: ok ? 'read' : statusText(resp) }
+    }
+    return
+  }
+
+  if (resp.sub_cmd === SUB_SET_CONTROL) {
+    const p = PARAMS.find((item) => item.setSubCmd === SUB_SET_CONTROL && item.item === resp.item)
+    if (p) lastResult.value[p.key] = { ok: resp.status === 0, text: statusText(resp) }
+    const cp = CONTROL_PARAMS.find((item) => item.item === resp.item)
+    if (cp) controlResult.value[cp.key] = { ok: resp.status === 0, text: statusText(resp) }
   }
 })
 
@@ -148,24 +250,26 @@ function apply(p: ParamDef) {
     lastResult.value[p.key] = { ok: false, text: `Out of range [${p.min}, ${p.max}]` }
     return
   }
-  if (p.key === 'vel_limit' || p.key === 'current_limit') {
-    const vl = values.value.vel_limit
-    const cl = values.value.current_limit
-    if (typeof vl !== 'number' || !Number.isFinite(vl) ||
-        typeof cl !== 'number' || !Number.isFinite(cl)) {
-      lastResult.value[p.key] = { ok: false, text: 'vel_limit and current_limit must both be valid' }
-      return
-    }
-    const velParam = PARAMS.find((item) => item.key === 'vel_limit')
-    oSocket.setLimits(velParam?.scale ? vl / velParam.scale : vl, cl)
-  } else if (p.key === 'poll_hz') {
+  if (p.key === 'poll_hz') {
     oSocket.setPollHz(v)
+    lastResult.value[p.key] = { ok: true, text: 'ok' }
+    return
+  } else if (p.item !== undefined && p.setSubCmd !== undefined) {
+    oSocket.extCmd(p.setSubCmd, p.item, extTypeFor(p.isFloat), p.scale ? v / p.scale : v)
   } else if (p.key === 'vel_gain') {
     // Backend set_vel_gains sends (gain, integrator) together; pass the
     // companion value so editing vel_gain alone doesn't zero the integrator.
-    oSocket.setGain('vel_gain', v, { integrator: values.value.vel_integrator_gain })
+    // Guard against a cleared input ('') which the backend's float() can't
+    // parse (would 500 the set_gain handler).
+    const ig = (typeof values.value.vel_integrator_gain === 'number'
+      && Number.isFinite(values.value.vel_integrator_gain))
+      ? values.value.vel_integrator_gain : 0
+    oSocket.setGain('vel_gain', v, { integrator: ig })
   } else if (p.key === 'vel_integrator_gain') {
-    oSocket.setGain('vel_integrator_gain', v, { gain: values.value.vel_gain })
+    const vg = (typeof values.value.vel_gain === 'number'
+      && Number.isFinite(values.value.vel_gain))
+      ? values.value.vel_gain : 0
+    oSocket.setGain('vel_integrator_gain', v, { gain: vg })
   } else {
     oSocket.setGain(p.key, v)
   }
@@ -173,7 +277,11 @@ function apply(p: ParamDef) {
 }
 
 function readConfig() {
-  oSocket.extCmd(0x06, 0x01)  // GET_BASIC_CONFIG
+  PARAMS.forEach((p) => {
+    if (p.item !== undefined && p.readSubCmd !== undefined) {
+      oSocket.extCmd(p.readSubCmd, p.item)
+    }
+  })
 }
 
 function readControlConfig() {
@@ -203,8 +311,8 @@ function applyControl(p: ControlParamDef) {
 }
 
 function saveConfig() {
-  if (confirm('Save configuration? ODrive will reset.')) {
-    oSocket.extCmd(0x03, 0x00)  // SAVE_CONFIGURATION
+  if (confirm('Save configuration to Flash? The axis must be IDLE.')) {
+    oSocket.extCmd(0x03, 0x00, 3, 0, 3.0)  // SAVE_CONFIGURATION
   }
 }
 

@@ -20,9 +20,10 @@
 * new data is appended in the erased area. This presumably increases flash life span.
 * The writable sector is only erased if there is not enough space for the new data.
 *
-* On startup, if there is exactly one sector
-* whose last non-erased value has the state "valid" that sector is considered
-* the valid sector. In any other case the selection is undefined.
+* Every record has a sequence number, payload length and CRC32. On startup both
+* sectors are checked and the newest complete record is selected. This makes
+* the commit robust even if power is removed between validating the new record
+* and invalidating the previous record.
 *
 *
 * To write a new block of data atomically we first mark all associated fields
@@ -32,6 +33,7 @@
 
 #include "stm32_nvm.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #if defined(STM32F405xx)
@@ -81,6 +83,25 @@ typedef struct {
     const volatile uint64_t* const data;
 } sector_t;
 
+#define NVM_RECORD_MAGIC 0x324D564EUL /* "NVM2" in little-endian flash */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t sequence;
+    uint32_t payload_length;
+    uint32_t payload_crc32;
+    uint32_t header_crc32;
+    uint32_t reserved;
+} nvm_record_header_t;
+
+typedef struct {
+    uint8_t valid;
+    size_t start;
+    size_t field_count;
+    uint32_t sequence;
+    uint32_t payload_length;
+} record_candidate_t;
+
 sector_t sectors[] = { {
     .sector_id = FLASH_SECTOR_A,
     .n_data = FLASH_SECTOR_A_SIZE >> 3,
@@ -98,6 +119,29 @@ sector_t sectors[] = { {
 uint8_t read_sector_; // 0 or 1 to indicate which sector to read from and which to write to
 size_t n_staging_area_; // number of 64-bit values that were reserved using NVM_start_write
 size_t n_valid_; // number of 64-bit fields that can be read
+size_t read_start_;
+size_t read_length_;
+size_t staging_payload_length_;
+uint32_t current_sequence_;
+uint8_t read_has_header_;
+
+static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t length) {
+    while (length--) {
+        crc ^= *data++;
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
+        }
+    }
+    return crc;
+}
+
+static uint32_t crc32(const uint8_t *data, size_t length) {
+    return crc32_update(0xFFFFFFFFUL, data, length) ^ 0xFFFFFFFFUL;
+}
+
+static uint32_t header_crc32(const nvm_record_header_t *header) {
+    return crc32((const uint8_t *)header, offsetof(nvm_record_header_t, header_crc32));
+}
 
 static const uint32_t FLASH_ERR_FLAGS =
 #if defined(FLASH_FLAG_EOP)
@@ -161,7 +205,7 @@ fail:
 int set_allocation_state(sector_t *sector, size_t index, size_t count, field_state_t state) {
     if (index < sector->n_reserved)
         return -1;
-    if (index + count >= sector->n_data)
+    if (index + count > sector->n_data)
         return -1;
 
     // expand state to state for 4 values
@@ -235,6 +279,52 @@ size_t scan_allocation_table(sector_t *sector, size_t max_index, field_state_t r
     return index;
 }
 
+static record_candidate_t inspect_latest_record(sector_t *sector, field_state_t tail_state) {
+    record_candidate_t result = {0};
+    if (tail_state != VALID) {
+        return result;
+    }
+
+    field_state_t preceding_state;
+    const size_t start = scan_allocation_table(sector, sector->index, VALID, &preceding_state);
+    const size_t field_count = sector->index - start;
+    if ((field_count << 3) < sizeof(nvm_record_header_t)) {
+        return result;
+    }
+
+    const nvm_record_header_t *header = (const nvm_record_header_t *)&sector->data[start];
+    if ((header->magic != NVM_RECORD_MAGIC) ||
+        (header->reserved != 0) ||
+        (header->header_crc32 != header_crc32(header))) {
+        return result;
+    }
+
+    const size_t available_payload_bytes = (field_count << 3) - sizeof(nvm_record_header_t);
+    if (header->payload_length > available_payload_bytes) {
+        return result;
+    }
+    const size_t record_length = sizeof(nvm_record_header_t) + header->payload_length;
+    if (((record_length + 7) >> 3) != field_count) {
+        return result;
+    }
+
+    const uint8_t *payload = (const uint8_t *)header + sizeof(*header);
+    if (header->payload_crc32 != crc32(payload, header->payload_length)) {
+        return result;
+    }
+
+    result.valid = 1;
+    result.start = start;
+    result.field_count = field_count;
+    result.sequence = header->sequence;
+    result.payload_length = header->payload_length;
+    return result;
+}
+
+static int sequence_is_newer(uint32_t lhs, uint32_t rhs) {
+    return (int32_t)(lhs - rhs) > 0;
+}
+
 // Loads the head of the NVM data.
 // If this function fails subsequent calls to NVM functions (other than NVM_init or NVM_erase)
 // cause undefined behavior.
@@ -247,21 +337,45 @@ int NVM_init(void) {
                 ERASED, &sector1_state);
     //printf("sector states: %02x, %02x\r\n", sector0_state, sector1_state); osDelay(5);
 
-    // Select valid sector on a best effort basis
-    // (in unfortunate cases valid_sector might actually point
-    // to an invalid or erased sector)
+    const record_candidate_t candidate0 = inspect_latest_record(&sectors[0], sector0_state);
+    const record_candidate_t candidate1 = inspect_latest_record(&sectors[1], sector1_state);
+
     read_sector_ = 0;
-    if (sector1_state == VALID)
+    if (candidate1.valid && (!candidate0.valid || sequence_is_newer(candidate1.sequence, candidate0.sequence))) {
         read_sector_ = 1;
-    
-    // count the number of valid fields
-    sector_t *read_sector = &sectors[read_sector_];
-    uint8_t first_nonvalid_state;
-    size_t min_valid_index = scan_allocation_table(read_sector, read_sector->index,
-        VALID, &first_nonvalid_state);
-    n_valid_ = read_sector->index - min_valid_index;
-    
+    }
+
+    const record_candidate_t *selected = read_sector_ ? &candidate1 : &candidate0;
+    if (selected->valid) {
+        read_start_ = selected->start;
+        n_valid_ = selected->field_count;
+        read_length_ = selected->payload_length;
+        current_sequence_ = selected->sequence;
+        read_has_header_ = 1;
+    } else {
+        // One-time compatibility path for records written by the previous
+        // headerless format. ConfigManager still validates its CRC16/version;
+        // the next successful save migrates the data to NVM2.
+        if ((sector0_state == VALID) || (sector1_state == VALID)) {
+            read_sector_ = (sector1_state == VALID) ? 1 : 0;
+            sector_t *legacy_sector = &sectors[read_sector_];
+            field_state_t preceding_state;
+            read_start_ = scan_allocation_table(legacy_sector, legacy_sector->index,
+                VALID, &preceding_state);
+            n_valid_ = legacy_sector->index - read_start_;
+            read_length_ = n_valid_ << 3;
+            read_has_header_ = 0;
+        } else {
+            read_start_ = sectors[read_sector_].n_reserved;
+            n_valid_ = 0;
+            read_length_ = 0;
+            read_has_header_ = 1;
+        }
+        current_sequence_ = 0;
+    }
+
     n_staging_area_ = 0;
+    staging_payload_length_ = 0;
 
     int status = 0;
     /*// bring non-valid sectors into a known state
@@ -285,6 +399,13 @@ int NVM_erase(void) {
     read_sector_ = 0;
     sectors[0].index = sectors[0].n_reserved;
     sectors[1].index = sectors[1].n_reserved;
+    read_start_ = sectors[0].n_reserved;
+    read_length_ = 0;
+    n_valid_ = 0;
+    n_staging_area_ = 0;
+    staging_payload_length_ = 0;
+    current_sequence_ = 0;
+    read_has_header_ = 1;
 
     int state = 0;
     state |= erase(&sectors[0]);
@@ -295,14 +416,15 @@ int NVM_erase(void) {
 // @brief Returns the maximum number of bytes that can be read using NVM_read.
 // This holds until NVM_commit is called.
 size_t NVM_get_max_read_length(void) {
-    return n_valid_ << 3;
+    return read_length_;
 }
 
 // @brief Returns the maximum length (in bytes) that can passed to NVM_start_write.
 // This holds until NVM_commit is called.
 size_t NVM_get_max_write_length(void) {
     sector_t *target = &sectors[1 - read_sector_];
-    return (target->n_data - target->n_reserved) << 3;
+    const size_t capacity = (target->n_data - target->n_reserved) << 3;
+    return capacity > sizeof(nvm_record_header_t) ? capacity - sizeof(nvm_record_header_t) : 0;
 }
 
 // @brief Reads from the latest committed block in the non-volatile memory.
@@ -312,10 +434,13 @@ size_t NVM_get_max_write_length(void) {
 // @param length: length in bytes (if (offset + length) is out of range, the function fails)
 // @returns 0 on success or a non-zero error code otherwise
 int NVM_read(size_t offset, uint8_t *data, size_t length) {
-    if (offset + length > (n_valid_ << 3))
+    if ((offset > read_length_) || (length > read_length_ - offset))
         return -1;
     sector_t *read_sector = &sectors[read_sector_];
-    const uint8_t *src_ptr = ((const uint8_t *)&read_sector->data[read_sector->index - n_valid_]) + offset;
+    const uint8_t *src_ptr = (const uint8_t *)&read_sector->data[read_start_] + offset;
+    if (read_has_header_) {
+        src_ptr += sizeof(nvm_record_header_t);
+    }
     memcpy(data, src_ptr, length);
     return 0;
 }
@@ -330,7 +455,8 @@ int NVM_start_write(size_t length) {
     int status = 0;
     sector_t *target = &sectors[1 - read_sector_];
 
-    length = (length + 7) >> 3; // round to multiple of 64 bit
+    const size_t payload_length = length;
+    length = (sizeof(nvm_record_header_t) + length + 7) >> 3; // round to 64-bit fields
     if (length > target->n_data - target->n_reserved)
         return -1;
 
@@ -345,7 +471,22 @@ int NVM_start_write(size_t length) {
         return status;
 
     n_staging_area_ = length;
-    return 0;
+    staging_payload_length_ = payload_length;
+
+    const nvm_record_header_t header = {
+        .magic = NVM_RECORD_MAGIC,
+        .sequence = current_sequence_ + 1,
+        .payload_length = payload_length,
+        .payload_crc32 = 0xFFFFFFFFUL,
+        .header_crc32 = 0xFFFFFFFFUL,
+        .reserved = 0
+    };
+    status = NVM_write((size_t)-sizeof(nvm_record_header_t), (uint8_t *)&header, sizeof(header));
+    if (status) {
+        n_staging_area_ = 0;
+        staging_payload_length_ = 0;
+    }
+    return status;
 }
 
 // @brief Writes to the current data block that was opened with NVM_start_write.
@@ -359,9 +500,18 @@ int NVM_start_write(size_t length) {
 // @param data: Pointer to the data that should be written
 // @param length: Data length in bytes
 int NVM_write(size_t offset, uint8_t *data, size_t length) {
-    if (offset + length > (n_staging_area_ << 3))
+    uintptr_t physical_offset;
+    if (offset == (size_t)-sizeof(nvm_record_header_t)) {
+        physical_offset = 0;
+    } else {
+        if ((offset > staging_payload_length_) || (length > staging_payload_length_ - offset))
+            return -1;
+        physical_offset = sizeof(nvm_record_header_t) + offset;
+    }
+    if (physical_offset + length > (n_staging_area_ << 3))
         return -1;
     sector_t *target = &sectors[1 - read_sector_];
+    offset = physical_offset;
 
     HAL_FLASH_Unlock();
     HAL_FLASH_ClearError();
@@ -396,14 +546,44 @@ int NVM_commit(void) {
     sector_t *read_sector = &sectors[read_sector_];
     sector_t *write_sector = &sectors[1 - read_sector_];
 
-    // mark the newly-written fields as valid
-    int status = set_allocation_state(write_sector, write_sector->index, n_staging_area_, VALID);
+    if (!n_staging_area_) {
+        return -1;
+    }
+
+    nvm_record_header_t *header = (nvm_record_header_t *)&write_sector->data[write_sector->index];
+    const uint8_t *payload = (const uint8_t *)header + sizeof(*header);
+    const uint32_t payload_crc = crc32(payload, staging_payload_length_);
+
+    HAL_FLASH_Unlock();
+    HAL_FLASH_ClearError();
+    int status = 0;
+    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uintptr_t)&header->payload_crc32, payload_crc) != HAL_OK) {
+        status = HAL_FLASH_GetError();
+    } else {
+        const uint32_t header_crc = header_crc32(header);
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uintptr_t)&header->header_crc32, header_crc) != HAL_OK) {
+            status = HAL_FLASH_GetError();
+        }
+    }
+    HAL_FLASH_Lock();
+    if (status || (header->payload_crc32 != payload_crc) ||
+        (header->header_crc32 != header_crc32(header))) {
+        return status ? status : -1;
+    }
+
+    // The allocation state is the final atomic commit marker.
+    status = set_allocation_state(write_sector, write_sector->index, n_staging_area_, VALID);
     if (status)
         return status;
 
+    read_start_ = write_sector->index;
     write_sector->index += n_staging_area_;
     n_valid_ = n_staging_area_;
+    read_length_ = staging_payload_length_;
+    current_sequence_ = header->sequence;
+    read_has_header_ = 1;
     n_staging_area_ = 0;
+    staging_payload_length_ = 0;
     read_sector_ = 1 - read_sector_;
 
     // invalidate the other sector
@@ -414,86 +594,8 @@ int NVM_commit(void) {
         status = erase(read_sector);
     }
 
-    return status;
-}
-
-
-#include <cmsis_os.h>
-#include <stdio.h>
-/** @brief Call this at startup to test/demo the NVM driver
-
- Expected output when starting with a fully erased NVM
-
-    [1st boot]
-    === NVM TEST ===
-    NVM is empty
-    write 0x00, ..., 0x25 to NVM
-    new data committed to NVM
-    
-    [2nd boot]
-    === NVM TEST ===
-    NVM contains 40 valid bytes:
-    00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
-    10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
-    20 21 22 23 24 25 ff ff
-    write 0xbd, ..., 0xe2 to NVM
-    new data committed to NVM
-
-    [3rd boot]
-    === NVM TEST ===
-    NVM contains 40 valid bytes:
-    bd be bf c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 ca cb cc
-    cd ce cf d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 da db dc
-    dd de df e0 e1 e2 ff ff
-    write 0xcb, ..., 0xf0 to NVM
-    new data committed to NVM
-*/
-void NVM_demo(void) {
-    const size_t len = 38;
-    uint8_t data[len];
-    int progress = 0;
-    uint8_t seed = 0;
-
-    osDelay(100);
-    printf("=== NVM TEST ===\r\n"); osDelay(5);
-    //NVM_erase();
-    if (progress++, NVM_init() != 0)
-        goto fail;
-    
-    // load bytes from NVM and print them
-    size_t available = NVM_get_max_read_length();
-    if (available) {
-        printf("NVM contains %d valid bytes:\r\n", available); osDelay(5);
-        uint8_t buf[available];
-        if (progress++, NVM_read(0, buf, available) != 0)
-            goto fail;
-        for (size_t pos = 0; pos < available; ++pos) {
-            seed += buf[pos];
-            printf(" %02x", buf[pos]);
-            if ((((pos + 1) % 16) == 0) || ((pos + 1) == available))
-                printf("\r\n");
-            osDelay(2);
-        }
-    } else {
-        printf("NVM is empty\r\n"); osDelay(5);
-    }
-
-    // store new bytes in NVM (data based on seed)
-    printf("write 0x%02x, ..., 0x%02x to NVM\r\n", seed, seed + len - 1); osDelay(5);
-    for (size_t i = 0; i < len; i++)
-        data[i] = seed++;
-    if (progress++, NVM_start_write(len) != 0)
-        goto fail;
-    if (progress++, NVM_write(0, data, len / 2))
-        goto fail;
-    if (progress++, NVM_write(len / 2, &data[len / 2], len - (len / 2)))
-        goto fail;
-    if (progress++, NVM_commit())
-        goto fail;
-    printf("new data committed to NVM\r\n"); osDelay(5);
-
-    return;
-
-fail:
-    printf("NVM test failed at %d!\r\n", progress);
+    // Once the new record is valid, failure to invalidate the old record is
+    // harmless: sequence-based startup selection deterministically picks this
+    // record. Treat invalidation as best-effort housekeeping.
+    return 0;
 }

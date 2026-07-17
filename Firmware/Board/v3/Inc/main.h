@@ -55,14 +55,8 @@
 
 /* USER CODE BEGIN Includes */
 #include "stm32f4xx_hal.h"
+#include <production_config.h>
 
-#if HW_VERSION_MAJOR == 3 && HW_VERSION_MINOR == 1 \
-||  HW_VERSION_MAJOR == 3 && HW_VERSION_MINOR == 2
-#include "prev_board_ver/main_V3_2.h"
-#elif HW_VERSION_MAJOR == 3 && HW_VERSION_MINOR == 3 \
-||  HW_VERSION_MAJOR == 3 && HW_VERSION_MINOR == 4
-#include "prev_board_ver/main_V3_4.h"
-#else
 /* USER CODE END Includes */
 
 /* Private define ------------------------------------------------------------*/
@@ -163,7 +157,6 @@
 /* #define USE_FULL_ASSERT    1U */
 
 /* USER CODE BEGIN Private defines */
-#endif
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

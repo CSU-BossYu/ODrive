@@ -35,7 +35,6 @@ public:
         uint32_t steps_per_circular_range = 1024;
         float inertia = 0.0f;                    // [Nm/(turn/s^2)]
         float input_filter_bandwidth = 2.0f;     // [1/s]
-        float homing_speed = 0.25f;              // [turn/s]
         float gain_scheduling_width = 10.0f;
         bool enable_gain_scheduling = false;
         bool enable_vel_limit = true;
@@ -45,6 +44,35 @@ public:
         float electrical_power_bandwidth = 20.0f; // [rad/s] filter cutoff for electrical power for spinout detection
         float spinout_electrical_power_threshold = 10.0f; // [W] electrical power threshold for spinout detection
         float spinout_mechanical_power_threshold = -10.0f; // [W] mechanical power threshold for spinout detection
+
+        // ADRC disturbance trim. Enabled by default to add disturbance
+        // rejection on top of the PI/MIT stabilizing controller. The trim is
+        // clamped to ±adrc_trim_torque_limit — size it to the disturbance you
+        // need to cancel: measured output-shaft friction is ~0.15-0.4 Nm, so
+        // the old 0.005 was a no-op; 0.5 lets the trim actually contribute.
+        // Tune adrc_b0_/bandwidth if needed; disable if it oscillates.
+        bool enable_adrc = true;
+        float adrc_trim_torque_limit = 0.5f;        // [Nm], controller/output-shaft in vernier mode
+        float adrc_trim_slew_rate = 0.05f;          // [Nm/s], controller/output-shaft in vernier mode
+
+        // Friction compensation. Output-shaft units; meaningful in
+        // MODE_SPI_ABS_MT6826S_VERNIER (where the torque scale != 1).
+        // Enabled by default but a no-op until the Stribeck params (static/
+        // coulomb/etc.) are set non-zero — with all-zero params the comp
+        // returns 0. Set the params via the calibrate sweep or manually.
+        bool enable_friction_compensation = true;       // position/velocity servo
+        bool enable_mit_friction_compensation = true;   // MIT servo
+        float friction_pos_deadband = 0.0f;        // [turn], output shaft
+        float friction_vel_deadband = 0.001f;      // [turn/s], output shaft
+        float friction_stribeck_vel = 0.01f;       // [turn/s], output shaft
+        float friction_static_pos = 0.0f;          // [Nm], output shaft
+        float friction_static_neg = 0.0f;          // [Nm], output shaft
+        float friction_coulomb_pos = 0.0f;         // [Nm], output shaft
+        float friction_coulomb_neg = 0.0f;         // [Nm], output shaft
+        float friction_viscous_pos = 0.0f;         // [Nm/(turn/s)]
+        float friction_viscous_neg = 0.0f;         // [Nm/(turn/s)]
+        float friction_max_torque = INFINITY;      // [Nm], output shaft. Infinity = disabled.
+        float friction_torque_slew_rate = INFINITY;// [Nm/s], output shaft. Infinity = disabled.
 
         // custom setters
         Controller* parent;
@@ -80,9 +108,15 @@ public:
     void reset_adrc();
     float update_adrc_torque(float pos_estimate, float vel_estimate,
                              float torque_cmd);
-    float update_adrc(float pos_estimate, float vel_estimate,
-                      float pos_setpoint, float vel_setpoint);
-    bool update();
+    float update_adrc_trim(float pos_estimate, float vel_estimate,
+                           float trim_limit);
+    float update_friction_compensation(bool enabled, float pos_err, float vel_des,
+                                       float vel_estimate,
+                                       bool position_control_active);
+    bool update(float update_period = current_meas_period,
+                bool run_position_step = true,
+                float position_step_period = 0.0f);
+    void publish_held_torque();
 
     Config_t config_;
     Axis* axis_ = nullptr; // set by Axis constructor
@@ -145,8 +179,16 @@ public:
     float pos_integrator_vel_ = 0.0f;       // [turn/s]
     float vel_integrator_torque_ = 0.0f;    // [Nm]
     float torque_setpoint_ = 0.0f;  // [Nm], output-shaft Nm in vernier mode
+    float held_motor_torque_ = 0.0f; // [Nm], republished on divided outer-loop ticks
+    float update_period_ = current_meas_period;
+    float position_step_period_ = current_meas_period;
+    float held_position_vel_des_ = 0.0f;
+    float held_position_gain_multiplier_ = 1.0f;
+    float held_position_error_ = 0.0f;
+    bool position_step_valid_ = false;
+    float friction_torque_ = 0.0f;  // [Nm] last applied friction comp (output-shaft)
+    int8_t friction_dir_ = 0;       // -1, 0, +1 — last intended direction
 
-    bool adrc_enabled_ = true;
     bool adrc_initialized_ = false;
     float adrc_b0_ = 1.0f;             // [(turn/s^2) / Nm]
     float adrc_bandwidth_ = 30.0f;     // [1/s], ESO bandwidth
@@ -157,6 +199,7 @@ public:
     float adrc_z2_ = 0.0f;             // estimated velocity [turn/s]
     float adrc_z3_ = 0.0f;             // estimated disturbance [turn/s^2]
     float adrc_last_torque_ = 0.0f;    // last applied ADRC torque [Nm]
+    float adrc_trim_torque_ = 0.0f;    // last applied ADRC trim [Nm]
 
     float input_pos_ = 0.0f;     // [turns]
     float input_vel_ = 0.0f;     // [turn/s]

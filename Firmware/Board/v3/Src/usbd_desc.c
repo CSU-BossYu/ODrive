@@ -98,7 +98,6 @@
 #define USBD_PRODUCT_XSTR(s) USBD_PRODUCT_STR(s)
 #define USBD_PRODUCT_STR(s) #s
 #define USBD_PRODUCT_STRING_FS ODrive HW_VERSION_MAJOR.HW_VERSION_MINOR CDC Interface
-#define NATIVE_STRING ODrive HW_VERSION_MAJOR.HW_VERSION_MINOR Native Interface
 #define USBD_CONFIGURATION_STRING_FS     "CDC Config"
 #define USBD_INTERFACE_STRING_FS     "CDC Interface"
 
@@ -119,6 +118,7 @@
 // Windows will only query for OS descriptors once!
 // Delete the information about already queried devices in registry by deleting:
 // HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\usbflags\VVVVPPPPRRRR
+#if 0 // Legacy WinUSB descriptor retained only in vendor source history.
 __ALIGN_BEGIN uint8_t USBD_MS_OS_StringDescriptor[]  __ALIGN_END =
 {
   0x12,           //  bLength           1 0x12  Length of the descriptor
@@ -134,6 +134,7 @@ __ALIGN_BEGIN uint8_t USBD_MS_OS_StringDescriptor[]  __ALIGN_END =
   MS_VendorCode,  //  bMS_VendorCode    1 Vendor-specific Vendor code
   0x00            //  bPad              1 0x00  Pad field
 };
+#endif
 
 // redefined further down
 __ALIGN_BEGIN uint8_t USBD_StrDesc[USBD_MAX_STR_DESC_SIZ] __ALIGN_END;
@@ -147,14 +148,9 @@ __ALIGN_BEGIN uint8_t USBD_StrDesc[USBD_MAX_STR_DESC_SIZ] __ALIGN_END;
 */
 uint8_t * USBD_UsrStrDescriptor(struct _USBD_HandleTypeDef *pdev, uint8_t index,  uint16_t *length)
 {
+  (void)pdev;
+  (void)index;
   *length = 0;
-  if (USBD_IDX_MICROSOFT_DESC_STR == index) {
-    *length = sizeof (USBD_MS_OS_StringDescriptor);
-    return USBD_MS_OS_StringDescriptor;
-  } else if (USBD_IDX_ODRIVE_INTF_STR == index) {
-    USBD_GetString((uint8_t *)USBD_PRODUCT_XSTR(NATIVE_STRING), USBD_StrDesc, length);
-    return USBD_StrDesc;
-  }
   return NULL;
 }
 

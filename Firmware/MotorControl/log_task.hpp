@@ -38,10 +38,8 @@ void log_task_create();
 
 // Runtime configuration for the log task. These are NOT part of BoardConfig_t
 // and are NOT persisted to flash -- they live in RAM and reset to their
-// defaults on every boot. Set at runtime via the ASCII `l` command
-// (see ascii_protocol.cpp cmd_log_config) or by editing the defaults below.
-// `volatile` because they are written by the ASCII/USB thread and read by the
-// log task.
+// defaults on every boot. Adjust the defaults in log_task.cpp when required.
+// `volatile` because the log task reads them asynchronously.
 extern volatile uint32_t log_channel_mask;
 extern volatile float log_rate_hz;
 

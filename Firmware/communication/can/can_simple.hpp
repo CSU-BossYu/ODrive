@@ -38,7 +38,6 @@ class CANSimple {
         MSG_GET_CONTROLLER_ERROR,
         MSG_EXTENDED_COMMAND = 0x01E,  // ODrive vendor extension
         MSG_SET_MIT_CONTROL = 0x01F,   // MIT-style 8-byte packed control frame
-        MSG_CO_HEARTBEAT_CMD = 0x700,  // CANOpen NMT Heartbeat  SEND
     };
 
     CANSimple(CanBusBase* canbus) : canbus_(canbus) {}
@@ -94,12 +93,13 @@ class CANSimple {
     bool handle_get_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_set_basic_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_get_fault_snapshot(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
+    bool handle_vernier_calibration(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_calibration_session(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_get_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
     bool handle_set_control_config(Axis& axis, const can_Message_t& msg, can_Message_t& txmsg);
 
     // Other functions
-    static void nmt_callback(const Axis& axis, const can_Message_t& msg);
     static void estop_callback(Axis& axis, const can_Message_t& msg);
     static void clear_errors_callback(Axis& axis, const can_Message_t& msg);
 

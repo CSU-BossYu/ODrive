@@ -5,8 +5,7 @@ Provides:
   - WebSocket at /ws/can for bidirectional CAN control
   - Static table endpoints for axis states, modes, error definitions
 
-Designed as an APIRouter that gets mounted into the existing serial
-FastAPI app via ``app.include_router(can_router)``.
+The router is mounted by the CAN-only application in ``odrive_can.app``.
 """
 
 from __future__ import annotations
@@ -20,19 +19,21 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .protocol import (
     AxisState, ControlMode, InputMode,
-    ExtSubCmd, ExtType, ServoControlMode,
+    ExtSubCmd, ExtType, ServoControlMode, CalibrationProfile,
     AXIS_ERROR_BITS, MOTOR_ERROR_BITS, ENCODER_ERROR_BITS, CONTROLLER_ERROR_BITS,
     axis_states_as_json, control_modes_as_json, input_modes_as_json,
-    error_bits_as_json,
+    error_bits_as_json, decode_frame_meaning,
 )
 from .state import channels_as_json
 from .transport import CanTransport
 from .service import (
     ODriveService, POLL_HZ_DEFAULT, POLL_HZ_MIN, POLL_HZ_MAX,
+    VERNIER_AUTO_RAMP_VEL_DEFAULT, VERNIER_AUTO_SETTLE_POS_TOL_DEFAULT,
+    VERNIER_AUTO_SWEEP_CYCLES_DEFAULT, VERNIER_AUTO_SWEEP_DEFAULT,
 )
 from .ws_hub import ODriveWsHub
 from .recorder import CanRecorder
@@ -55,6 +56,9 @@ class CanAppState:
         self.service: Optional[ODriveService] = None
         self._pump_task: Optional[asyncio.Task] = None
         self._status_task: Optional[asyncio.Task] = None
+        # Raw CAN-frame monitor: frames accumulate here between flushes.
+        self._frame_flush_task: Optional[asyncio.Task] = None
+        self.frame_buffer: list = []
 
 
 CAN_STATE = CanAppState()
@@ -75,8 +79,8 @@ can_router = APIRouter(tags=['odrive-can'])
 class CanConnectRequest(BaseModel):
     interface: str = 'pcan'
     channel: str = 'PCAN_USBBUS1'
-    bitrate: int = 1_000_000
-    node_id: int = 0
+    bitrate: int = Field(default=1_000_000, ge=10_000, le=5_000_000)
+    node_id: int = Field(default=0, ge=0, le=63)
 
 
 @can_router.get('/api/can/interfaces')
@@ -136,7 +140,12 @@ async def can_connect(req: CanConnectRequest):
         service.on_telemetry_update = _on_telemetry
         service.on_heartbeat_update = _on_heartbeat
         service.on_log = _on_log
+        service.on_friction_progress = _on_friction_progress
+        service.on_friction_result = _on_friction_result
+        service.on_vernier_progress = _on_vernier_progress
+        service.on_vernier_result = _on_vernier_result
         transport._on_frame = service.on_frame
+        transport._on_can_frame = _on_can_frame
 
         # Open the bus
         transport.open(
@@ -157,6 +166,10 @@ async def can_connect(req: CanConnectRequest):
         if CAN_STATE._status_task is None:
             CAN_STATE._status_task = asyncio.create_task(_status_heartbeat())
 
+        # Start raw CAN-frame batch flusher (~10 Hz) for the monitor pane.
+        if CAN_STATE._frame_flush_task is None:
+            CAN_STATE._frame_flush_task = asyncio.create_task(_can_frame_flusher())
+
         # Wire WS message handler
         CAN_STATE.hub.set_client_msg_handler(_on_client_msg)
 
@@ -167,6 +180,7 @@ async def can_connect(req: CanConnectRequest):
             node_id=req.node_id,
             frames_rx=0, frames_tx=0, bus_errors=0,
             poll_hz=POLL_HZ_DEFAULT,
+            device_alive=False, queue_dropped=0,
         )
 
         logger.info('CAN connected: %s:%s @ %d bps, node_id=%d',
@@ -232,6 +246,16 @@ async def can_disconnect():
             pass
         CAN_STATE._status_task = None
 
+    # Stop raw CAN-frame flusher
+    if CAN_STATE._frame_flush_task:
+        CAN_STATE._frame_flush_task.cancel()
+        try:
+            await CAN_STATE._frame_flush_task
+        except asyncio.CancelledError:
+            pass
+        CAN_STATE._frame_flush_task = None
+    CAN_STATE.frame_buffer.clear()
+
     # Stop recording
     if CAN_STATE.recorder.is_recording:
         CAN_STATE.recorder.stop()
@@ -246,6 +270,7 @@ async def can_disconnect():
         connected=False,
         interface=interface, channel=channel, node_id=0,
         frames_rx=0, frames_tx=0, bus_errors=0, poll_hz=0,
+        device_alive=False, queue_dropped=transport.queue_dropped,
     )
 
     logger.info('CAN disconnected: %s:%s', interface, channel)
@@ -265,6 +290,8 @@ async def can_status():
         'frames_tx': transport.frames_tx if transport else 0,
         'bus_errors': transport.bus_errors if transport else 0,
         'poll_hz': service._poll_hz if service else 0,
+        'device_alive': service.cache.heartbeat.is_alive if service else False,
+        'queue_dropped': transport.queue_dropped if transport else 0,
         'recording': CAN_STATE.recorder.is_recording,
         'record_path': CAN_STATE.recorder.path,
         'record_rows': CAN_STATE.recorder.rows_written,
@@ -332,6 +359,8 @@ async def can_ws_endpoint(ws: WebSocket):
         frames_tx=transport.frames_tx if transport else 0,
         bus_errors=transport.bus_errors if transport else 0,
         poll_hz=service._poll_hz if service else 0,
+        device_alive=service.cache.heartbeat.is_alive if service else False,
+        queue_dropped=transport.queue_dropped if transport else 0,
     )
 
     # Notify safety monitor
@@ -355,9 +384,17 @@ async def can_ws_endpoint(ws: WebSocket):
 
 async def _on_telemetry(ch: dict, ts: float) -> None:
     """Called by service on each poll cycle."""
-    # Record if active
+    # Record if active. A write failure (disk full, etc.) must not kill the
+    # telemetry broadcast — stop the recorder and surface the error.
     if CAN_STATE.recorder.is_recording:
-        CAN_STATE.recorder.record(ch, ts)
+        try:
+            CAN_STATE.recorder.record(ch, ts)
+        except Exception as exc:
+            try:
+                CAN_STATE.recorder.stop()
+            except Exception:
+                pass
+            await CAN_STATE.hub.broadcast_error(f'recorder write failed: {exc}')
     # Broadcast to browsers (downsampled in hub)
     await CAN_STATE.hub.broadcast_telemetry(ch, ts)
 
@@ -390,6 +427,26 @@ def _on_log(line: str) -> None:
     fut.add_done_callback(_done)
 
 
+async def _on_friction_progress(progress: float, stage: str) -> None:
+    """Called by service during the friction-calibration sweep."""
+    await CAN_STATE.hub.broadcast_friction_progress(progress, stage)
+
+
+async def _on_friction_result(result: dict) -> None:
+    """Called by service when the friction-calibration sweep finishes."""
+    await CAN_STATE.hub.broadcast_friction_result(result)
+
+
+async def _on_vernier_progress(progress: float, stage: str) -> None:
+    """Called by service during the vernier auto-sampling sweep."""
+    await CAN_STATE.hub.broadcast_vernier_progress(progress, stage)
+
+
+async def _on_vernier_result(result: dict) -> None:
+    """Called by service when the vernier auto-sampling sweep finishes."""
+    await CAN_STATE.hub.broadcast_vernier_result(result)
+
+
 # --------------------------------------------------------------------------- #
 # WS Message Dispatch
 # --------------------------------------------------------------------------- #
@@ -416,6 +473,44 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
 
         elif kind == 'set_state':
             await svc.set_axis_state(obj['state'])
+
+        elif kind == 'calibration_start':
+            start = await svc.start_calibration(
+                CalibrationProfile.FULL,
+                geometry_turns=int(obj.get('geometry_turns', 2)))
+            snapshot = await svc.read_calibration_snapshot()
+            if int(start.get('status', -1)) != 0:
+                snapshot['ok'] = False
+                snapshot['error'] = (
+                    f"firmware rejected calibration start (status "
+                    f"{start.get('status')})")
+            await ws.send_text(json.dumps({
+                'type': 'calibration_snapshot',
+                'start': start,
+                **snapshot,
+            }))
+
+        elif kind == 'calibration_status':
+            snapshot = await svc.read_calibration_snapshot(
+                bool(obj.get('include_candidate', False)))
+            await ws.send_text(json.dumps({
+                'type': 'calibration_snapshot',
+                **snapshot,
+            }))
+
+        elif kind == 'calibration_abort':
+            abort = await svc.abort_calibration()
+            snapshot = await svc.read_calibration_snapshot(True)
+            if int(abort.get('status', -1)) != 0:
+                snapshot['ok'] = False
+                snapshot['error'] = (
+                    f"firmware rejected calibration abort (status "
+                    f"{abort.get('status')})")
+            await ws.send_text(json.dumps({
+                'type': 'calibration_snapshot',
+                'abort': abort,
+                **snapshot,
+            }))
 
         elif kind == 'set_mode':
             await svc.set_controller_mode(
@@ -449,19 +544,32 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
             elif name == 'pos_integrator_gain':
                 await svc.set_pos_integrator_gain(float(obj['value']))
             elif name == 'vel_gain':
-                # Use cached integrator gain if not provided
-                ig = float(obj.get('integrator', svc._last_vel_integrator_gain))
+                # Use cached integrator gain if not provided or non-numeric
+                # (a cleared input yields '' which float() can't parse).
+                ig_raw = obj.get('integrator', svc._last_vel_integrator_gain)
+                try:
+                    ig = float(ig_raw)
+                except (TypeError, ValueError):
+                    ig = svc._last_vel_integrator_gain
                 await svc.set_vel_gains(float(obj['value']), ig)
             elif name == 'vel_integrator_gain':
                 # Use cached vel_gain if not provided (prevents zeroing)
-                vg = float(obj.get('gain', svc._last_vel_gain))
+                vg_raw = obj.get('gain', svc._last_vel_gain)
+                try:
+                    vg = float(vg_raw)
+                except (TypeError, ValueError):
+                    vg = svc._last_vel_gain
                 await svc.set_vel_gains(vg, float(obj['value']))
             else:
                 await ws.send_text(json.dumps(
                     {'type': 'error', 'msg': f'unknown gain: {name}'}))
 
         elif kind == 'set_limits':
-            await svc.set_limits(obj['vel_limit'], obj['current_limit'])
+            results = await svc.set_limits(obj['vel_limit'], obj['current_limit'])
+            for result in results:
+                ext_type = result.pop('type', 0)
+                await ws.send_text(json.dumps(
+                    {'type': 'ext_resp', 'ext_type': ext_type, **result}))
 
         elif kind == 'clear_errors':
             await svc.clear_errors()
@@ -487,7 +595,7 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
         elif kind == 'get_overspeed_snapshot':
             # Read the fault-instant snapshot captured by firmware on OVERSPEED.
             # Held until clear_errors. ~32 ext round-trips (~100-200ms).
-            snap = await svc.read_overspeed_snapshot()
+            snap = await svc.read_fault_snapshot()
             await ws.send_text(json.dumps(
                 {'type': 'overspeed_snapshot', 'snapshot': snap}))
 
@@ -508,6 +616,58 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
             ext_type = result.pop('type', 0)
             await ws.send_text(json.dumps(
                 {'type': 'ext_resp', 'ext_type': ext_type, **result}))
+
+        elif kind == 'vernier_calib':
+            result = await svc.vernier_calibration(
+                int(obj['item']),
+                obj.get('value', 0),
+                bool(obj.get('is_float', False)),
+                timeout=obj.get('timeout', 1.0))
+            ext_type = result.pop('type', 0)
+            await ws.send_text(json.dumps(
+                {'type': 'ext_resp', 'ext_type': ext_type, **result}))
+
+        elif kind == 'friction_calibrate':
+            # Launch the sweep as a background task so receive_loop keeps
+            # draining (the cancel message can be processed mid-sweep).
+            if svc._friction_task is not None and not svc._friction_task.done():
+                await ws.send_text(json.dumps(
+                    {'type': 'error', 'msg': 'friction sweep already running'}))
+            else:
+                svc._friction_task = asyncio.create_task(
+                    svc.calibrate_friction(
+                        float(obj.get('max_torque', 2.0)),
+                        float(obj.get('vel_threshold', 0.01)),
+                        float(obj.get('step', 0.05)),
+                        int(obj.get('step_ms', 100))))
+                await ws.send_text(json.dumps({'type': 'friction_started'}))
+
+        elif kind == 'friction_calibrate_cancel':
+            await svc.cancel_friction()
+
+        elif kind == 'vernier_auto_calibrate':
+            # Background task so receive_loop keeps draining (cancel mid-sweep).
+            if svc._vernier_task is not None and not svc._vernier_task.done():
+                await ws.send_text(json.dumps(
+                    {'type': 'error', 'msg': 'vernier sweep already running'}))
+            else:
+                svc._vernier_task = asyncio.create_task(
+                    svc.calibrate_vernier_auto(
+                        int(obj.get('point_count', 8)),
+                        float(obj.get('sweep_turns', VERNIER_AUTO_SWEEP_DEFAULT)),
+                        float(obj.get('search_radius', 0.05)),
+                        float(obj.get('settle_vel', 0.01)),
+                        float(obj.get('settle_timeout_s', 3.0)),
+                        float(obj.get('settle_pos_tol',
+                                      VERNIER_AUTO_SETTLE_POS_TOL_DEFAULT)),
+                        float(obj.get('ramp_vel',
+                                      VERNIER_AUTO_RAMP_VEL_DEFAULT)),
+                        int(obj.get('sweep_cycles',
+                                    VERNIER_AUTO_SWEEP_CYCLES_DEFAULT))))
+                await ws.send_text(json.dumps({'type': 'vernier_started'}))
+
+        elif kind == 'vernier_auto_cancel':
+            await svc.cancel_vernier()
 
         elif kind == 'set_poll_hz':
             hz = max(POLL_HZ_MIN, min(POLL_HZ_MAX, float(obj['hz'])))
@@ -538,14 +698,75 @@ async def _on_client_msg(obj: dict, ws: WebSocket) -> None:
                 {'type': 'error', 'msg': f'unknown type {kind!r}'}))
 
     except Exception as exc:
-        logger.exception('WS command error: %s', kind)
-        await ws.send_text(json.dumps(
-            {'type': 'error', 'msg': str(exc)}))
+        # A client disconnect mid-request (e.g. the browser reconnecting while
+        # a fetchProtocolVersion/fetchUserConfigLoaded ext round-trip is in
+        # flight) surfaces as RuntimeError "Cannot call send once a close
+        # message has been sent." The ws is gone, so don't try to send an
+        # error back and don't log a full traceback for it.
+        if isinstance(exc, RuntimeError) and 'close message' in str(exc):
+            logger.debug('WS %s: client disconnected mid-request', kind)
+        else:
+            logger.exception('WS command error: %s', kind)
+            try:
+                await ws.send_text(json.dumps(
+                    {'type': 'error', 'msg': str(exc)}))
+            except Exception:
+                pass
 
 
 # --------------------------------------------------------------------------- #
 # Status Heartbeat
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# Raw CAN-frame monitor
+# --------------------------------------------------------------------------- #
+
+# Cap the in-memory buffer so a clientless period (no flush sink) can't grow
+# it without bound. The flusher drains it ~10 Hz.
+_CAN_FRAME_BUFFER_MAX = 1000
+
+
+async def _on_can_frame(direction: str, cmd_id: int, node_id: int,
+                        data: bytes, ts: float) -> None:
+    """Append a raw rx/tx frame to the monitor buffer (drained by the flusher)."""
+    buf = CAN_STATE.frame_buffer
+    buf.append({
+        'dir': direction,
+        'cmd': cmd_id,
+        'node': node_id,
+        'data': data.hex(),
+        'meaning': decode_frame_meaning(cmd_id, data, direction),
+        't': int(ts * 1000),
+    })
+    if len(buf) > _CAN_FRAME_BUFFER_MAX:
+        del buf[:len(buf) - _CAN_FRAME_BUFFER_MAX]
+
+
+async def _can_frame_flusher() -> None:
+    """Drain the raw-frame buffer and broadcast a batch ~10 Hz.
+
+    Batching keeps the WebSocket load bounded regardless of CAN frame rate
+    (telemetry + heartbeats can be 100+ frames/s). Drops the batch if no WS
+    clients are connected (the monitor pane isn't visible to anyone).
+    """
+    while True:
+        try:
+            await asyncio.sleep(0.1)
+            buf = CAN_STATE.frame_buffer
+            if not buf:
+                continue
+            if not CAN_STATE.hub.has_clients():
+                buf.clear()
+                continue
+            batch = buf[:]
+            buf.clear()
+            await CAN_STATE.hub.broadcast_can_frames(batch)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('can-frame flush error')
 
 
 async def _status_heartbeat() -> None:
@@ -565,6 +786,8 @@ async def _status_heartbeat() -> None:
                 frames_tx=transport.frames_tx if transport else 0,
                 bus_errors=transport.bus_errors if transport else 0,
                 poll_hz=service._poll_hz if service else 0,
+                device_alive=service.cache.heartbeat.is_alive if service else False,
+                queue_dropped=transport.queue_dropped if transport else 0,
             )
         except asyncio.CancelledError:
             raise

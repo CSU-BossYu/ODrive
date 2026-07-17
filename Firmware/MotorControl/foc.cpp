@@ -54,6 +54,10 @@ void FieldOrientedController::reset() {
     Ialpha_beta_measured_ = std::nullopt;
     Id_measured_ = 0.0f;
     Iq_measured_ = 0.0f;
+    final_v_alpha_ = 0.0f;
+    final_v_beta_ = 0.0f;
+    final_v_d_ = 0.0f;
+    final_v_q_ = 0.0f;
     power_ = 0.0f;
 }
 
@@ -171,6 +175,8 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
     }
 
     // Inverse park transform
+    final_v_d_ = mod_to_V * mod_d;
+    final_v_q_ = mod_to_V * mod_q;
     float pwm_phase = phase + phase_vel * ((float)(int32_t)(output_timestamp - ctrl_timestamp_) / (float)TIM_1_8_CLOCK_HZ);
     float c_p = our_arm_cos_f32(pwm_phase);
     float s_p = our_arm_sin_f32(pwm_phase);

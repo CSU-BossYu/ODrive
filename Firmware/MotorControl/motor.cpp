@@ -205,14 +205,11 @@ bool Motor::arm(PhaseControlLaw<3>* control_law) {
         return false;
     }
 
-    axis_->mechanical_brake_.release();
-
     CRITICAL_SECTION() {
         control_law_ = control_law;
 
         // Reset controller states, integrators, setpoints, etc.
         axis_->controller_.reset();
-        axis_->acim_estimator_.rotor_flux_ = 0.0f;
         if (control_law_) {
             control_law_->reset();
         }
@@ -321,9 +318,17 @@ bool Motor::apply_config() {
     // Motor-model constants are baked per motor model (production_config.h).
     // Force-overwrite on every boot so NVM never holds a stale/wrong value.
     // Load-dependent tuning (current_lim, gains) is NOT overwritten here.
-    config_.motor_type = static_cast<MotorType>(ODRIVE_PRODUCTION_MOTOR_TYPE);
-    config_.pole_pairs = ODRIVE_PRODUCTION_POLE_PAIRS;
-    config_.torque_constant = ODRIVE_PRODUCTION_TORQUE_CONSTANT;
+    if (config_.pole_pairs < 1 || config_.pole_pairs > 128) {
+        config_.pole_pairs = ODRIVE_PRODUCTION_POLE_PAIRS;
+    }
+    if (!std::isfinite(config_.flux_linkage) || config_.flux_linkage <= 0.0f) {
+        config_.torque_constant = ODRIVE_PRODUCTION_TORQUE_CONSTANT;
+        config_.flux_linkage = (2.0f / 3.0f) * config_.torque_constant /
+                               config_.pole_pairs;
+    } else {
+        config_.torque_constant = 1.5f * config_.pole_pairs *
+                                  config_.flux_linkage;
+    }
     config_.calibration_current = ODRIVE_PRODUCTION_MOTOR_CALIBRATION_CURRENT;
     config_.resistance_calib_max_voltage = ODRIVE_PRODUCTION_RESISTANCE_CALIB_MAX_VOLTAGE;
     config_.requested_current_range = ODRIVE_PRODUCTION_REQUESTED_CURRENT_RANGE;
@@ -392,11 +397,7 @@ float Motor::effective_current_lim() {
     // Configured limit
     float current_lim = config_.current_lim;
     // Hardware limit
-    if (axis_->motor_.config_.motor_type == Motor::MOTOR_TYPE_GIMBAL) {
-        current_lim = std::min(current_lim, 0.98f*one_by_sqrt3*vbus_voltage); //gimbal motor is voltage control
-    } else {
-        current_lim = std::min(current_lim, axis_->motor_.max_allowed_current_);
-    }
+    current_lim = std::min(current_lim, axis_->motor_.max_allowed_current_);
 
     // Apply thermistor current limiters
     current_lim = std::min(current_lim, motor_thermistor_.get_current_limit(config_.current_lim));
@@ -406,18 +407,10 @@ float Motor::effective_current_lim() {
     return effective_current_lim_;
 }
 
-//return the maximum available torque for the motor.
-//Note - for ACIM motors, available torque is allowed to be 0.
+// Return the maximum available torque for the motor.
 float Motor::max_available_torque() {
-    if (config_.motor_type == Motor::MOTOR_TYPE_ACIM) {
-        float max_torque = effective_current_lim_ * config_.torque_constant * axis_->acim_estimator_.rotor_flux_;
-        max_torque = std::clamp(max_torque, 0.0f, config_.torque_lim);
-        return max_torque;
-    } else {
-        float max_torque = effective_current_lim_ * config_.torque_constant;
-        max_torque = std::clamp(max_torque, 0.0f, config_.torque_lim);
-        return max_torque;
-    }
+    float max_torque = effective_current_lim_ * config_.torque_constant;
+    return std::clamp(max_torque, 0.0f, config_.torque_lim);
 }
 
 std::optional<float> Motor::phase_current_from_adcval(uint32_t ADCValue) {
@@ -518,17 +511,10 @@ bool Motor::measure_phase_inductance(float test_voltage) {
 // arguments and return the measured results without modifying any config values.
 bool Motor::run_calibration() {
     float R_calib_max_voltage = config_.resistance_calib_max_voltage;
-    if (config_.motor_type == MOTOR_TYPE_HIGH_CURRENT
-        || config_.motor_type == MOTOR_TYPE_ACIM) {
-        if (!measure_phase_resistance(config_.calibration_current, R_calib_max_voltage))
-            return false;
-        if (!measure_phase_inductance(R_calib_max_voltage))
-            return false;
-    } else if (config_.motor_type == MOTOR_TYPE_GIMBAL) {
-        // no calibration needed
-    } else {
+    if (!measure_phase_resistance(config_.calibration_current, R_calib_max_voltage))
         return false;
-    }
+    if (!measure_phase_inductance(R_calib_max_voltage))
+        return false;
 
     update_current_controller_gains();
     
@@ -551,39 +537,17 @@ void Motor::update(uint32_t timestamp) {
     // Load effective current limit
     float ilim = axis_->motor_.effective_current_lim_;
 
-    // Autoflux tracks old Iq (that may be 2-norm clamped last cycle) to make sure we are chasing a feasable current.
-    if ((axis_->motor_.config_.motor_type == Motor::MOTOR_TYPE_ACIM) && config_.acim_autoflux_enable) {
-        float abs_iq = std::abs(iq);
-        float gain = abs_iq > id ? config_.acim_autoflux_attack_gain : config_.acim_autoflux_decay_gain;
-        id += gain * (abs_iq - id) * current_meas_period;
-        id = std::clamp(id, config_.acim_autoflux_min_Id, 0.9f * ilim); // 10% space reserved for Iq
-    } else {
-        id = std::clamp(id, -ilim*0.99f, ilim*0.99f); // 1% space reserved for Iq to avoid numerical issues
-    }
+    id = std::clamp(id, -ilim*0.99f, ilim*0.99f); // 1% space reserved for Iq to avoid numerical issues
 
     // Convert requested torque to current
-    if (axis_->motor_.config_.motor_type == Motor::MOTOR_TYPE_ACIM) {
-        iq = torque / (axis_->motor_.config_.torque_constant * std::max(axis_->acim_estimator_.rotor_flux_, config_.acim_gain_min_flux));
-    } else {
-        iq = torque / axis_->motor_.config_.torque_constant;
-    }
+    iq = torque / axis_->motor_.config_.torque_constant;
 
     // 2-norm clamping where Id takes priority
     float iq_lim_sqr = SQ(ilim) - SQ(id);
     float Iq_lim = (iq_lim_sqr <= 0.0f) ? 0.0f : sqrt(iq_lim_sqr);
     iq = std::clamp(iq, -Iq_lim, Iq_lim);
 
-    if (axis_->motor_.config_.motor_type != Motor::MOTOR_TYPE_GIMBAL) {
-        Idq_setpoint_ = {id, iq};
-    }
-
-    // This update call is in bit a weird position because it depends on the
-    // Id,q setpoint but outputs the phase velocity that we depend on later
-    // in this function.
-    // A cleaner fix would be to take the feedforward calculation out of here
-    // and turn it into a separate component.
-    MEASURE_TIME(axis_->task_times_.acim_estimator_update)
-        axis_->acim_estimator_.update(timestamp);
+    Idq_setpoint_ = {id, iq};
 
     float vd = 0.0f;
     float vq = 0.0f;
@@ -608,15 +572,10 @@ void Motor::update(uint32_t timestamp) {
             return;
         }
 
-        vq += *phase_vel * (2.0f/3.0f) * (config_.torque_constant / config_.pole_pairs);
+        vq += *phase_vel * config_.flux_linkage;
     }
     
-    if (axis_->motor_.config_.motor_type == Motor::MOTOR_TYPE_GIMBAL) {
-        // reinterpret current as voltage
-        Vdq_setpoint_ = {vd + id, vq + iq};
-    } else {
-        Vdq_setpoint_ = {vd, vq};
-    }
+    Vdq_setpoint_ = {vd, vq};
 }
 
 
@@ -724,6 +683,16 @@ void Motor::pwm_update_cb(uint32_t output_timestamp) {
         control_law_status = control_law_->get_output(
             output_timestamp, pwm_timings, &i_bus);
     }
+
+    last_pwm_timings_valid_ = control_law_status == ERROR_NONE;
+    if (last_pwm_timings_valid_) {
+        last_pwm_timings_[0] = pwm_timings[0];
+        last_pwm_timings_[1] = pwm_timings[1];
+        last_pwm_timings_[2] = pwm_timings[2];
+    }
+
+    axis_->capture_calibration_electrical_sample(
+        output_timestamp, pwm_timings, control_law_status == ERROR_NONE);
 
     // Apply control law to calculate PWM duty cycles
     if (is_armed_ && control_law_status == ERROR_NONE) {

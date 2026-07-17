@@ -1,62 +1,9 @@
-// Shared TypeScript types for the FOC upper-computer frontend.
-//
-// These mirror the backend message schema in
-// F:\souce_code\foc_ui\backend\foc_backend\ws_hub.py and the channel table
-// in telemetry.py. If either changes, update both sides.
-
-export interface ChannelDef {
-  index: number
-  key: string
-  label: string
-  unit: string
-  scale: number
-  group: 'pos' | 'vel' | 'cur' | 'vol' | 'state'
-}
-
-export interface ErrorBitDef {
-  bit: number
-  name: string
-  fatal: boolean
-}
-
-// --- Inbound WS messages (backend -> browser) ---
-
-export interface TelemetryMsg {
-  type: 'telemetry'
-  t: number          // monotonic ms (backend clock)
-  seq: number
-  gap: number        // frames missing since previous
-  ch: Record<string, number>   // 16 channel values keyed by ChannelDef.key
-}
+// Shared TypeScript types for the CAN-only FOC upper-computer frontend.
 
 export interface LogMsg {
   type: 'log'
   t: number
   tag: string        // e.g. 'FOC', 'BOOT', 'CAN', '?'
-  text: string
-}
-
-export interface CliMsg {
-  type: 'cli'
-  t: number
-  line: string       // [CLI] tag already stripped; empty string when done=true
-  done: boolean
-}
-
-export interface StatusMsg {
-  type: 'status'
-  t: number
-  connected: boolean
-  port: string
-  frames: number
-  bad_crc: number
-  dropped: number
-}
-
-export interface CmdDoneMsg {
-  type: 'cmd_done'
-  is_error: boolean
-  lines: string[]
   text: string
 }
 
@@ -71,55 +18,8 @@ export interface ErrorMsg {
   msg: string
 }
 
-export type InboundMsg =
-  | TelemetryMsg | LogMsg | CliMsg | StatusMsg
-  | CmdDoneMsg | RecStateMsg | ErrorMsg
-
-// --- Outbound WS messages (browser -> backend) ---
-
-export interface CmdOut { type: 'cmd'; text: string }
-export interface RawCliOut { type: 'rawcli'; text: string }
-export interface SetOut { type: 'set'; key: string; value: number | [number, number] }
 export interface RecStartOut { type: 'rec'; action: 'start'; path?: string }
 export interface RecStopOut { type: 'rec'; action: 'stop' }
-
-export type OutboundMsg = CmdOut | RawCliOut | SetOut | RecStartOut | RecStopOut
-
-// --- Parsed state flags (channel 15), mirrors telemetry.py StateFlags ---
-
-export interface StateFlags {
-  running: boolean
-  control_mode: number        // 0=current, 1=velocity, 2=position
-  current_limited: boolean
-  voltage_limited: boolean
-  overspeed_error: boolean
-  trajectory_done: boolean
-}
-
-export function decodeStateFlags(raw: number): StateFlags {
-  // NOTE: firmware also writes overspeed_error to bit 8 (duplicate of bit 6);
-  // we only read bit 6 to match the documented protocol.
-  return {
-    running: !!(raw & (1 << 0)),
-    control_mode: (raw >> 1) & 0x07,
-    current_limited: !!(raw & (1 << 4)),
-    voltage_limited: !!(raw & (1 << 5)),
-    overspeed_error: !!(raw & (1 << 6)),
-    trajectory_done: !!(raw & (1 << 7)),
-  }
-}
-
-export const MODE_NAMES: Record<number, string> = {
-  0: 'current',
-  1: 'velocity',
-  2: 'position',
-}
-
-// ===================================================================
-// ODrive CAN types  (added for ?mode=can workflow)
-// ===================================================================
-
-export type UIMode = 'serial' | 'can'
 
 export interface ODriveChannelDef {
   index: number
@@ -138,7 +38,6 @@ export const AXIS_STATES: Record<number, string> = {
   7: 'ENCODER_OFFSET_CALIBRATION',
   8: 'CLOSED_LOOP_CONTROL',
   9: 'LOCKIN_SPIN',
-  11: 'HOMING',
 }
 
 export const CONTROL_MODES: Record<number, string> = {
@@ -172,12 +71,9 @@ export const AXIS_ERROR_BITS: ODriveErrorBitDef[] = [
   { mask: 0x00100, name: 'ENCODER_FAILED',          category: 'axis' },
   { mask: 0x00200, name: 'CONTROLLER_FAILED',       category: 'axis' },
   { mask: 0x00800, name: 'WATCHDOG_TIMER_EXPIRED',  category: 'axis' },
-  { mask: 0x01000, name: 'MIN_ENDSTOP_PRESSED',     category: 'axis' },
-  { mask: 0x02000, name: 'MAX_ENDSTOP_PRESSED',     category: 'axis' },
-  { mask: 0x04000, name: 'ESTOP_REQUESTED',         category: 'axis' },
-  { mask: 0x20000, name: 'HOMING_WITHOUT_ENDSTOP',  category: 'axis' },
-  { mask: 0x40000, name: 'OVER_TEMP',               category: 'axis' },
-  { mask: 0x80000, name: 'UNKNOWN_POSITION',        category: 'axis' },
+  { mask: 0x01000, name: 'ESTOP_REQUESTED',         category: 'axis' },
+  { mask: 0x02000, name: 'OVER_TEMP',               category: 'axis' },
+  { mask: 0x04000, name: 'UNKNOWN_POSITION',        category: 'axis' },
 ]
 
 export const MOTOR_ERROR_BITS: ODriveErrorBitDef[] = [
@@ -249,6 +145,21 @@ export interface ODriveTelemetryMsg {
   ch: Record<string, number>
 }
 
+export interface CanFrameDef {
+  dir: string   // 'rx' (firmware -> host) | 'tx' (host -> firmware)
+  cmd: number   // 5-bit command ID
+  node: number  // 6-bit node ID
+  data: string  // hex string, up to 8 bytes
+  meaning: string  // one-line decoded payload (may be '')
+  t: number     // monotonic ms
+}
+
+export interface CanFramesMsg {
+  type: 'can_frames'
+  t: number
+  frames: CanFrameDef[]
+}
+
 export interface ODriveHeartbeatMsg {
   type: 'heartbeat'
   t: number
@@ -278,6 +189,8 @@ export interface ODriveStatusMsg {
   frames_tx: number
   bus_errors: number
   poll_hz: number
+  device_alive: boolean
+  queue_dropped: number
 }
 
 export interface ODriveExtRespMsg {
@@ -300,12 +213,92 @@ export interface ODriveControlConfigMsg {
   config: Record<string, number | null>
 }
 
+export interface CalibrationSessionSnapshot {
+  ok: boolean
+  error?: string
+  schema_version: number
+  session_id: number
+  state: number
+  state_name: string
+  stage: number
+  failure_code: number
+  flags: number
+  transition_count: number
+  request_options: number
+  progress_permille: number
+  buffered_records: number
+  dropped_records: number
+  buffer_high_watermark: number
+  buffer_capacity: number
+  transport_frames_sent: number
+  transport_queue_retries: number
+  transport_disconnect_waits: number
+}
+
+export interface CalibrationCandidateSnapshot {
+  ok: boolean
+  error?: string
+  [key: string]: number | boolean | string | undefined
+}
+
+export interface ODriveCalibrationSnapshotMsg {
+  type: 'calibration_snapshot'
+  ok: boolean
+  error?: string
+  session: CalibrationSessionSnapshot
+  candidate: CalibrationCandidateSnapshot | null
+  start?: Record<string, number | string>
+  abort?: Record<string, number | string>
+}
+
 export interface ODrivePongMsg { type: 'pong' }
+
+export interface ODriveFrictionStartedMsg { type: 'friction_started' }
+export interface ODriveFrictionProgressMsg {
+  type: 'friction_progress'
+  progress: number
+  stage: string
+}
+export interface ODriveFrictionResultMsg {
+  type: 'friction_result'
+  ok: boolean
+  error?: string | null
+  breakaway_pos: number
+  breakaway_neg: number
+  static_pos: number
+  static_neg: number
+  coulomb_pos: number
+  coulomb_neg: number
+  max_torque: number
+  slew_rate: number
+}
+
+export interface ODriveVernierStartedMsg { type: 'vernier_started' }
+export interface ODriveVernierProgressMsg {
+  type: 'vernier_progress'
+  progress: number
+  stage: string
+}
+export interface ODriveVernierResultMsg {
+  type: 'vernier_result'
+  ok: boolean
+  error?: string | null
+  captured: number
+  fit_valid: boolean
+  fitted_main: number
+  fitted_aux: number
+  score: number
+  worst: number
+}
 
 export type ODriveInboundMsg =
   | ODriveTelemetryMsg | ODriveHeartbeatMsg | ODriveStatusMsg
   | ODriveExtRespMsg | LogMsg | ErrorMsg | RecStateMsg
   | ODriveOverspeedSnapshotMsg | ODriveControlConfigMsg | ODrivePongMsg
+  | ODriveFrictionStartedMsg | ODriveFrictionProgressMsg | ODriveFrictionResultMsg
+  | ODriveVernierStartedMsg | ODriveVernierProgressMsg | ODriveVernierResultMsg
+  | ODriveCalibrationSnapshotMsg
+  | CanFramesMsg
 
 // --- ODrive Outbound WS messages (browser -> backend) ---
 
@@ -348,11 +341,50 @@ export interface SetControlConfigOut {
   is_float?: boolean
 }
 export interface SetServoModeOut { type: 'set_servo_mode'; mode: number }
+export interface VernierCalibOut {
+  type: 'vernier_calib'
+  item: number
+  value?: number
+  is_float?: boolean
+  timeout?: number
+}
+export interface FrictionCalibrateOut {
+  type: 'friction_calibrate'
+  max_torque?: number
+  vel_threshold?: number
+  step?: number
+  step_ms?: number
+}
+export interface FrictionCalibrateCancelOut { type: 'friction_calibrate_cancel' }
+export interface VernierAutoCalibrateOut {
+  type: 'vernier_auto_calibrate'
+  point_count?: number
+  sweep_turns?: number
+  search_radius?: number
+  settle_vel?: number
+  settle_timeout_s?: number
+  settle_pos_tol?: number
+  ramp_vel?: number
+  sweep_cycles?: number
+}
+export interface VernierAutoCancelOut { type: 'vernier_auto_cancel' }
 export interface PingOut { type: 'ping' }
+export interface CalibrationStartOut {
+  type: 'calibration_start'
+  geometry_turns?: number
+}
+export interface CalibrationStatusOut {
+  type: 'calibration_status'
+  include_candidate?: boolean
+}
+export interface CalibrationAbortOut { type: 'calibration_abort' }
 
 export type ODriveOutboundMsg =
   | SetStateOut | SetModeOut | SetPosOut | SetVelOut | SetTorqueOut
   | MitOut | SetGainOut | SetLimitsOut | ClearErrorsOut | EstopOut
   | RebootOut | ExtCmdOut | SetPollHzOut | RecStartOut | RecStopOut
   | GetOverspeedSnapshotOut | GetControlConfigOut | SetControlConfigOut
-  | SetServoModeOut | PingOut
+  | SetServoModeOut | VernierCalibOut
+  | FrictionCalibrateOut | FrictionCalibrateCancelOut
+  | VernierAutoCalibrateOut | VernierAutoCancelOut | PingOut
+  | CalibrationStartOut | CalibrationStatusOut | CalibrationAbortOut

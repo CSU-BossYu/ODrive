@@ -24,7 +24,7 @@ static uint32_t spi_prescaler_from_divisor(uint16_t divisor) {
     }
 }
 
-bool Encoder::apply_config(ODriveIntf::MotorIntf::MotorType motor_type) {
+bool Encoder::apply_config() {
     config_.parent = this;
 
     // Encoder/vernier model constants are baked per motor model
@@ -49,31 +49,21 @@ bool Encoder::apply_config(ODriveIntf::MotorIntf::MotorType motor_type) {
 
     update_pll_gains();
 
-    if (config_.pre_calibrated) {
-        if (motor_type == Motor::MOTOR_TYPE_ACIM)
-            is_ready_ = true;
-    }
-
     return true;
 }
 
 void Encoder::setup() {
     mode_ = config_.mode;
 
-    if(mode_ & MODE_FLAG_ABS){
-        abs_spi_cs_pin_init();
+    abs_spi_cs_pin_init();
+    Mt6826sSpi::Config mt6826s_config = make_mt6826s_spi_config();
+    mt6826s_spi_.init(spi_arbiter_, abs_spi_cs_gpio_, mt6826s_config);
 
-        if (mode_ == MODE_SPI_ABS_MT6826S || mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
-            Mt6826sSpi::Config mt6826s_config = make_mt6826s_spi_config();
-            mt6826s_spi_.init(spi_arbiter_, abs_spi_cs_gpio_, mt6826s_config);
-
-            if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
-                abs_spi_aux_cs_pin_init();
-                mt6826s_aux_spi_.init(spi_arbiter_, abs_spi_aux_cs_gpio_, mt6826s_config);
-                mt6826s_spi_pair_.init(&mt6826s_spi_, &mt6826s_aux_spi_);
-                vernier_resolver_.init(make_vernier_resolver_config());
-            }
-        }
+    if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
+        abs_spi_aux_cs_pin_init();
+        mt6826s_aux_spi_.init(spi_arbiter_, abs_spi_aux_cs_gpio_, mt6826s_config);
+        mt6826s_spi_pair_.init(&mt6826s_spi_, &mt6826s_aux_spi_);
+        vernier_resolver_.init(make_vernier_resolver_config());
     }
 }
 
@@ -99,11 +89,8 @@ void Encoder::update_pll_gains() {
 }
 
 void Encoder::check_pre_calibrated() {
-    // TODO: restoring config from python backup is fragile here (ACIM motor type must be set first)
-    if (axis_->motor_.config_.motor_type != Motor::MOTOR_TYPE_ACIM) {
-        if (!is_ready_)
-            config_.pre_calibrated = false;
-    }
+    if (!is_ready_)
+        config_.pre_calibrated = false;
 }
 
 // Function that sets the current encoder count to a desired 32-bit value.
@@ -141,6 +128,7 @@ void Encoder::set_circular_count(int32_t count, bool update_offset) {
 // and the encoder state 0.
 bool Encoder::run_offset_calibration() {
     const float start_lock_duration = 1.0f;
+    calibration_estimated_pole_pairs_ = 0;
 
     // We use shadow_count_ to do the calibration, but the offset is used by count_in_cpr_
     // Therefore we have to sync them for calibration
@@ -157,22 +145,20 @@ bool Encoder::run_offset_calibration() {
         axis_->open_loop_controller_.max_current_ramp_ = max_current_ramp;
         axis_->open_loop_controller_.max_voltage_ramp_ = max_current_ramp;
         axis_->open_loop_controller_.max_phase_vel_ramp_ = INFINITY;
-        axis_->open_loop_controller_.target_current_ = axis_->motor_.config_.motor_type != Motor::MOTOR_TYPE_GIMBAL ? axis_->motor_.config_.calibration_current : 0.0f;
-        axis_->open_loop_controller_.target_voltage_ = axis_->motor_.config_.motor_type != Motor::MOTOR_TYPE_GIMBAL ? 0.0f : axis_->motor_.config_.calibration_current;
+        axis_->open_loop_controller_.target_current_ = axis_->motor_.config_.calibration_current;
+        axis_->open_loop_controller_.target_voltage_ = 0.0f;
         axis_->open_loop_controller_.target_vel_ = 0.0f;
         axis_->open_loop_controller_.total_distance_ = 0.0f;
         axis_->open_loop_controller_.phase_ = axis_->open_loop_controller_.initial_phase_ = wrap_pm_pi(0 - config_.calib_scan_distance / 2.0f);
 
-        axis_->motor_.current_control_.enable_current_control_src_ = (axis_->motor_.config_.motor_type != Motor::MOTOR_TYPE_GIMBAL);
+        axis_->motor_.current_control_.enable_current_control_src_ = true;
         axis_->motor_.current_control_.Idq_setpoint_src_.connect_to(&axis_->open_loop_controller_.Idq_setpoint_);
         axis_->motor_.current_control_.Vdq_setpoint_src_.connect_to(&axis_->open_loop_controller_.Vdq_setpoint_);
         
         axis_->motor_.current_control_.phase_src_.connect_to(&axis_->open_loop_controller_.phase_);
-        axis_->acim_estimator_.rotor_phase_src_.connect_to(&axis_->open_loop_controller_.phase_);
 
         axis_->motor_.phase_vel_src_.connect_to(&axis_->open_loop_controller_.phase_vel_);
         axis_->motor_.current_control_.phase_vel_src_.connect_to(&axis_->open_loop_controller_.phase_vel_);
-        axis_->acim_estimator_.rotor_phase_vel_src_.connect_to(&axis_->open_loop_controller_.phase_vel_);
     }
     axis_->wait_for_control_iteration();
 
@@ -225,15 +211,22 @@ bool Encoder::run_offset_calibration() {
         return false;
     }
 
-    // Check CPR
-    float elec_rad_per_enc = axis_->motor_.config_.pole_pairs * 2 * M_PI * (1.0f / (float)(config_.cpr));
-    float expected_encoder_delta = config_.calib_scan_distance / elec_rad_per_enc;
+    // Identify pole pairs from commanded electrical travel and measured motor
+    // encoder travel. Keep the integer only when the scan is close enough to
+    // an integer model; this replaces a check against a preconfigured value.
     float calib_scan_response = std::abs(shadow_count_ - init_enc_val);
-    if (std::abs(calib_scan_response - expected_encoder_delta) / expected_encoder_delta > config_.calib_range) {
+    const float estimated_pole_pairs = config_.calib_scan_distance * config_.cpr /
+        (2.0f * M_PI * calib_scan_response);
+    const int32_t integer_pole_pairs = static_cast<int32_t>(
+        std::lround(estimated_pole_pairs));
+    if (integer_pole_pairs < 1 || integer_pole_pairs > 128 ||
+        std::abs(estimated_pole_pairs - integer_pole_pairs) /
+            integer_pole_pairs > config_.calib_range) {
         set_error(ERROR_CPR_POLEPAIRS_MISMATCH);
         axis_->motor_.disarm();
         return false;
     }
+    calibration_estimated_pole_pairs_ = integer_pole_pairs;
 
     CRITICAL_SECTION() {
         axis_->open_loop_controller_.target_vel_ = -config_.calib_scan_omega;
@@ -465,6 +458,80 @@ float Encoder::vernier_output_velocity_from_main(float main_velocity_turns) cons
            / vernier_motor_turns_per_output_turn();
 }
 
+float Encoder::vernier_geometry_velocity_scale(float raw_position_turns) const {
+    if (!config_.vernier_geometry_correction_enabled ||
+        !std::isfinite(config_.vernier_effective_ratio_scale) ||
+        std::abs(config_.vernier_effective_ratio_scale) < 1.0e-6f) {
+        return 1.0f;
+    }
+
+    // Position is corrected as (raw + C(raw, direction)) / scale. Keep the
+    // published velocity in the same coordinate by applying its derivative:
+    // d(position)/dt = raw_velocity * (1 + dC/draw) / scale.
+    const float phase = fmodf_pos(raw_position_turns, 1.0f);
+    const float bin_position = phase * kVernierGeometryCorrectionBins;
+    const size_t bin0 = static_cast<size_t>(bin_position) %
+                        kVernierGeometryCorrectionBins;
+    const size_t bin1 = (bin0 + 1) % kVernierGeometryCorrectionBins;
+    const float common_slope =
+        (config_.vernier_common_correction[bin1] -
+         config_.vernier_common_correction[bin0]) *
+        kVernierGeometryCorrectionBins;
+    const float directional_slope =
+        (config_.vernier_direction_correction[bin1] -
+         config_.vernier_direction_correction[bin0]) *
+        kVernierGeometryCorrectionBins;
+    const float correction_derivative = common_slope +
+        static_cast<float>(vernier_geometry_direction_) * directional_slope;
+    if (!std::isfinite(correction_derivative)) {
+        return 1.0f / config_.vernier_effective_ratio_scale;
+    }
+
+    // Old configurations may not have passed the derivative validation used
+    // by the complete calibration flow. Never allow a malformed LUT to reverse
+    // or explosively amplify the velocity estimate.
+    const float local_position_slope = std::clamp(
+        1.0f + correction_derivative, 0.25f, 4.0f);
+    return local_position_slope / config_.vernier_effective_ratio_scale;
+}
+
+float Encoder::apply_vernier_geometry_compensation(float raw_position_turns,
+                                                    float raw_velocity_turns) {
+    if (!config_.vernier_geometry_correction_enabled) {
+        return raw_position_turns;
+    }
+
+    const float scale = config_.vernier_effective_ratio_scale;
+    if (!std::isfinite(scale) || std::abs(scale) < 1.0e-6f) {
+        return raw_position_turns;
+    }
+
+    // Preserve the most recent scan direction through zero speed. Switching the
+    // directional LUT exactly at zero would create an artificial position step.
+    constexpr float kDirectionLatchSpeed = 1.0e-4f;
+    if (raw_velocity_turns > kDirectionLatchSpeed) {
+        vernier_geometry_direction_ = 1;
+    } else if (raw_velocity_turns < -kDirectionLatchSpeed) {
+        vernier_geometry_direction_ = -1;
+    }
+
+    const float phase = fmodf_pos(raw_position_turns, 1.0f);
+    const float bin_position = phase * kVernierGeometryCorrectionBins;
+    const size_t bin0 = static_cast<size_t>(bin_position) %
+                        kVernierGeometryCorrectionBins;
+    const size_t bin1 = (bin0 + 1) % kVernierGeometryCorrectionBins;
+    const float fraction = bin_position - floorf(bin_position);
+    const float common = config_.vernier_common_correction[bin0] +
+        fraction * (config_.vernier_common_correction[bin1] -
+                    config_.vernier_common_correction[bin0]);
+    const float directional = config_.vernier_direction_correction[bin0] +
+        fraction * (config_.vernier_direction_correction[bin1] -
+                    config_.vernier_direction_correction[bin0]);
+    const float corrected_observed = raw_position_turns + common +
+        static_cast<float>(vernier_geometry_direction_) * directional;
+    return corrected_observed / scale;
+}
+
 float Encoder::vernier_main_position_from_output(float output_position_turns) const {
     return vernier_output_direction_sign()
            * output_position_turns
@@ -540,8 +607,10 @@ void Encoder::reset_vernier_output_velocity_estimate() {
         vernier_main_continuous_pos_ = result.main_unwrapped;
         vernier_last_main_phase_corr_ = result.main_phase_corr;
         vernier_main_continuous_valid_ = true;
-        vernier_output_pos_estimate_ =
+        const float raw_output_position =
             vernier_output_position_from_main(vernier_main_continuous_pos_);
+        vernier_output_pos_estimate_ =
+            apply_vernier_geometry_compensation(raw_output_position, 0.0f);
         pos_estimate_ = vernier_output_pos_estimate_;
         pos_circular_ = fmodf_pos(vernier_output_pos_estimate_,
                                   axis_->controller_.config_.circular_setpoint_range);
@@ -552,6 +621,7 @@ void Encoder::reset_vernier_output_velocity_estimate() {
     }
 
     vernier_output_vel_estimate_ = 0.0f;
+    vernier_geometry_direction_ = 0;
     vernier_pair_vel_estimate_ = 0.0f;
     vernier_last_aux_correction_ = 0.0f;
     vernier_pair_vel_estimate_valid_ = result.valid;
@@ -589,8 +659,10 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
         vernier_main_continuous_pos_ = result.main_unwrapped;
         vernier_last_main_phase_corr_ = result.main_phase_corr;
         vernier_main_continuous_valid_ = true;
-        vernier_output_pos_estimate_ =
+        const float raw_output_position =
             vernier_output_position_from_main(vernier_main_continuous_pos_);
+        vernier_output_pos_estimate_ =
+            apply_vernier_geometry_compensation(raw_output_position, 0.0f);
         vernier_output_vel_estimate_ = 0.0f;
         vernier_output_estimate_valid_ = true;
         vernier_output_pair_sequence_ = pair_sequence;
@@ -600,14 +672,23 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
             VernierResolver::wrap_pm_half(main_phase_corr - vernier_last_main_phase_corr_);
         vernier_main_continuous_pos_ += delta_main;
         vernier_last_main_phase_corr_ = main_phase_corr;
-        vernier_output_pos_estimate_ =
+        const float raw_output_position =
             vernier_output_position_from_main(vernier_main_continuous_pos_);
+        const float raw_output_velocity =
+            vernier_output_velocity_from_main(
+                normalized_main_velocity_from_raw_velocity(
+                    motor_vel_estimate_turns));
+        vernier_output_pos_estimate_ = apply_vernier_geometry_compensation(
+            raw_output_position, raw_output_velocity);
         vernier_output_estimate_valid_ = true;
     }
 
+    const float raw_output_position =
+        vernier_output_position_from_main(vernier_main_continuous_pos_);
     vernier_output_vel_estimate_ =
         vernier_output_velocity_from_main(
-            normalized_main_velocity_from_raw_velocity(motor_vel_estimate_turns));
+            normalized_main_velocity_from_raw_velocity(motor_vel_estimate_turns))
+        * vernier_geometry_velocity_scale(raw_output_position);
     vernier_last_aux_correction_ = 0.0f;
 
     if (pair_sequence != vernier_output_pair_sequence_) {
@@ -635,6 +716,8 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
     VernierResolver::Result resolver_result = vernier_result_;
     out->pair_count = mt6826s_pair_sequence_;
     out->pair_valid = mt6826s_pair_valid_;
+    out->main_sample_age_cycles = 0;
+    out->max_main_sample_age_cycles = 0;
     cpu_exit_critical(prim);
 
     Mt6826sSpi::Sample latest_main = {};
@@ -666,6 +749,8 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
     out->output_pair_sequence = vernier_output_pair_sequence_;
     out->output_pair_vel_estimate = vernier_pair_vel_estimate_;
     out->output_last_aux_correction = vernier_last_aux_correction_;
+    out->pair_transaction_cycles = 0;
+    out->max_pair_transaction_cycles = 0;
     out->main_spi_dma_error_count = mt6826s_spi_.spi_dma_error_count();
     out->main_crc_error_count = mt6826s_spi_.crc_error_count();
     out->main_fixed_bit_error_count = mt6826s_spi_.fixed_bit_error_count();
@@ -683,6 +768,252 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
         + out->aux_fixed_bit_error_count
         + out->aux_spi_dma_error_count;
     out->pair_error_count = mt6826s_spi_pair_.pair_error_count();
+}
+
+static float centered_vernier_offset(float value) {
+    value = VernierResolver::wrap01(value);
+    return value >= 0.5f ? value - 1.0f : value;
+}
+
+static float circular_vernier_distance(float a, float b) {
+    return std::abs(VernierResolver::wrap_pm_half(a - b));
+}
+
+void Encoder::reset_vernier_calibration() {
+    vernier_calibration_point_count_ = 0;
+    vernier_calibration_fit_valid_ = false;
+    vernier_calibration_fitted_main_offset_ = config_.vernier_main_offset;
+    vernier_calibration_fitted_aux_offset_ = config_.vernier_aux_offset;
+    vernier_calibration_fit_score_ = 0.0f;
+    vernier_calibration_worst_residual_ = 0.0f;
+}
+
+bool Encoder::capture_vernier_calibration_point() {
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER ||
+        vernier_calibration_point_count_ >= kVernierCalibrationMaxPoints) {
+        return false;
+    }
+
+    Mt6826sSpi::Sample main_sample = {};
+    Mt6826sSpi::Sample aux_sample = {};
+    bool pair_valid = false;
+    uint32_t prim = cpu_enter_critical();
+    main_sample = mt6826s_main_sample_;
+    aux_sample = mt6826s_aux_sample_;
+    pair_valid = mt6826s_pair_valid_;
+    cpu_exit_critical(prim);
+
+    if (!pair_valid || !main_sample.valid || !aux_sample.valid) {
+        return false;
+    }
+
+    VernierCalibrationPoint& point =
+        vernier_calibration_points_[vernier_calibration_point_count_++];
+    point.main_angle = main_sample.angle;
+    point.aux_angle = aux_sample.angle;
+    vernier_calibration_fit_valid_ = false;
+    return true;
+}
+
+static float normalize_vernier_calib_angle(uint16_t angle, bool reversed, uint16_t cpr) {
+    float phase = static_cast<float>(angle % cpr) / static_cast<float>(cpr);
+    if (reversed) {
+        phase = VernierResolver::wrap01(-phase);
+    }
+    return phase;
+}
+
+static float vernier_calibration_residual(const Encoder::VernierCalibrationPoint& point,
+                                          const Encoder::Config_t& config,
+                                          float main_offset,
+                                          float aux_offset) {
+    const float main_phase =
+        normalize_vernier_calib_angle(point.main_angle,
+                                      config.vernier_main_reversed,
+                                      static_cast<uint16_t>(config.cpr));
+    const float aux_phase =
+        normalize_vernier_calib_angle(point.aux_angle,
+                                      config.vernier_aux_reversed,
+                                      static_cast<uint16_t>(config.cpr));
+    const float main_phase_corr = VernierResolver::wrap01(main_phase - main_offset);
+    const float aux_phase_corr = VernierResolver::wrap01(aux_phase - aux_offset);
+    const float ratio_delta = config.vernier_aux_ratio - config.vernier_main_ratio;
+    const float coarse_output_phase =
+        VernierResolver::wrap01(
+            VernierResolver::wrap_pm_half(aux_phase_corr - main_phase_corr)
+            / ratio_delta);
+    const float predicted_main_phase =
+        VernierResolver::wrap01(config.vernier_main_ratio * coarse_output_phase);
+    return VernierResolver::wrap_pm_half(main_phase_corr - predicted_main_phase);
+}
+
+static float vernier_calibration_objective(const Encoder::VernierCalibrationPoint* points,
+                                           uint32_t point_count,
+                                           const Encoder::Config_t& config,
+                                           float main_offset,
+                                           float aux_offset,
+                                           float* worst_residual) {
+    float sum_sq = 0.0f;
+    float worst = 0.0f;
+    for (uint32_t i = 0; i < point_count; ++i) {
+        const float residual =
+            vernier_calibration_residual(points[i], config, main_offset, aux_offset);
+        sum_sq += residual * residual;
+        worst = std::max(worst, std::abs(residual));
+    }
+    if (worst_residual) {
+        *worst_residual = worst;
+    }
+    return sqrtf(sum_sq / static_cast<float>(point_count));
+}
+
+static float vernier_calibration_phase_span(const Encoder::VernierCalibrationPoint* points,
+                                            uint32_t point_count,
+                                            const Encoder::Config_t& config) {
+    float span = 0.0f;
+    for (uint32_t i = 0; i < point_count; ++i) {
+        const float main_i =
+            normalize_vernier_calib_angle(points[i].main_angle,
+                                          config.vernier_main_reversed,
+                                          static_cast<uint16_t>(config.cpr));
+        const float aux_i =
+            normalize_vernier_calib_angle(points[i].aux_angle,
+                                          config.vernier_aux_reversed,
+                                          static_cast<uint16_t>(config.cpr));
+        for (uint32_t j = i + 1; j < point_count; ++j) {
+            const float main_j =
+                normalize_vernier_calib_angle(points[j].main_angle,
+                                              config.vernier_main_reversed,
+                                              static_cast<uint16_t>(config.cpr));
+            const float aux_j =
+                normalize_vernier_calib_angle(points[j].aux_angle,
+                                              config.vernier_aux_reversed,
+                                              static_cast<uint16_t>(config.cpr));
+            span = std::max(span, std::abs(VernierResolver::wrap_pm_half(main_j - main_i)));
+            span = std::max(span, std::abs(VernierResolver::wrap_pm_half(aux_j - aux_i)));
+        }
+    }
+    return span;
+}
+
+static bool vernier_calibration_score_is_better(float score,
+                                                float distance,
+                                                float best_score,
+                                                float best_distance,
+                                                bool has_best) {
+    if (!has_best) {
+        return true;
+    }
+    if (score < best_score - 1.0e-9f) {
+        return true;
+    }
+    return std::abs(score - best_score) <= 1.0e-9f && distance < best_distance;
+}
+
+bool Encoder::fit_vernier_aux_offset(float search_radius) {
+    if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER ||
+        vernier_calibration_point_count_ < 2 ||
+        std::abs(config_.vernier_aux_ratio - config_.vernier_main_ratio) < 1.0e-6f) {
+        return false;
+    }
+
+    if (!std::isfinite(search_radius) || search_radius <= 0.0f) {
+        search_radius = 0.05f;
+    }
+    search_radius = std::min(std::max(search_radius, 0.001f), 0.5f);
+
+    const float min_phase_span =
+        std::max(8.0f / static_cast<float>(config_.cpr), 1.0e-5f);
+    if (vernier_calibration_phase_span(vernier_calibration_points_,
+                                       vernier_calibration_point_count_,
+                                       config_) < min_phase_span) {
+        return false;
+    }
+
+    const float main_offset = config_.vernier_main_offset;
+    const float aux_center = config_.vernier_aux_offset;
+    constexpr uint32_t kGridSteps = 1024;
+
+    bool has_best = false;
+    float best_aux = aux_center;
+    float best_score = 0.0f;
+    float best_distance = 0.0f;
+    float best_worst = 0.0f;
+
+    for (uint32_t i = 0; i < kGridSteps; ++i) {
+        const float t = (kGridSteps <= 1) ? 0.0f
+            : static_cast<float>(i) / static_cast<float>(kGridSteps - 1);
+        const float aux_offset =
+            VernierResolver::wrap01(aux_center - search_radius + 2.0f * search_radius * t);
+        float worst = 0.0f;
+        const float score =
+            vernier_calibration_objective(vernier_calibration_points_,
+                                          vernier_calibration_point_count_,
+                                          config_,
+                                          main_offset,
+                                          aux_offset,
+                                          &worst);
+        const float distance = circular_vernier_distance(aux_offset, aux_center);
+        if (vernier_calibration_score_is_better(score, distance,
+                                                best_score, best_distance,
+                                                has_best)) {
+            best_aux = aux_offset;
+            best_score = score;
+            best_distance = distance;
+            best_worst = worst;
+            has_best = true;
+        }
+    }
+
+    float step = 2.0f * search_radius / static_cast<float>(kGridSteps - 1);
+    for (uint32_t iter = 0; iter < 10; ++iter) {
+        bool improved = false;
+        for (int dir_i = 0; dir_i < 2; ++dir_i) {
+            const float dir = dir_i == 0 ? -1.0f : 1.0f;
+            const float candidate = VernierResolver::wrap01(best_aux + dir * step);
+            const float distance = circular_vernier_distance(candidate, aux_center);
+            if (distance > search_radius + 1.0e-6f) {
+                continue;
+            }
+            float worst = 0.0f;
+            const float score =
+                vernier_calibration_objective(vernier_calibration_points_,
+                                              vernier_calibration_point_count_,
+                                              config_,
+                                              main_offset,
+                                              candidate,
+                                              &worst);
+            if (vernier_calibration_score_is_better(score, distance,
+                                                    best_score, best_distance,
+                                                    true)) {
+                best_aux = candidate;
+                best_score = score;
+                best_distance = distance;
+                best_worst = worst;
+                improved = true;
+            }
+        }
+        if (!improved) {
+            step *= 0.25f;
+        }
+    }
+
+    vernier_calibration_fitted_main_offset_ = centered_vernier_offset(main_offset);
+    vernier_calibration_fitted_aux_offset_ = centered_vernier_offset(best_aux);
+    vernier_calibration_fit_score_ = best_score;
+    vernier_calibration_worst_residual_ = best_worst;
+    vernier_calibration_fit_valid_ = true;
+    return true;
+}
+
+bool Encoder::apply_vernier_calibration_fit() {
+    if (!vernier_calibration_fit_valid_) {
+        return false;
+    }
+
+    config_.set_vernier_aux_offset(vernier_calibration_fitted_aux_offset_);
+    vernier_calibration_fit_valid_ = false;
+    return true;
 }
 
 bool Encoder::update() {
@@ -723,8 +1054,7 @@ bool Encoder::update() {
     count_in_cpr_ += delta_enc;
     count_in_cpr_ = mod(count_in_cpr_, config_.cpr);
 
-    if(mode_ & MODE_FLAG_ABS)
-        count_in_cpr_ = pos_abs_latched;
+    count_in_cpr_ = pos_abs_latched;
 
     // Memory for pos_circular
     float pos_cpr_counts_last = pos_cpr_counts_;
@@ -800,8 +1130,11 @@ bool Encoder::update() {
     float ph = elec_rad_per_enc * (interpolated_enc - config_.phase_offset_float);
     
     if (is_ready_) {
-        phase_ = wrap_pm_pi(ph) * config_.direction;
-        phase_vel_ = (2*M_PI) * motor_vel_estimate_turns * axis_->motor_.config_.pole_pairs * config_.direction;
+        const float electrical_velocity = (2*M_PI) * motor_vel_estimate_turns *
+            axis_->motor_.config_.pole_pairs * config_.direction;
+        phase_ = wrap_pm_pi(wrap_pm_pi(ph) * config_.direction +
+                            electrical_velocity * config_.electrical_phase_delay);
+        phase_vel_ = electrical_velocity;
     }
 
     if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {

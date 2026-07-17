@@ -11,9 +11,6 @@ set(CMAKE_EXECUTABLE_SUFFIX ".elf")
 
 set(BOARD_VERSION "v3.6-56V" CACHE STRING "ODrive board version")
 set_property(CACHE BOARD_VERSION PROPERTY STRINGS
-    v3.1 v3.2 v3.3
-    v3.4-24V v3.4-48V
-    v3.5-24V v3.5-48V
     v3.6-24V v3.6-56V
 )
 
@@ -31,9 +28,6 @@ file(MAKE_DIRECTORY "${AUTOGEN_DIR}")
 set(ROOT_INTERFACE ODrive3)
 set(VERSION_C "${AUTOGEN_DIR}/version.c")
 set(AUTOGEN_INTERFACES "${AUTOGEN_DIR}/interfaces.hpp")
-set(AUTOGEN_FUNCTION_STUBS "${AUTOGEN_DIR}/function_stubs.hpp")
-set(AUTOGEN_ENDPOINTS "${AUTOGEN_DIR}/endpoints.hpp")
-set(AUTOGEN_TYPE_INFO "${AUTOGEN_DIR}/type_info.hpp")
 
 add_custom_command(
     OUTPUT "${VERSION_C}"
@@ -50,58 +44,12 @@ add_custom_command(
     COMMAND "${Python3_EXECUTABLE}" -B
             "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
             --definitions "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-            --template "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/interfaces_template.j2"
+            --template "${CMAKE_CURRENT_SOURCE_DIR}/interface/interfaces_template.j2"
             --output "${AUTOGEN_INTERFACES}"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/interfaces_template.j2"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    VERBATIM
-)
-
-add_custom_command(
-    OUTPUT "${AUTOGEN_FUNCTION_STUBS}"
-    COMMAND "${Python3_EXECUTABLE}" -B
-            "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
-            --definitions "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-            --template "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/function_stubs_template.j2"
-            --output "${AUTOGEN_FUNCTION_STUBS}"
-    DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/function_stubs_template.j2"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    VERBATIM
-)
-
-add_custom_command(
-    OUTPUT "${AUTOGEN_ENDPOINTS}"
-    COMMAND "${Python3_EXECUTABLE}" -B
-            "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
-            --definitions "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-            --generate-endpoints "${ROOT_INTERFACE}"
-            --template "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/endpoints_template.j2"
-            --output "${AUTOGEN_ENDPOINTS}"
-    DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/endpoints_template.j2"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    VERBATIM
-)
-
-add_custom_command(
-    OUTPUT "${AUTOGEN_TYPE_INFO}"
-    COMMAND "${Python3_EXECUTABLE}" -B
-            "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
-            --definitions "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-            --template "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/type_info_template.j2"
-            --output "${AUTOGEN_TYPE_INFO}"
-    DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/interface_generator_stub.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/odrive-interface.yaml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/type_info_template.j2"
+        "${CMAKE_CURRENT_SOURCE_DIR}/interface/interfaces_template.j2"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     VERBATIM
 )
@@ -116,16 +64,11 @@ set(FIRMWARE_SOURCES
     MotorControl/motor.cpp
     MotorControl/thermistor.cpp
     MotorControl/encoder.cpp
-    MotorControl/endstop.cpp
-    MotorControl/acim_estimator.cpp
-    MotorControl/mechanical_brake.cpp
     MotorControl/controller.cpp
     MotorControl/control_timeout.cpp
     MotorControl/foc.cpp
     MotorControl/open_loop_controller.cpp
-    MotorControl/oscilloscope.cpp
     MotorControl/trapTraj.cpp
-    MotorControl/pwm_input.cpp
     MotorControl/main.cpp
     MotorControl/log_task.cpp
     Drivers/STM32/stm32_system.cpp
@@ -138,18 +81,10 @@ set(FIRMWARE_SOURCES
     communication/can/can_simple.cpp
     communication/can/odrive_can.cpp
     communication/communication.cpp
-    communication/ascii_protocol.cpp
-    communication/interface_uart.cpp
     communication/interface_usb.cpp
-    communication/interface_i2c.cpp
+    communication/calibration_transport.cpp
     FreeRTOS-openocd.c
     "${VERSION_C}"
-)
-
-set(FIBRE_SOURCES
-    fibre-cpp/fibre.cpp
-    fibre-cpp/channel_discoverer.cpp
-    fibre-cpp/legacy_protocol.cpp
 )
 
 set(FREERTOS_SOURCES
@@ -184,8 +119,6 @@ set(STM32_HAL_SOURCES
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ex.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ramfunc.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c
-    ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c.c
-    ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c_ex.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pcd.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pcd_ex.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c
@@ -195,7 +128,6 @@ set(STM32_HAL_SOURCES
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim_ex.c
-    ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c
     ThirdParty/STM32F4xx_HAL_Driver/Src/stm32f4xx_ll_usb.c
 )
 
@@ -210,7 +142,6 @@ set(BOARD_V3_SOURCES
     Board/v3/Src/main.c
     Board/v3/Src/usbd_conf.c
     Board/v3/Src/spi.c
-    Board/v3/Src/usart.c
     Board/v3/Src/usbd_cdc_if.c
     Board/v3/Src/adc.c
     Board/v3/Src/stm32f4xx_hal_msp.c
@@ -220,58 +151,29 @@ set(BOARD_V3_SOURCES
     Board/v3/Src/can.c
     Board/v3/Src/system_stm32f4xx.c
     Board/v3/Src/gpio.c
-    Board/v3/Src/i2c.c
 )
 
-if(BOARD_VERSION STREQUAL "v3.1")
-    set(HW_VERSION_MINOR 1)
-    set(HW_VERSION_VOLTAGE 24)
-elseif(BOARD_VERSION STREQUAL "v3.2")
-    set(HW_VERSION_MINOR 2)
-    set(HW_VERSION_VOLTAGE 24)
-elseif(BOARD_VERSION STREQUAL "v3.3")
-    set(HW_VERSION_MINOR 3)
-    set(HW_VERSION_VOLTAGE 24)
-elseif(BOARD_VERSION STREQUAL "v3.4-24V")
-    set(HW_VERSION_MINOR 4)
-    set(HW_VERSION_VOLTAGE 24)
-elseif(BOARD_VERSION STREQUAL "v3.4-48V")
-    set(HW_VERSION_MINOR 4)
-    set(HW_VERSION_VOLTAGE 48)
-elseif(BOARD_VERSION STREQUAL "v3.5-24V")
-    set(HW_VERSION_MINOR 5)
-    set(HW_VERSION_VOLTAGE 24)
-elseif(BOARD_VERSION STREQUAL "v3.5-48V")
-    set(HW_VERSION_MINOR 5)
-    set(HW_VERSION_VOLTAGE 48)
-elseif(BOARD_VERSION STREQUAL "v3.6-24V")
+if(BOARD_VERSION STREQUAL "v3.6-24V")
     set(HW_VERSION_MINOR 6)
     set(HW_VERSION_VOLTAGE 24)
 elseif(BOARD_VERSION STREQUAL "v3.6-56V")
     set(HW_VERSION_MINOR 6)
     set(HW_VERSION_VOLTAGE 56)
 else()
-    message(FATAL_ERROR "Unsupported BOARD_VERSION '${BOARD_VERSION}'. This CMake build currently supports v3 boards.")
+    message(FATAL_ERROR "Unsupported BOARD_VERSION '${BOARD_VERSION}'. Production firmware supports ODrive v3.6 only.")
 endif()
 
 add_executable(ODriveFirmware
     ${FIRMWARE_SOURCES}
-    ${FIBRE_SOURCES}
     ${FREERTOS_SOURCES}
     ${USB_DEVICE_SOURCES}
     ${STM32_HAL_SOURCES}
     ${BOARD_V3_SOURCES}
     "${AUTOGEN_INTERFACES}"
-    "${AUTOGEN_FUNCTION_STUBS}"
-    "${AUTOGEN_ENDPOINTS}"
-    "${AUTOGEN_TYPE_INFO}"
 )
 
 set_source_files_properties(
     "${AUTOGEN_INTERFACES}"
-    "${AUTOGEN_FUNCTION_STUBS}"
-    "${AUTOGEN_ENDPOINTS}"
-    "${AUTOGEN_TYPE_INFO}"
     PROPERTIES GENERATED TRUE HEADER_FILE_ONLY TRUE
 )
 
@@ -279,13 +181,10 @@ target_include_directories(ODriveFirmware PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/MotorControl"
-    "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/fibre-cpp/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/STM32F4xx_HAL_Driver/Inc"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/FreeRTOS/Source/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/FreeRTOS/Source/CMSIS_RTOS"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/CMSIS/Include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/CMSIS/Device/ST/STM32F7xx/Include"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/CMSIS/Device/ST/STM32F4xx/Include"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/STM32_USB_Device_Library/Core/Inc"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/STM32_USB_Device_Library/Class/CDC/Inc"
@@ -296,7 +195,7 @@ target_include_directories(ODriveFirmware PRIVATE
 
 target_compile_definitions(ODriveFirmware PRIVATE
     USE_HAL_DRIVER
-    FIBRE_ENABLE_SERVER=1
+    FIBRE_ENABLE_SERVER=0
     FIBRE_ENABLE_CLIENT=0
     FIBRE_ENABLE_EVENT_LOOP=0
     FIBRE_ALLOW_HEAP=0

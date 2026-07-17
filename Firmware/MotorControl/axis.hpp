@@ -1,19 +1,24 @@
 #ifndef __AXIS_HPP
 #define __AXIS_HPP
 
+#include <functional>
+
 class Axis;
 
 #include "encoder.hpp"
-#include "acim_estimator.hpp"
 #include "controller.hpp"
 #include "open_loop_controller.hpp"
 #include "trapTraj.hpp"
-#include "endstop.hpp"
-#include "mechanical_brake.hpp"
 #include "low_level.h"
 #include "utils.hpp"
 #include "task_timer.hpp"
 #include "calibration_session.hpp"
+#include "calibration_buffer.hpp"
+#include "calibration_result.hpp"
+#include "calibration_geometry_fitter.hpp"
+#include "calibration_flux_fitter.hpp"
+#include "calibration_mechanical_fitter.hpp"
+#include "calibration_delay_fitter.hpp"
 #include <production_config.h>
 
 #include <array>
@@ -34,11 +39,9 @@ public:
     struct TaskTimes {
         TaskTimer thermistor_update;
         TaskTimer encoder_update;
-        TaskTimer endstop_update;
         TaskTimer can_heartbeat;
         TaskTimer controller_update;
         TaskTimer open_loop_controller_update;
-        TaskTimer acim_estimator_update;
         TaskTimer motor_update;
         TaskTimer current_controller_update;
         TaskTimer dc_calib;
@@ -72,35 +75,15 @@ public:
         bool startup_motor_calibration = false;   //<! run motor calibration at startup, skip otherwise
         bool startup_encoder_offset_calibration = false; //<! run encoder offset calibration after startup, skip otherwise
         bool startup_closed_loop_control = false; //<! enable closed loop control after calibration/startup
-        bool startup_homing = false; //<! enable homing after calibration/startup
-
-        bool enable_step_dir = false; //<! enable step/dir input after calibration
-                                    //   For M0 this has no effect if enable_uart is true
-        bool step_dir_always_on = false; //<! Keep step/dir enabled while the motor is disabled.
-                                         //<! This is ignored if enable_step_dir is false.
-                                         //<! This setting only takes effect on a state transition
-                                         //<! into idle or out of closed loop control.
-
         float watchdog_timeout = 0.0f; // [s]
         bool enable_watchdog = false;
-
-        // Defaults loaded from hw_config in load_configuration in main.cpp
-        uint16_t step_gpio_pin = 0;
-        uint16_t dir_gpio_pin = 0;
 
         LockinConfig_t calibration_lockin = default_calibration();
         LockinConfig_t general_lockin;
 
         CANConfig_t can;
 
-        // custom setters
         Axis* parent = nullptr;
-        void set_step_gpio_pin(uint16_t value) { step_gpio_pin = value; parent->decode_step_dir_pins(); }
-        void set_dir_gpio_pin(uint16_t value) { dir_gpio_pin = value; parent->decode_step_dir_pins(); }
-    };
-
-    struct Homing_t {
-        bool is_homed = false;
     };
 
     struct CAN_t {
@@ -115,26 +98,17 @@ public:
     };
 
     Axis(int axis_num,
-            uint16_t default_step_gpio_pin,
-            uint16_t default_dir_gpio_pin,
             osPriority thread_priority,
             Encoder& encoder,
             Controller& controller,
             Motor& motor,
-            TrapezoidalTrajectory& trap,
-            Endstop& min_endstop,
-            Endstop& max_endstop,
-            MechanicalBrake& mechanical_brake);
+            TrapezoidalTrajectory& trap);
 
     bool apply_config();
     void clear_config();
 
     void start_thread();
     bool wait_for_control_iteration();
-
-    void step_cb();
-    void set_step_dir_active(bool enable);
-    void decode_step_dir_pins();
 
     bool do_checks(uint32_t timestamp);
 
@@ -151,7 +125,6 @@ public:
     bool run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_armed,
                 std::function<bool(bool)> loop_cb = {} );
     bool run_closed_loop_control_loop();
-    bool run_homing();
     bool run_idle_loop();
 
     constexpr uint32_t get_watchdog_reset() {
@@ -159,25 +132,36 @@ public:
     }
 
     void run_state_machine_loop();
+    bool start_calibration_session(uint32_t request_options);
+    bool abort_calibration_session();
+    void capture_calibration_electrical_sample(
+        uint32_t output_timestamp, const float (&pwm_timings)[3],
+        bool pwm_valid);
+    bool capture_calibration_full_sample(CalibrationSampleV1* captured = nullptr);
 
     // hardware config
     int axis_num_;
-    uint16_t default_step_gpio_pin_;
-    uint16_t default_dir_gpio_pin_;
     osPriority thread_priority_;
     Config_t config_;
 
     Encoder& encoder_;
-    AcimEstimator acim_estimator_;
     Controller& controller_;
     OpenLoopController open_loop_controller_;
     Motor& motor_;
     TrapezoidalTrajectory& trap_traj_;
-    Endstop& min_endstop_;
-    Endstop& max_endstop_;
-    MechanicalBrake& mechanical_brake_;
     TaskTimes task_times_;
     CalibrationSession calibration_session_;
+    // About 3.2 KiB per axis. Raw samples are drained by the calibration
+    // transport; long-term storage remains host-side.
+    CalibrationRecordBuffer<32> calibration_record_buffer_;
+    CalibrationPendingResult calibration_pending_result_;
+    CalibrationGeometryFitter calibration_geometry_fitter_;
+    CalibrationFluxFitter calibration_flux_fitter_;
+    CalibrationMechanicalFitter calibration_mechanical_fitter_;
+    CalibrationDelayFitter calibration_delay_fitter_;
+    volatile bool calibration_start_pending_ = false;
+    volatile bool calibration_capture_enabled_ = false;
+    uint32_t calibration_sample_sequence_ = 0;
 
     osThreadId thread_id_ = 0;
     const uint32_t stack_size_ = 2048; // Bytes
@@ -185,23 +169,25 @@ public:
 
     // variables exposed on protocol
     Error error_ = ERROR_NONE;
-    bool step_dir_active_ = false; // auto enabled after calibration, based on config.enable_step_dir
-    int64_t steps_ = 0; // Steps counted at interface
     uint32_t last_drv_fault_ = 0;
-
-    // updated from config in constructor, and on protocol hook
-    Stm32Gpio step_gpio_;
-    Stm32Gpio dir_gpio_;
 
     AxisState requested_state_ = AXIS_STATE_STARTUP_SEQUENCE;
     std::array<AxisState, 10> task_chain_ = { AXIS_STATE_UNDEFINED };
     AxisState& current_state_ = task_chain_.front();
-    Homing_t homing_;
     CAN_t can_;
 
 
     // watchdog
     uint32_t watchdog_current_value_= 0;
+
+private:
+    void service_calibration_session_start();
+    bool run_calibration_geometry_scan();
+    bool run_calibration_encoder_alignment();
+    bool run_calibration_mechanical_scan();
+    bool run_calibration_delay_scan();
+    bool validate_calibration_candidate() const;
+    bool commit_calibration_candidate();
 };
 
 

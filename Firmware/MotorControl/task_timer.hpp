@@ -19,6 +19,12 @@ struct TaskTimer {
     uint32_t end_time_ = 0;
     uint32_t length_ = 0;
     uint32_t max_length_ = 0;
+    // Retained for compatibility with the temporary diagnostic CAN surface.
+    // The post-trim baseline does not update these counters.
+    uint32_t count_ = 0;
+    uint32_t over_50pct_count_ = 0;
+    uint32_t over_70pct_count_ = 0;
+    uint32_t over_85pct_count_ = 0;
 
     static bool enabled;
 

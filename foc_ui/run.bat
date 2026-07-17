@@ -58,12 +58,12 @@ if not exist "%FRONTEND_DIR%\node_modules" (
     call "%NODE_DIR%\npm.cmd" --prefix "%FRONTEND_DIR%" install
 )
 start "FOC vite" "%NODE_DIR%\npm.cmd" --prefix "%FRONTEND_DIR%" run dev
-"%VENV_PY%" -m foc_backend.main
+"%VENV_PY%" -m odrive_can.app
 goto end
 
 :prod
 echo [prod] serving built frontend from backend on http://127.0.0.1:8000
-"%VENV_PY%" -m foc_backend.main
+"%VENV_PY%" -m odrive_can.app
 goto end
 
 :end

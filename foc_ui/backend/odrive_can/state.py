@@ -15,7 +15,10 @@ set for the waveform panel.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any
+
+HEARTBEAT_STALE_S = 1.0
 
 # --------------------------------------------------------------------------- #
 # Sub-cache dataclasses
@@ -41,7 +44,7 @@ class HeartbeatState:
 
     @property
     def is_alive(self) -> bool:
-        return self.last_ts > 0.0
+        return self.last_ts > 0.0 and (time.monotonic() - self.last_ts) <= HEARTBEAT_STALE_S
 
 
 @dataclass

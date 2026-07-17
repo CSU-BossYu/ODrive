@@ -14,7 +14,8 @@ class Encoder;
 
 class Encoder : public ODriveIntf::EncoderIntf {
 public:
-    static constexpr uint32_t MODE_FLAG_ABS = 0x100;
+    static constexpr size_t kVernierGeometryCorrectionBins = 64;
+
     struct Config_t {
         Mode mode = MODE_SPI_ABS_MT6826S_VERNIER;
         float calib_range = 0.02f; // Accuracy required to pass encoder cpr check
@@ -47,6 +48,11 @@ public:
         float vernier_aux_correction_bandwidth = 0.0f;
         float vernier_aux_velocity_bandwidth = 0.0f;
         float vernier_aux_max_correction = 0.002f;
+        bool vernier_geometry_correction_enabled = false;
+        float vernier_effective_ratio_scale = 1.0f;
+        float vernier_common_correction[kVernierGeometryCorrectionBins] = {};
+        float vernier_direction_correction[kVernierGeometryCorrectionBins] = {};
+        float electrical_phase_delay = 0.0f; // [s], phase advance
 
 
         // custom setters
@@ -66,6 +72,9 @@ public:
         void set_vernier_aux_correction_bandwidth(float value) { vernier_aux_correction_bandwidth = value; parent->reset_vernier_output_velocity_estimate(); }
         void set_vernier_aux_velocity_bandwidth(float value) { vernier_aux_velocity_bandwidth = value; parent->reset_vernier_output_velocity_estimate(); }
         void set_vernier_aux_max_correction(float value) { vernier_aux_max_correction = value; parent->reset_vernier_output_velocity_estimate(); }
+        void set_vernier_geometry_correction_enabled(bool value) { vernier_geometry_correction_enabled = value; parent->reset_vernier_output_velocity_estimate(); }
+        void set_vernier_effective_ratio_scale(float value) { vernier_effective_ratio_scale = value; parent->reset_vernier_output_velocity_estimate(); }
+        void set_electrical_phase_delay(float value) { electrical_phase_delay = value; }
         void set_mt6826s_spi_mode(uint16_t value) { mt6826s_spi_mode = value; parent->apply_mt6826s_spi_config(); }
         void set_mt6826s_spi_prescaler(uint16_t value) { mt6826s_spi_prescaler = value; parent->apply_mt6826s_spi_config(); }
         void set_pre_calibrated(bool value) { pre_calibrated = value; parent->check_pre_calibrated(); }
@@ -74,7 +83,7 @@ public:
 
     Encoder(Stm32SpiArbiter* spi_arbiter);
     
-    bool apply_config(ODriveIntf::MotorIntf::MotorType motor_type);
+    bool apply_config();
     void setup();
     void set_error(Error error);
     bool do_checks();
@@ -135,6 +144,9 @@ public:
     float vernier_output_direction_sign() const;
     float vernier_output_position_from_main(float main_position_turns) const;
     float vernier_output_velocity_from_main(float main_velocity_turns) const;
+    float apply_vernier_geometry_compensation(float raw_position_turns,
+                                              float raw_velocity_turns);
+    float vernier_geometry_velocity_scale(float raw_position_turns) const;
     float vernier_main_position_from_output(float output_position_turns) const;
     float align_vernier_output_position(float position_turns, float reference_turns) const;
     float normalized_main_phase_from_raw_phase(float raw_phase) const;
@@ -188,8 +200,25 @@ public:
         uint32_t aux_fixed_bit_error_count = 0;
         uint32_t aux_status_warning_count = 0;
         uint32_t aux_sample_count = 0;
+        uint32_t pair_transaction_cycles = 0;
+        uint32_t max_pair_transaction_cycles = 0;
+        uint32_t main_sample_age_cycles = 0;
+        uint32_t max_main_sample_age_cycles = 0;
     };
     void get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out);
+    void reset_vernier_calibration();
+    bool capture_vernier_calibration_point();
+    bool fit_vernier_aux_offset(float search_radius);
+    bool apply_vernier_calibration_fit();
+    uint32_t get_vernier_calibration_point_count() const { return vernier_calibration_point_count_; }
+    bool get_vernier_calibration_fit_valid() const { return vernier_calibration_fit_valid_; }
+    float get_vernier_calibration_fitted_main_offset() const { return vernier_calibration_fitted_main_offset_; }
+    float get_vernier_calibration_fitted_aux_offset() const { return vernier_calibration_fitted_aux_offset_; }
+    float get_vernier_calibration_fit_score() const { return vernier_calibration_fit_score_; }
+    float get_vernier_calibration_worst_residual() const { return vernier_calibration_worst_residual_; }
+    int32_t get_calibration_estimated_pole_pairs() const {
+        return calibration_estimated_pole_pairs_;
+    }
 
     Mt6826sSpi::Sample mt6826s_main_sample_;
     Mt6826sSpi::Sample mt6826s_aux_sample_;
@@ -207,9 +236,24 @@ public:
     float vernier_main_continuous_pos_ = 0.0f;
     float vernier_last_main_phase_corr_ = 0.0f;
     bool vernier_main_continuous_valid_ = false;
+    int8_t vernier_geometry_direction_ = 0;
     uint32_t mt6826s_pair_sequence_ = 0;
     uint32_t mt6826s_vernier_sample_counter_ = 0;
     bool mt6826s_pair_valid_ = false;
+    int32_t calibration_estimated_pole_pairs_ = 0;
+
+    struct VernierCalibrationPoint {
+        uint16_t main_angle = 0;
+        uint16_t aux_angle = 0;
+    };
+    static constexpr uint32_t kVernierCalibrationMaxPoints = 16;
+    VernierCalibrationPoint vernier_calibration_points_[kVernierCalibrationMaxPoints] = {};
+    uint32_t vernier_calibration_point_count_ = 0;
+    bool vernier_calibration_fit_valid_ = false;
+    float vernier_calibration_fitted_main_offset_ = 0.0f;
+    float vernier_calibration_fitted_aux_offset_ = 0.0f;
+    float vernier_calibration_fit_score_ = 0.0f;
+    float vernier_calibration_worst_residual_ = 0.0f;
 
 };
 

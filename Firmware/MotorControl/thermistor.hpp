@@ -1,6 +1,8 @@
 #ifndef __THERMISTOR_HPP
 #define __THERMISTOR_HPP
 
+#include <array>
+
 class Motor; // declared in motor.hpp
 
 #include "current_limiter.hpp"

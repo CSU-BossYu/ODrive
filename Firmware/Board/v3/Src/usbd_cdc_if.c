@@ -283,8 +283,11 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len, uint8_t endpoint_pair)
 {
   /* USER CODE BEGIN 6 */
-  usb_rx_process_packet(Buf, *Len, endpoint_pair);
-
+  // Production USB is stdout-only. Host-to-device data is intentionally
+  // ignored; all control traffic uses CAN.
+  (void)Buf;
+  (void)Len;
+  (void)endpoint_pair;
   return (USBD_OK);
   /* USER CODE END 6 */
 }
@@ -310,18 +313,12 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len, uint8_t endpoint_pair)
 
   USBD_CDC_HandleTypeDef* hcdc = (USBD_CDC_HandleTypeDef*) hUsbDeviceFS.pClassData;
 
-  // Select EP
-  USBD_CDC_EP_HandleTypeDef* hEP_Tx;
-  if (endpoint_pair == CDC_IN_EP) {
-    hEP_Tx = &hcdc->CDC_Tx;
-  } else if (endpoint_pair == ODRIVE_IN_EP) {
-    hEP_Tx = &hcdc->ODRIVE_Tx;
-  } else {
+  if (endpoint_pair != CDC_IN_EP) {
     return USBD_FAIL;
   }
 
   // Check for ongoing transmission
-  if (hEP_Tx->State != 0)
+  if (hcdc->CDC_Tx.State != 0)
       return USBD_BUSY;
       
   result = USBD_CDC_TransmitPacket(&hUsbDeviceFS, Buf, Len, endpoint_pair);

@@ -14,7 +14,6 @@
 #include <spi.h>
 #include <tim.h>
 #include <can.h>
-#include <i2c.h>
 #include <usb_device.h>
 #include <main.h>
 #include "cmsis_os.h"
@@ -53,11 +52,11 @@
 
 #define DEFAULT_GPIO_MODES \
     ODriveIntf::GPIO_MODE_DIGITAL, \
-    ODriveIntf::GPIO_MODE_UART_A, \
-    ODriveIntf::GPIO_MODE_UART_A, \
-    ODriveIntf::GPIO_MODE_ANALOG_IN, \
-    ODriveIntf::GPIO_MODE_ANALOG_IN, \
-    ODriveIntf::GPIO_MODE_ANALOG_IN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
+    ODriveIntf::GPIO_MODE_DIGITAL_PULL_DOWN, \
     ODriveIntf::GPIO_MODE_DIGITAL, \
     ODriveIntf::GPIO_MODE_DIGITAL, \
     ODriveIntf::GPIO_MODE_DIGITAL, \
@@ -85,7 +84,6 @@
 #include <Drivers/DRV8301/drv8301.hpp>
 #include <Drivers/STM32/stm32_gpio.hpp>
 #include <Drivers/STM32/stm32_spi_arbiter.hpp>
-#include <MotorControl/pwm_input.hpp>
 #include <MotorControl/thermistor.hpp>
 
 using TGateDriver = Drv8301;
@@ -107,11 +105,6 @@ extern USBD_HandleTypeDef& usb_dev_handle;
 
 extern Stm32SpiArbiter& ext_spi_arbiter;
 
-extern UART_HandleTypeDef* uart_a;
-extern UART_HandleTypeDef* uart_b;
-extern UART_HandleTypeDef* uart_c;
-
-extern PwmInput pwm0_input;
 #endif
 
 // Period in [s]
@@ -120,7 +113,7 @@ static const float current_meas_period = CURRENT_MEAS_PERIOD;
 
 // Frequency in [Hz]
 #define CURRENT_MEAS_HZ ( (float)(TIM_1_8_CLOCK_HZ) / (float)(2*TIM_1_8_PERIOD_CLOCKS*(TIM_1_8_RCR+1)) )
-static const int current_meas_hz = CURRENT_MEAS_HZ;
+static const int current_meas_hz = (int)(CURRENT_MEAS_HZ + 0.5f);
 
 #if HW_VERSION_VOLTAGE >= 48
 #define VBUS_S_DIVIDER_RATIO 19.0f

@@ -359,6 +359,45 @@ class TestExtendedCommand:
         resp = decode_extended_response(data)
         assert resp['value'] == pytest.approx(2.5)
 
+    def test_encode_friction_float_write(self):
+        # item 0x74 = friction_static_pos (float32, output-shaft Nm)
+        data = encode_extended_request(ExtSubCmd.SET_CONTROL_CONFIG,
+                                       0x74, ExtType.FLOAT32, 1.25)
+        assert data[0] == 0x0C
+        assert data[1] == 0x74
+        assert data[2] == ExtType.FLOAT32
+        assert struct.unpack_from('<f', data, 4)[0] == pytest.approx(1.25)
+
+    def test_encode_friction_bool_write(self):
+        # item 0x70 = enable_friction_compensation (uint32 bool)
+        data = encode_extended_request(ExtSubCmd.SET_CONTROL_CONFIG,
+                                       0x70, ExtType.UINT32, 1)
+        assert data[1] == 0x70
+        assert data[2] == ExtType.UINT32
+        assert struct.unpack_from('<I', data, 4)[0] == 1
+
+    def test_decode_friction_inf_response(self):
+        # item 0x7A = friction_max_torque; +inf means "disabled"
+        data = (bytes([0x0B, 0x7A, ExtStatus.OK, ExtType.FLOAT32])
+                + struct.pack('<f', float('inf')))
+        resp = decode_extended_response(data)
+        assert resp['item'] == 0x7A
+        assert resp['status'] == ExtStatus.OK
+        assert resp['value'] == float('inf')
+
+    def test_encode_vernier_calibration_fit(self):
+        data = encode_extended_request(ExtSubCmd.VERNIER_CALIBRATION,
+                                       0x02, ExtType.FLOAT32, 0.05)
+        assert data[0] == 0x0D
+        assert data[1] == 0x02
+        assert data[2] == ExtType.FLOAT32
+        assert struct.unpack_from('<f', data, 4)[0] == pytest.approx(0.05)
+
+    def test_encode_fault_snapshot_read(self):
+        data = encode_extended_request(ExtSubCmd.GET_FAULT_SNAPSHOT, 0x40)
+        assert data[0] == 0x0E
+        assert data[1] == 0x40
+        assert data[2] == 0x00
 
 # --------------------------------------------------------------------------- #
 # Error flag decoders

@@ -6,7 +6,6 @@
 
 // List of semaphores
 extern osSemaphoreId sem_usb_irq;
-extern osMessageQId uart_event_queue;
 extern osMessageQId usb_event_queue;
 extern osSemaphoreId sem_can;
 

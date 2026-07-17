@@ -75,11 +75,12 @@ def pack_mit_frame(pos_rad, vel_rad_s, kp, kd, torque_ff):
 
 
 def pack_neutral_mit_frame(index):
-    # The standard [-18, +18] Nm / 12-bit range has no exact zero. Alternate
-    # the two adjacent raw torque values so the average is near zero.
-    torque_raw = 2047 if index % 2 else 2048
-    pos_raw = 32768
-    vel_raw = 2048
+    # New firmware snaps both adjacent center codes for signed MIT fields to
+    # exact zero. Alternating them keeps older firmware average-neutral too.
+    center_raw = 2047 if index % 2 else 2048
+    torque_raw = center_raw
+    pos_raw = 32767 if index % 2 else 32768
+    vel_raw = center_raw
     kp_raw = 0
     kd_raw = 0
     return bytes([
@@ -284,6 +285,11 @@ def main():
     parser.add_argument("--hold-vel", type=float, default=0.0, help="MIT v_des in rad/s.")
     parser.add_argument("--torque-ff", type=float, default=0.0, help="Small MIT torque feed-forward in Nm.")
     parser.add_argument("--max-iq-set", type=float, default=1.0)
+    parser.add_argument(
+        "--allow-clamped-hold-position",
+        action="store_true",
+        help="Allow hold_kp tests even when current absolute position is outside the MIT +/-12.5 rad command window.",
+    )
     parser.add_argument("--set-precalibrated-if-needed", action="store_true")
     parser.add_argument("--clear-at-start", action="store_true")
     parser.add_argument("--clear-at-end", action="store_true")
@@ -314,6 +320,11 @@ def main():
         pos_cmd = clamp(pos_rad, P_MIN + 0.5, P_MAX - 0.5)
         if pos_cmd != pos_rad:
             print(f"Current position {pos_rad:.4f} rad is outside MIT range; command is clamped to {pos_cmd:.4f} rad.")
+            if args.hold_kp != 0.0 and not args.allow_clamped_hold_position:
+                raise RuntimeError(
+                    "Refusing MIT hold_kp test with clamped position. Zero/set the encoder linear count near the joint "
+                    "position first, or pass --allow-clamped-hold-position if this large position error is intentional."
+                )
         else:
             print(f"Current position: {pos_turns:.5f} turns ({pos_rad:.4f} rad)")
 

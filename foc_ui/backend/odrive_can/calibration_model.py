@@ -55,14 +55,12 @@ PARAMETERS: dict[str, CalibrationParameter] = {
         'pole_pairs', (), ('electrical_angle', 'torque_constant_derivation')),
     'vernier_offsets': CalibrationParameter(
         'vernier_offsets', ('encoder_direction',), ('vernier_resolver',)),
-    'vernier_sample_skew': CalibrationParameter(
-        'vernier_sample_skew', ('encoder_direction',), ('vernier_resolver',)),
     'gear_ratio_scale': CalibrationParameter(
         'gear_ratio_scale', ('vernier_offsets',),
         ('vernier_resolver', 'output_coordinates')),
     'relative_angle_model': CalibrationParameter(
         'relative_angle_model',
-        ('vernier_offsets', 'vernier_sample_skew', 'gear_ratio_scale'),
+        ('vernier_offsets', 'gear_ratio_scale'),
         ('vernier_resolver',)),
     'electrical_offset': CalibrationParameter(
         'electrical_offset',

@@ -74,13 +74,30 @@ Run with a current-limited 24 V bus supply.
 
    Saving configuration triggers the firmware reset-after-ACK path.
 
-5. Run velocity closed-loop at 5 turns/s for 10 s with 3 A current limit:
+5. Calibrate the dual-MT6826S vernier geometry offsets from several static
+   output positions. This is separate from encoder electrical offset
+   calibration and does not require a full output-shaft revolution:
+
+   ```powershell
+   python Firmware\Tests\hex_4342_mt6826s\calibrate_mt6826s_vernier_offsets.py --bitrate 1000000 --points 5 --firmware-fit --apply
+   ```
+
+   The default fit keeps `vernier_main_offset` unchanged and updates
+   `vernier_aux_offset`, preserving the main encoder as the output coordinate
+   reference. With `--firmware-fit`, point capture and fitting run on the
+   device through extended subcommand `0x0D`; the script only prompts for
+   each static pose. It searches near the current offsets by default; use
+   `--search-radius` only if the existing single-point value is known to be
+   far away. Review the fit score before saving. If the fitted residuals are
+   acceptable, repeat with `--save` to persist them.
+
+6. Run velocity closed-loop at 5 turns/s for 10 s with 3 A current limit:
 
    ```powershell
    python Firmware\Tests\hex_4342_mt6826s\run_mt6826s_velocity_loop.py --bitrate 1000000 --velocity 5 --duration 10 --current-limit 3.0 --clear-at-end
    ```
 
-6. Return to IDLE and confirm all errors are zero:
+7. Return to IDLE and confirm all errors are zero:
 
    ```powershell
    python Firmware\Tests\hex_4342_mt6826s\read_mt6826s_pair.py --bitrate 1000000 --period 1 --samples 1 --show-status

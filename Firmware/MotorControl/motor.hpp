@@ -11,9 +11,6 @@ class Motor;
 class Motor : public ODriveIntf::MotorIntf {
 public:
 
-    // NOTE: for gimbal motors, all units of Nm are instead V.
-    // example: vel_gain is [V/(turn/s)] instead of [Nm/(turn/s)]
-    // example: current_lim and calibration_current will instead determine the maximum voltage applied to the motor.
     struct Config_t {
         bool pre_calibrated = false; // can be set to true to indicate that all values here are valid
         int32_t pole_pairs = ODRIVE_PRODUCTION_POLE_PAIRS;
@@ -21,8 +18,9 @@ public:
         float resistance_calib_max_voltage = ODRIVE_PRODUCTION_RESISTANCE_CALIB_MAX_VOLTAGE; // [V] - You may need to increase this if this voltage isn't sufficient to drive calibration_current through the motor.
         float phase_inductance = 0.0f;        // to be set by measure_phase_inductance
         float phase_resistance = 0.0f;        // to be set by measure_phase_resistance
-        float torque_constant = ODRIVE_PRODUCTION_TORQUE_CONSTANT;         // [Nm/A] for PM motors, [Nm/A^2] for induction motors. Equal to 8.27/Kv of the motor
-        MotorType motor_type = MOTOR_TYPE_HIGH_CURRENT;
+        float torque_constant = ODRIVE_PRODUCTION_TORQUE_CONSTANT;         // [Nm/A_peak,q] for the amplitude-invariant dq current used by FOC
+        float flux_linkage = (2.0f / 3.0f) * ODRIVE_PRODUCTION_TORQUE_CONSTANT /
+                             ODRIVE_PRODUCTION_POLE_PAIRS; // [V/(electrical rad/s)]
         // Read out max_allowed_current to see max supported value for current_lim.
         // float current_lim = 70.0f; //[A]
         float current_lim = ODRIVE_PRODUCTION_MOTOR_CURRENT_LIMIT;          //[A]
@@ -34,12 +32,6 @@ public:
         float inverter_temp_limit_lower = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_LOWER;
         float inverter_temp_limit_upper = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_UPPER;
 
-        float acim_gain_min_flux = 10; // [A]
-        float acim_autoflux_min_Id = 10; // [A]
-        bool acim_autoflux_enable = false;
-        float acim_autoflux_attack_gain = 10.0f;
-        float acim_autoflux_decay_gain = 1.0f;
-        
         bool R_wL_FF_enable = true; // Enable feedforwards for R*I and w*L*I terms
         bool bEMF_FF_enable = true; // Enable feedforward for bEMF
 
@@ -57,7 +49,17 @@ public:
         }
         void set_phase_inductance(float value) { phase_inductance = value; parent->update_current_controller_gains(); }
         void set_phase_resistance(float value) { phase_resistance = value; parent->update_current_controller_gains(); }
+        void set_flux_linkage(float value) {
+            flux_linkage = value;
+            if (std::isfinite(value) && value > 0.0f) {
+                torque_constant = 1.5f * config_pole_pairs() * value;
+            }
+        }
         void set_current_control_bandwidth(float value) { current_control_bandwidth = value; parent->update_current_controller_gains(); }
+    private:
+        float config_pole_pairs() const {
+            return static_cast<float>(std::max<int32_t>(pole_pairs, 1));
+        }
     };
 
     Motor(TIM_HandleTypeDef* timer,
@@ -124,6 +126,8 @@ public:
     float effective_current_lim_ = 10.0f; // [A]
     float max_allowed_current_ = 0.0f; // [A] set in setup()
     float max_dc_calib_ = 0.0f; // [A] set in setup()
+    float last_pwm_timings_[3] = {0.5f, 0.5f, 0.5f};
+    bool last_pwm_timings_valid_ = false;
 
     InputPort<float> torque_setpoint_src_; // Usually points to the Controller object's output
     InputPort<float> phase_vel_src_; // Usually points to the Encoder object's output

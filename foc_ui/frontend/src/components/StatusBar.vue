@@ -66,6 +66,7 @@ const velocityRpm = computed(() => (oSocket.latest.value?.ch.vel ?? 0) * 60)
 const iq = computed(() => oSocket.latest.value?.ch.iq_meas ?? 0)
 const ibus = computed(() => oSocket.latest.value?.ch.ibus ?? 0)
 const stats = computed(() => oSocket.status.value)
+const transportConnected = computed(() => !!stats.value?.connected)
 const axisStateValue = computed(() => oSocket.heartbeat.value?.axis_state ?? 0)
 const axisStateName = computed(() => AXIS_STATES[axisStateValue.value] ?? 'UNKNOWN')
 
@@ -140,13 +141,13 @@ function fmt(v: number, digits = 2): string {
 <template>
   <div class="status-bar">
     <div class="cell conn">
-      <select v-model="selectedInterface" :disabled="oSocket.ready.value" class="iface-select">
+      <select v-model="selectedInterface" :disabled="transportConnected" class="iface-select">
         <option v-for="i in canInterfaces" :key="i.interface" :value="i.interface">{{ i.interface }}</option>
       </select>
-      <input v-model="selectedChannel" :disabled="oSocket.ready.value" class="ch-input" placeholder="PCAN_USBBUS1" />
-      <label class="node-label">N<input type="number" v-model.number="nodeId" :disabled="oSocket.ready.value" min="0" max="63" class="node-input" /></label>
-      <button @click="refreshInterfaces" :disabled="oSocket.ready.value" title="刷新接口" class="icon-btn">刷新</button>
-      <button v-if="!oSocket.ready.value" @click="canConnect" :disabled="canConnecting" class="primary">
+      <input v-model="selectedChannel" :disabled="transportConnected" class="ch-input" placeholder="PCAN_USBBUS1" />
+      <label class="node-label">N<input type="number" v-model.number="nodeId" :disabled="transportConnected" min="0" max="63" class="node-input" /></label>
+      <button @click="refreshInterfaces" :disabled="transportConnected" title="刷新接口" class="icon-btn">刷新</button>
+      <button v-if="!transportConnected" @click="canConnect" :disabled="canConnecting" class="primary">
         {{ canConnecting ? '连接中...' : '连接' }}
       </button>
       <button v-else @click="canDisconnect" class="danger">断开</button>

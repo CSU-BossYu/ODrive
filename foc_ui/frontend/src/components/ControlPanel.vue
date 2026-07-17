@@ -152,12 +152,23 @@ function format(v: number, digits = 2): string {
   return Number.isFinite(v) ? v.toFixed(digits) : '--'
 }
 
+function degToRad(deg: number): number {
+  return deg * Math.PI / 180
+}
+
+function rpmToRadPerSec(rpm: number): number {
+  return rpm * 2 * Math.PI / 60
+}
+
 function setCalibrationNotice(text: string, kind: 'dim' | 'ok' | 'warn' | 'err' = 'dim') {
   calibrationNotice.value = text
   calibrationNoticeKind.value = kind
 }
 
 function selectMode(mode: ModeKey) {
+  // Stop any active streaming when switching mode cards — otherwise the old
+  // stream keeps firing (e.g. velocity commands) with no visible stop button.
+  stopStreaming(true)
   selectedMode.value = mode
 }
 
@@ -192,7 +203,11 @@ function enterSelectedMode(targetMode: ModeKey) {
   if (targetMode === 'mit') oSocket.sendMit(0, 0, 0, 0, 0)
   oSocket.setServoMode(selected.value.servoMode)
   oSocket.setMode(selected.value.controlMode, selected.value.inputMode)
-  setTimeout(() => oSocket.setState(8), targetMode === 'mit' ? 200 : 150)
+  setTimeout(() => {
+    // Guard against a stale timeout firing after the user disabled or
+    // switched modes — don't re-arm into CLOSED_LOOP if we no longer want it.
+    if (requestedMode.value === targetMode) oSocket.setState(8)
+  }, targetMode === 'mit' ? 200 : 150)
 }
 
 function activateSelectedMode() {
@@ -215,8 +230,8 @@ function commandFor(mode: ModeKey) {
   }
   if (mode === 'mit') {
     return () => oSocket.sendMit(
-      safeNumber(mitPosDeg.value) / 360,
-      safeNumber(mitVelRpm.value) / 60,
+      degToRad(safeNumber(mitPosDeg.value)),
+      rpmToRadPerSec(safeNumber(mitVelRpm.value)),
       safeNumber(mitKp.value),
       safeNumber(mitKd.value),
       safeNumber(mitTorque.value),
@@ -292,7 +307,11 @@ function requestAxisState(state: number, label: string, action: 'full' | 'motor'
   calibrationStartedAt.value = Date.now()
   oSocket.clearErrors()
   oSocket.setState(1)
-  window.setTimeout(() => oSocket.setState(state), 80)
+  window.setTimeout(() => {
+    // Guard against a stale timeout firing after the user disabled or
+    // switched calibration targets.
+    if (activeCalibration.value === action) oSocket.setState(state)
+  }, 80)
   setCalibrationNotice(`${label} 已启动，等待状态回报`, 'warn')
   startCalibrationPolling()
 }
@@ -323,7 +342,7 @@ function clearPrecalibrated() {
 
 function saveConfiguration() {
   oSocket.extCmd(0x03, 0x00, 3, 0, 3.0)
-  setCalibrationNotice('已请求保存配置，控制器可能会重启', 'warn')
+  setCalibrationNotice('正在保存配置；控制器不会重启', 'warn')
 }
 
 function evaluateCalibrationStatus() {
@@ -502,7 +521,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="calibration-card">
+    <div v-if="false" class="calibration-card">
       <div class="card-head">
         <div>
           <div class="card-title">校准</div>
@@ -525,7 +544,7 @@ onBeforeUnmount(() => {
         <div class="calibration-results">
           <div v-for="r in calibrationResults" :key="r.item">
             <span>{{ r.label }}</span>
-            <strong>{{ r.status === 0 && r.value != null ? format(r.value, r.item <= 0x02 ? 6 : 0) : '--' }}</strong>
+            <strong>{{ r.status === 0 && r.value != null ? format(r.value ?? 0, r.item <= 0x02 ? 6 : 0) : '--' }}</strong>
             <em>{{ r.unit }}</em>
           </div>
         </div>

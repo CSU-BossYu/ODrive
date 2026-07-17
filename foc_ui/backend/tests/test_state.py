@@ -5,6 +5,7 @@ Run: pytest tests/test_state.py -v
 
 import sys
 import os
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -139,8 +140,10 @@ class TestSnapshot:
     def test_heartbeat_alive(self):
         cache = AxisCache()
         assert cache.snapshot()['heartbeat_alive'] is False
-        cache.heartbeat.last_ts = 1.0
+        cache.heartbeat.last_ts = time.monotonic()
         assert cache.snapshot()['heartbeat_alive'] is True
+        cache.heartbeat.last_ts = time.monotonic() - 2.0
+        assert cache.snapshot()['heartbeat_alive'] is False
 
 
 class TestChannelTable:

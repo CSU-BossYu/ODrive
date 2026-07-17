@@ -6,8 +6,6 @@
 
 #ifdef __cplusplus
 #include <communication/interface_usb.h>
-#include <communication/interface_i2c.h>
-#include <communication/interface_uart.h>
 #include <task_timer.hpp>
 extern "C" {
 #endif
@@ -30,34 +28,21 @@ typedef struct {
     uint32_t min_heap_space; // FreeRTOS heap [Bytes]
     uint32_t max_stack_usage_axis; // minimum remaining space since startup [Bytes]
     uint32_t max_stack_usage_usb;
-    uint32_t max_stack_usage_uart;
     uint32_t max_stack_usage_startup;
     uint32_t max_stack_usage_can;
-    uint32_t max_stack_usage_analog;
 
     uint32_t stack_size_axis;
     uint32_t stack_size_usb;
-    uint32_t stack_size_uart;
     uint32_t stack_size_startup;
     uint32_t stack_size_can;
-    uint32_t stack_size_analog;
 
     int32_t prio_axis;
     int32_t prio_usb;
-    int32_t prio_uart;
     int32_t prio_startup;
     int32_t prio_can;
-    int32_t prio_analog;
 
     USBStats_t& usb = usb_stats_;
-    I2CStats_t& i2c = i2c_stats_;
 } SystemStats_t;
-
-struct PWMMapping_t {
-    endpoint_ref_t endpoint = {0, 0};
-    float min = 0;
-    float max = 0;
-};
 
 // @brief general user configurable board configuration
 struct BoardConfig_t {
@@ -65,18 +50,7 @@ struct BoardConfig_t {
         DEFAULT_GPIO_MODES
     };
 
-    bool enable_uart_a = true;
-    bool enable_uart_b = false;
-    bool enable_uart_c = false;
-    uint32_t uart_a_baudrate = 115200;
-    uint32_t uart_b_baudrate = 115200;
-    uint32_t uart_c_baudrate = 115200;
     bool enable_can_a = true;
-    bool enable_i2c_a = false;
-    ODriveIntf::StreamProtocolType uart0_protocol = ODriveIntf::STREAM_PROTOCOL_TYPE_ASCII_AND_STDOUT;
-    ODriveIntf::StreamProtocolType uart1_protocol = ODriveIntf::STREAM_PROTOCOL_TYPE_ASCII_AND_STDOUT;
-    ODriveIntf::StreamProtocolType uart2_protocol = ODriveIntf::STREAM_PROTOCOL_TYPE_ASCII_AND_STDOUT;
-    ODriveIntf::StreamProtocolType usb_cdc_protocol = ODriveIntf::STREAM_PROTOCOL_TYPE_ASCII_AND_STDOUT;
     float max_regen_current = 0.0f;
     float brake_resistance = ODRIVE_PRODUCTION_BRAKE_RESISTANCE;
     bool enable_brake_resistor = ODRIVE_PRODUCTION_ENABLE_BRAKE_RESISTOR;
@@ -110,12 +84,12 @@ struct BoardConfig_t {
     float dc_max_positive_current = INFINITY; // Max current [A] the power supply can source
     float dc_max_negative_current = -0.01f; // Max current [A] the power supply can sink. You most likely want a non-positive value here. Set to -INFINITY to disable.
     uint32_t error_gpio_pin = DEFAULT_ERROR_PIN;
-    PWMMapping_t pwm_mappings[4];
-    PWMMapping_t analog_mappings[GPIO_COUNT];
 };
 
 struct TaskTimes {
     TaskTimer sampling;
+    TaskTimer control_isr_total;
+    TaskTimer control_loop_total;
     TaskTimer control_loop_misc;
     TaskTimer control_loop_checks;
     TaskTimer dc_calib_wait;
@@ -147,10 +121,7 @@ inline ENUMTYPE operator ~ (ENUMTYPE a) { return static_cast<ENUMTYPE>(~static_c
 #include <current_limiter.hpp>
 #include <thermistor.hpp>
 #include <trapTraj.hpp>
-#include <endstop.hpp>
-#include <mechanical_brake.hpp>
 #include <axis.hpp>
-#include <oscilloscope.hpp>
 #include <communication/communication.h>
 #include <communication/can/odrive_can.hpp>
 
@@ -162,7 +133,7 @@ extern const unsigned char fw_version_revision_;
 extern const unsigned char fw_version_unreleased_;
 }
 
-static Stm32Gpio get_gpio(size_t gpio_num) {
+static inline Stm32Gpio get_gpio(size_t gpio_num) {
     return (gpio_num < GPIO_COUNT) ? gpios[gpio_num] : GPIO_COUNT ? gpios[0] : Stm32Gpio::none;
 }
 
@@ -175,10 +146,6 @@ public:
     void enter_dfu_mode() override;
     bool any_error();
     void clear_errors() override;
-
-    float get_adc_voltage(uint32_t gpio) override {
-        return ::get_adc_voltage(get_gpio(gpio));
-    }
 
     int32_t test_function(int32_t delta) override {
         static int cnt = 0;
@@ -221,13 +188,6 @@ public:
     float& brake_resistor_current_ = ::brake_resistor_current;
 
     SystemStats_t system_stats_;
-
-    // Edit these to suit your capture needs
-    Oscilloscope oscilloscope_{
-        nullptr, // trigger_src
-        0.5f, // trigger_threshold
-        nullptr // data_src TODO: change data type
-    };
 
     ODriveCAN can_;
 

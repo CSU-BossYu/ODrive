@@ -341,7 +341,7 @@ def main():
         _, cols, _ = reader.snapshot()
         if not cols:
             print("WARNING: no @log_hdr seen yet (firmware not streaming?). "
-                  "Check that log_channel_mask != 0 and usb_cdc_protocol allows stdout.")
+                  "Check that log_channel_mask != 0 and USB CDC logging is active.")
         else:
             print(f"Log columns: {cols}")
 
