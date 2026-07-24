@@ -19,7 +19,7 @@ const SECONDARY_COLORS = [
 // ODrive CAN waveform channels. Keep this list limited to useful curves:
 // status, faults, and bus voltage live in the status cards instead.
 export const ODRIVE_CHANNELS: ODriveChannelDef[] = [
-  { index: 0, key: 'pos',     label: '位置',    unit: 'deg', group: 'pos' },
+  { index: 0, key: 'pos',     label: '位置',    unit: 'rad', group: 'pos' },
   { index: 1, key: 'vel',     label: '速度',    unit: 'rpm', group: 'vel' },
   { index: 2, key: 'iq_sp',   label: 'Iq 目标', unit: 'A',   group: 'cur' },
   { index: 3, key: 'iq_meas', label: 'Iq 实测', unit: 'A',   group: 'cur' },

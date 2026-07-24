@@ -59,6 +59,16 @@ The generated DBC is `tools/odrive-cansimple.dbc`.
 | `0x01E` | Extended_Command | bidirectional | implemented |
 | `0x01F` | Set_MIT_Control | Master -> Axis0 | implemented |
 
+`Set_Input_Pos.input_pos` uses the bounded mechanical joint coordinate `[0, 1]`
+turn. Firmware clamps out-of-range values. The endpoints are distinct and
+profile-position mode never wraps the error or chooses an equivalent target
+across the boundary.
+
+With integer 42:41 encoder ratios, the sensor phases at exactly 0 and 1 output
+turn are identical after a cold start. Distinguishing those endpoints across
+power cycles therefore requires a homing reference, retained branch state, or
+an additional non-repeating absolute reference.
+
 Do not reuse reserved command IDs without bumping the extended protocol version.
 
 ## Control modes and input modes
@@ -305,7 +315,7 @@ timeout action path runs with `last_timeout_reason = 2`.
 | `0x50` | float32 | velocity_accel_limit [turn/s²] for VEL_RAMP acceleration |
 | `0x51` | float32 | velocity_decel_limit [turn/s²] for VEL_RAMP deceleration |
 | `0x52` | float32 | quick_stop_decel_limit [turn/s²] for command-timeout quick stop |
-| `0x53` | uint32 | can_watchdog_timeout_ms, 0 = disabled |
+| `0x53` | uint32 | can_watchdog_timeout_ms, default 300 ms; 0 = disabled |
 | `0x54` | uint32 | timeout_action enum (TimeoutAction) |
 | `0x55` | float32 | profile_vel_limit [turn/s], mirrors `trap_traj.config.vel_limit` |
 | `0x56` | float32 | profile_accel_limit [turn/s²], mirrors `trap_traj.config.accel_limit` |
@@ -320,10 +330,10 @@ timeout action path runs with `last_timeout_reason = 2`.
 | `0x61` | float32 | vel_limit_tolerance [ratio], `controller.config.vel_limit_tolerance`; +inf disables the overspeed check |
 | `0x62` | uint32 | enable_vel_limit (bool), `controller.config.enable_vel_limit` |
 | `0x63` | uint32 | enable_torque_mode_vel_limit (bool), `controller.config.enable_torque_mode_vel_limit`; set 0 to stop velocity-estimate clamping of torque in current/torque mode |
-| `0x6D` | float32 | adrc_trim_slew_rate [Nm/s], controller/output-shaft in vernier mode |
-| `0x6E` | uint32 | enable_adrc (bool), bounded disturbance trim after PI/MIT torque |
-| `0x6F` | float32 | adrc_trim_torque_limit [Nm], controller/output-shaft in vernier mode; 0 = disabled |
-| `0x70` | uint32 | enable_friction_compensation (bool), position/velocity servo modes |
+| `0x6D` | reserved | removed ADRC field |
+| `0x6E` | uint32 | enable_sta，实验性2 kHz Sguan STA；每次启动默认关闭 |
+| `0x6F` | reserved | removed ADRC field |
+| `0x70` | uint32 | readonly 0; realtime friction compensation removed |
 | `0x71` | float32 | friction_pos_deadband [turn], output shaft |
 | `0x72` | float32 | friction_vel_deadband [turn/s], output shaft |
 | `0x73` | float32 | friction_stribeck_vel [turn/s], output shaft |
@@ -335,6 +345,7 @@ timeout action path runs with `last_timeout_reason = 2`.
 | `0x79` | float32 | friction_viscous_neg [Nm/(turn/s)] |
 | `0x7A` | float32 | friction_max_torque [Nm], inf = disabled |
 | `0x7B` | float32 | friction_torque_slew_rate [Nm/s], inf = disabled |
+| `0x7D` | float32 | joint_pos_rad, read-only linear mechanical joint position [rad] |
 | `0x7C` | uint32 | enable_mit_friction_compensation (bool), MIT packed-control servo mode |
 
 Normal host UI controls use finite values for `0x60`/`0x61`; disable the
@@ -365,6 +376,22 @@ Selected diagnostic items include:
 - `0x35`: ADC_POST
 - `0x36`: DEADLINE_MISS
 - `0x37`: SPI_PAIR_BUSY
+- `0x60`: float32 live PLL phase-detector error [main encoder count]
+- `0x61`: float32 live unfiltered PLL velocity [main encoder count/s]
+- `0x62`: float32 live bounded PLL phase [main encoder count, modulo CPR]
+- `0x63`: float32 controller-filtered motor velocity [motor turn/s]
+- `0x64`: int32 main encoder continuous shadow count
+- `0x65`: int32 main encoder count within CPR
+- `0x66`: float32 position setpoint [output turn]
+- `0x67`: float32 commanded input position [output turn]
+- `0x68`: float32 held position error [output turn]
+- `0x69`: float32 trajectory velocity setpoint [output turn/s]
+- `0x6A`: float32 position-loop desired velocity [output turn/s]
+- `0x6B`: float32 velocity-PI integral torque [output Nm]
+- `0x6C`: float32 trajectory/feed-forward torque [output Nm]
+- `0x6D`: float32 held motor torque command [motor Nm]
+- `0x6E`: float32 commanded velocity feed-forward [output turn/s]
+- `0x6F`: uint32 trajectory complete flag
 - `0x38`: SPI_PAIR_OK
 
 ## Vernier calibration extended items

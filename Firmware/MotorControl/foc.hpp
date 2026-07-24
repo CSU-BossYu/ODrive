@@ -12,6 +12,14 @@
  */
 class FieldOrientedController : public AlphaBetaFrameController, public ComponentBase {
 public:
+    struct CurrentFilterState {
+        float x1 = 0.0f;
+        float x2 = 0.0f;
+        float y1 = 0.0f;
+        float y2 = 0.0f;
+        bool initialized = false;
+    };
+
     void update(uint32_t timestamp) final;
 
     void reset() final;
@@ -28,6 +36,7 @@ public:
 
     // Config - these values are set while this controller is inactive
     std::optional<float2D> pi_gains_; // [V/A, V/As] should be auto set after resistance and inductance measurement
+    float current_control_anti_windup_gain_ = 0.0f; // [1/s], back-calculation tracking gain
     float I_measured_report_filter_k_ = 1.0f;
 
     // Inputs
@@ -52,6 +61,8 @@ public:
     std::optional<float2D> Ialpha_beta_measured_; // [A, A]
     float Id_measured_; // [A]
     float Iq_measured_; // [A]
+    CurrentFilterState id_control_filter_;
+    CurrentFilterState iq_control_filter_;
     float v_current_control_integral_d_ = 0.0f; // [V]
     float v_current_control_integral_q_ = 0.0f; // [V]
     //float mod_to_V_ = 0.0f;

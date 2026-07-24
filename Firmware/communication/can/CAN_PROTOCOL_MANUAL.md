@@ -207,6 +207,12 @@ DLC: 8
 | 0..3 | float32 | pos_estimate | turn |
 | 4..7 | float32 | vel_estimate | turn/s |
 
+For the production joint controller, `pos_estimate` is the linear mechanical
+output-joint coordinate in turns. Commands are bounded to `[0, 1]`, but the
+reported feedback remains continuous so boundary overshoot is visible.
+`Get_Encoder_Count` remains available when motor-side count telemetry is
+required.
+
 ### 4.4 0x00A Get_Encoder_Count
 
 Direction: Drive -> Host  
@@ -246,6 +252,16 @@ DLC: 8
 | 0..3 | float32 | input_pos | turn |
 | 4..5 | int16 | vel_ff | raw * 0.001 turn/s |
 | 6..7 | int16 | torque_ff | raw * 0.001 Nm |
+
+`input_pos` is a bounded mechanical output-joint position in `[0, 1]` turn.
+Values outside that interval are clamped. Zero and one turn are distinct
+mechanical endpoints: a command from `0.99` to `0.01` turn follows a `-0.98`
+turn trajectory and never wraps across the boundary.
+
+The 42:41 integer-ratio encoder pair has identical phases at exactly zero and
+one output turn after a cold start. A homing reference, retained branch state,
+or another non-repeating absolute reference is required if those endpoints
+must remain distinguishable across power cycles.
 
 This frame feeds the command watchdog.
 
@@ -554,7 +570,7 @@ Most writes require IDLE state. Save persistent changes with subcommand `0x03`
 | 0x50 | float32 | RW | velocity_accel_limit | turn/s^2 |
 | 0x51 | float32 | RW | velocity_decel_limit | turn/s^2 |
 | 0x52 | float32 | RW | quick_stop_decel_limit | turn/s^2 |
-| 0x53 | uint32 | RW | can_watchdog_timeout_ms | 0 disables |
+| 0x53 | uint32 | RW | can_watchdog_timeout_ms | default 300 ms; 0 disables |
 | 0x54 | uint32 | RW | timeout_action | TimeoutAction enum |
 | 0x55 | float32 | RW | profile_vel_limit | turn/s |
 | 0x56 | float32 | RW | profile_accel_limit | turn/s^2 |
@@ -569,10 +585,10 @@ Most writes require IDLE state. Save persistent changes with subcommand `0x03`
 | 0x61 | float32 | RW | vel_limit_tolerance | ratio |
 | 0x62 | uint32 | RW | enable_vel_limit | bool |
 | 0x63 | uint32 | RW | enable_torque_mode_vel_limit | bool |
-| 0x6D | float32 | RW | adrc_trim_slew_rate | Nm/s |
-| 0x6E | uint32 | RW | enable_adrc | bool |
-| 0x6F | float32 | RW | adrc_trim_torque_limit | Nm |
-| 0x70 | uint32 | RW | enable_friction_compensation | bool, position/velocity modes |
+| 0x6D | - | - | reserved | removed ADRC field |
+| 0x6E | uint32 | RW | enable_sta | experimental Sguan STA; starts disabled |
+| 0x6F | - | - | reserved | removed ADRC field |
+| 0x70 | uint32 | RO | enable_friction_compensation | always 0; compensation removed |
 | 0x71 | float32 | RW | friction_pos_deadband | turn |
 | 0x72 | float32 | RW | friction_vel_deadband | turn/s |
 | 0x73 | float32 | RW | friction_stribeck_vel | turn/s |
@@ -584,7 +600,8 @@ Most writes require IDLE state. Save persistent changes with subcommand `0x03`
 | 0x79 | float32 | RW | friction_viscous_neg | Nm/(turn/s) |
 | 0x7A | float32 | RW | friction_max_torque | Nm, inf disables clamp |
 | 0x7B | float32 | RW | friction_torque_slew_rate | Nm/s, inf disables slew |
-| 0x7C | uint32 | RW | enable_mit_friction_compensation | bool, MIT mode |
+| 0x7D | float32 | RO | joint_pos_rad | linear mechanical joint position, rad |
+| 0x7C | uint32 | RO | enable_mit_friction_compensation | always 0; compensation removed |
 
 ### 8.1 Timeout Action Enum
 
@@ -621,6 +638,22 @@ Selected items:
 | 0x29 | float32 | output_vel_estimate | Output-shaft velocity, turn/s |
 | 0x2C | float32 | output_pair_vel_estimate | Pair-sample velocity estimate |
 | 0x2D | float32 | output_last_aux_correction | Last aux correction, turn |
+| 0x60 | float32 | pll_phase_error_counts | Live PLL phase error, main count |
+| 0x61 | float32 | pll_velocity_counts_per_s | Live raw PLL speed, count/s |
+| 0x62 | float32 | pll_position_counts | Live bounded PLL phase, modulo CPR count |
+| 0x63 | float32 | controller_motor_velocity_turns_per_s | Filtered motor speed, turn/s |
+| 0x64 | int32 | shadow_count | Main encoder continuous count |
+| 0x65 | int32 | count_in_cpr | Main encoder count within CPR |
+| 0x66 | float32 | pos_setpoint | Position setpoint, output turn |
+| 0x67 | float32 | input_pos | Commanded input position, output turn |
+| 0x68 | float32 | held_position_error | Held position-loop error, output turn |
+| 0x69 | float32 | vel_setpoint | Trajectory velocity setpoint, output turn/s |
+| 0x6A | float32 | held_position_vel_des | Position-loop desired velocity, output turn/s |
+| 0x6B | float32 | vel_integrator_torque | Velocity-PI integral torque, output Nm |
+| 0x6C | float32 | torque_setpoint | Trajectory/feed-forward torque, output Nm |
+| 0x6D | float32 | held_motor_torque | Held motor torque command, motor Nm |
+| 0x6E | float32 | input_vel | Commanded velocity feed-forward, output turn/s |
+| 0x6F | uint32 | trajectory_done | Trajectory complete flag |
 | 0x30 | uint32 | FOC_BAD_TIMING | Timing diagnostic |
 | 0x34 | uint32 | ADC_PRE | ADC timing diagnostic |
 | 0x35 | uint32 | ADC_POST | ADC timing diagnostic |

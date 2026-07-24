@@ -3,6 +3,35 @@
 #include "debug_counters.hpp"
 #include <board.h>
 
+static float filter_sguan_current(float input,
+                                  FieldOrientedController::CurrentFilterState& state) {
+    // SguanFOC v3.0.1 Id/Iq measurement filter: second-order Butterworth,
+    // wc=31415.96 rad/s, bilinear transform at the 10 kHz current-loop rate.
+    constexpr float wc = 31415.96f;
+    const float tw = current_meas_period * wc;
+    const float tw2 = tw * tw;
+    const float den0 = tw2 + 2.828427124746f * tw + 4.0f;
+    const float b0 = tw2 / den0;
+    const float b1 = 2.0f * b0;
+    const float b2 = b0;
+    const float a1 = (-8.0f + 2.0f * tw2) / den0;
+    const float a2 = (tw2 - 2.828427124746f * tw + 4.0f) / den0;
+
+    if (!state.initialized) {
+        state.x1 = state.x2 = state.y1 = state.y2 = input;
+        state.initialized = true;
+        return input;
+    }
+
+    const float output = b0 * input + b1 * state.x1 + b2 * state.x2 -
+                         a1 * state.y1 - a2 * state.y2;
+    state.x2 = state.x1;
+    state.x1 = input;
+    state.y2 = state.y1;
+    state.y1 = std::isfinite(output) ? output : 0.0f;
+    return state.y1;
+}
+
 Motor::Error AlphaBetaFrameController::on_measurement(
             std::optional<float> vbus_voltage,
             std::optional<std::array<float, 3>> currents,
@@ -54,6 +83,8 @@ void FieldOrientedController::reset() {
     Ialpha_beta_measured_ = std::nullopt;
     Id_measured_ = 0.0f;
     Iq_measured_ = 0.0f;
+    id_control_filter_ = {};
+    iq_control_filter_ = {};
     final_v_alpha_ = 0.0f;
     final_v_beta_ = 0.0f;
     final_v_d_ = 0.0f;
@@ -115,9 +146,11 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
         float I_phase = phase + phase_vel * ((float)(int32_t)(i_timestamp_ - ctrl_timestamp_) / (float)TIM_1_8_CLOCK_HZ);
         float c_I = our_arm_cos_f32(I_phase);
         float s_I = our_arm_sin_f32(I_phase);
+        const float id_raw = c_I * Ialpha + s_I * Ibeta;
+        const float iq_raw = c_I * Ibeta - s_I * Ialpha;
         Idq = {
-            c_I * Ialpha + s_I * Ibeta,
-            c_I * Ibeta - s_I * Ialpha
+            filter_sguan_current(id_raw, id_control_filter_),
+            filter_sguan_current(iq_raw, iq_control_filter_)
         };
         Id_measured_ += I_measured_report_filter_k_ * (Idq->first - Id_measured_);
         Iq_measured_ += I_measured_report_filter_k_ * (Idq->second - Iq_measured_);
@@ -153,20 +186,29 @@ ODriveIntf::MotorIntf::Error FieldOrientedController::get_alpha_beta_output(
         // Apply PI control (V{d,q}_setpoint act as feed-forward terms in this mode)
         mod_d = V_to_mod * (Vd + v_current_control_integral_d_ + Ierr_d * p_gain);
         mod_q = V_to_mod * (Vq + v_current_control_integral_q_ + Ierr_q * p_gain);
+        const float mod_d_unsaturated = mod_d;
+        const float mod_q_unsaturated = mod_q;
 
-        // Vector modulation saturation, lock integrator if saturated
+        // Circular vector modulation saturation
         // TODO make maximum modulation configurable
         float mod_scalefactor = 0.80f * sqrt3_by_2 * 1.0f / std::sqrt(mod_d * mod_d + mod_q * mod_q);
         if (mod_scalefactor < 1.0f) {
             mod_d *= mod_scalefactor;
             mod_q *= mod_scalefactor;
-            // TODO make decayfactor configurable
-            v_current_control_integral_d_ *= 0.99f;
-            v_current_control_integral_q_ *= 0.99f;
-        } else {
-            v_current_control_integral_d_ += Ierr_d * (i_gain * current_meas_period);
-            v_current_control_integral_q_ += Ierr_q * (i_gain * current_meas_period);
         }
+
+        // Vector back-calculation anti-windup. The residual is evaluated after
+        // circular SVPWM saturation and converted back to volts, preserving
+        // the coupled D/Q saturation direction. It is zero when unsaturated.
+        const float saturation_residual_d =
+            mod_to_V * (mod_d - mod_d_unsaturated);
+        const float saturation_residual_q =
+            mod_to_V * (mod_q - mod_q_unsaturated);
+        const float anti_windup_gain = current_control_anti_windup_gain_;
+        v_current_control_integral_d_ += current_meas_period *
+            (i_gain * Ierr_d + anti_windup_gain * saturation_residual_d);
+        v_current_control_integral_q_ += current_meas_period *
+            (i_gain * Ierr_q + anti_windup_gain * saturation_residual_q);
 
     } else {
         // Voltage control mode

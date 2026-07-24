@@ -28,6 +28,10 @@ public:
         float torque_lim = std::numeric_limits<float>::infinity();           //[Nm]. 
         // Value used to compute shunt amplifier gains
         float requested_current_range = ODRIVE_PRODUCTION_REQUESTED_CURRENT_RANGE; // [A]
+        // SguanFOC v3.0.1 current PI implies Kp/L ~= Ki/R ~= 6595 rad/s.
+        // Conservative 10 kHz-loop baseline for the measured high-inductance
+        // joint motor. Sguan's 6595 rad/s tuning did not retain enough phase
+        // margin through this board's sampling/PWM/filter delay.
         float current_control_bandwidth = 1500.0f;  // [rad/s]
         float inverter_temp_limit_lower = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_LOWER;
         float inverter_temp_limit_upper = ODRIVE_PRODUCTION_INVERTER_TEMP_LIMIT_UPPER;

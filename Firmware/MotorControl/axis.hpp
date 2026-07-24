@@ -60,7 +60,7 @@ public:
         // can_watchdog_timeout_ms: fed by motion command frames, triggers
         // controller.config.timeout_action on expiry.
         // heartbeat_timeout_ms: fed by master heartbeat/NMT frames.
-        uint32_t can_watchdog_timeout_ms = 0;
+        uint32_t can_watchdog_timeout_ms = 300;
         uint32_t heartbeat_timeout_ms = 0;
         uint32_t encoder_rate_ms = 10;
         uint32_t motor_error_rate_ms = 0;

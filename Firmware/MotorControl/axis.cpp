@@ -524,7 +524,7 @@ bool Axis::run_calibration_mechanical_scan() {
     controller_.config_.friction_coulomb_neg = 0.0f;
     controller_.config_.friction_viscous_pos = 0.0f;
     controller_.config_.friction_viscous_neg = 0.0f;
-    controller_.config_.enable_adrc = false;
+    controller_.config_.enable_sta = false;
     controller_.config_.enable_friction_compensation = false;
     controller_.config_.control_mode = Controller::CONTROL_MODE_VELOCITY_CONTROL;
     controller_.config_.input_mode = Controller::INPUT_MODE_VEL_RAMP;
@@ -765,7 +765,7 @@ bool Axis::run_calibration_delay_scan() {
     controller_.config_.friction_coulomb_neg = candidate.friction_coulomb_neg;
     controller_.config_.friction_viscous_pos = candidate.friction_viscous_pos;
     controller_.config_.friction_viscous_neg = candidate.friction_viscous_neg;
-    controller_.config_.enable_adrc = false;
+    controller_.config_.enable_sta = false;
     controller_.config_.control_mode = Controller::CONTROL_MODE_VELOCITY_CONTROL;
     controller_.config_.input_mode = Controller::INPUT_MODE_VEL_RAMP;
     controller_.config_.vel_gain = std::max(controller_.config_.vel_gain, 5.0f);
@@ -975,7 +975,7 @@ bool Axis::validate_calibration_candidate() const {
     const float available_output_torque = result.torque_constant *
         motor_.config_.current_lim *
         std::abs(encoder_.config_.vernier_main_ratio);
-    if (!std::isfinite(result.output_inertia) || result.output_inertia <= 0.0f ||
+    if (!std::isfinite(result.output_inertia) || result.output_inertia < 0.0f ||
         !std::isfinite(result.friction_coulomb_pos) ||
         !std::isfinite(result.friction_coulomb_neg) ||
         !std::isfinite(result.friction_viscous_pos) ||
@@ -1050,12 +1050,15 @@ bool Axis::commit_calibration_candidate() {
         controller_.config_.friction_coulomb_neg = result.friction_coulomb_neg;
         controller_.config_.friction_viscous_pos = result.friction_viscous_pos;
         controller_.config_.friction_viscous_neg = result.friction_viscous_neg;
+        // Keep the robust PI speed loop after calibration. STA requires an
+        // explicit runtime enable after its gains are identified for this
+        // output-axis plant.
+        controller_.config_.enable_sta = false;
     }
 
     motor_.update_current_controller_gains();
     encoder_.reset_vernier_output_velocity_estimate();
-    controller_.friction_torque_ = 0.0f;
-    controller_.friction_dir_ = 0;
+    controller_.reset_sta();
 
     if (odrv.save_configuration()) {
         return true;
@@ -1073,8 +1076,6 @@ bool Axis::commit_calibration_candidate() {
     }
     motor_.update_current_controller_gains();
     encoder_.reset_vernier_output_velocity_estimate();
-    controller_.friction_torque_ = 0.0f;
-    controller_.friction_dir_ = 0;
     return false;
 }
 

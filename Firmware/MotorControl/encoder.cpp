@@ -47,6 +47,12 @@ bool Encoder::apply_config() {
     config_.vernier_err_accept = ODRIVE_PRODUCTION_VERNIER_ERR_ACCEPT;
     config_.vernier_err_reject = ODRIVE_PRODUCTION_VERNIER_ERR_REJECT;
 
+    // Migrate the legacy default stored by earlier firmware. Preserve any
+    // genuinely tuned non-default value.
+    if (std::abs(config_.bandwidth - 1000.0f) < 1.0e-3f) {
+        config_.bandwidth = 458.25757f;
+    }
+
     update_pll_gains();
 
     return true;
@@ -79,8 +85,10 @@ bool Encoder::do_checks(){
 }
 
 void Encoder::update_pll_gains() {
-    pll_kp_ = 2.0f * config_.bandwidth;  // basic conversion to discrete time
-    pll_ki_ = 0.25f * (pll_kp_ * pll_kp_); // Critically damped
+    constexpr float kPllDamping = 0.7092503f;
+    const float wn = std::max(config_.bandwidth, 0.0f);
+    pll_kp_ = 2.0f * kPllDamping * wn;
+    pll_ki_ = wn * wn;
 
     // Check that we don't get problems with discrete time approximation
     if (!(current_meas_period * pll_kp_ < 1.0f)) {
@@ -100,7 +108,22 @@ void Encoder::set_linear_count(int32_t count) {
 
     // Update states
     shadow_count_ = count;
-    pos_estimate_counts_ = (float)count;
+    shadow_count64_ = count;
+    pos_estimate_counts_ = (float)mod(count, config_.cpr);
+    pos_cpr_counts_ = pos_estimate_counts_;
+    if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER &&
+        vernier_main_continuous_valid_) {
+        // Re-zeroing the diagnostic count must not look like physical motion
+        // to the bounded joint-position tracker on the next control update.
+        vernier_main_anchor_pos_ = vernier_main_continuous_pos_;
+        vernier_anchor_shadow_count_ = shadow_count64_;
+        vernier_anchor_valid_ = true;
+        vernier_last_shadow_count_ = shadow_count64_;
+        vernier_last_shadow_count_valid_ = true;
+    }
+    pll_previous_error_counts_ = 0.0f;
+    pll_previous_error_valid_ = false;
+    reset_controller_velocity_filter();
 
     cpu_exit_critical(prim);
 }
@@ -118,7 +141,10 @@ void Encoder::set_circular_count(int32_t count, bool update_offset) {
 
     // Update states
     count_in_cpr_ = mod(count, config_.cpr);
-    pos_cpr_counts_ = (float)count_in_cpr_;
+    pos_estimate_counts_ = (float)count_in_cpr_;
+    pos_cpr_counts_ = pos_estimate_counts_;
+    pll_previous_error_counts_ = 0.0f;
+    pll_previous_error_valid_ = false;
 
     cpu_exit_critical(prim);
 }
@@ -133,6 +159,7 @@ bool Encoder::run_offset_calibration() {
     // We use shadow_count_ to do the calibration, but the offset is used by count_in_cpr_
     // Therefore we have to sync them for calibration
     shadow_count_ = count_in_cpr_;
+    shadow_count64_ = count_in_cpr_;
 
     CRITICAL_SECTION() {
         // Reset state variables
@@ -266,7 +293,21 @@ void Encoder::sample_now() {
         } break;
 
         case MODE_SPI_ABS_MT6826S_VERNIER: {
-            start_mt6826s_pair_sample();
+            // Lock with coherent pairs, then sample the main encoder at 10 kHz
+            // and refresh/check the auxiliary absolute branch at 400 Hz.
+            constexpr uint32_t kAuxSampleDivider = 25u;
+            VernierResolver::Result result = {};
+            uint32_t prim = cpu_enter_critical();
+            result = vernier_result_;
+            cpu_exit_critical(prim);
+            const bool need_pair = !result.valid || !result.locked ||
+                ((mt6826s_vernier_sample_counter_ % kAuxSampleDivider) == 0u);
+            if (need_pair) {
+                start_mt6826s_pair_sample();
+            } else {
+                ++mt6826s_vernier_sample_counter_;
+                start_mt6826s_main_sample();
+            }
         } break;
 
         default: {
@@ -497,6 +538,7 @@ float Encoder::vernier_geometry_velocity_scale(float raw_position_turns) const {
 
 float Encoder::apply_vernier_geometry_compensation(float raw_position_turns,
                                                     float raw_velocity_turns) {
+    (void)raw_velocity_turns;
     if (!config_.vernier_geometry_correction_enabled) {
         return raw_position_turns;
     }
@@ -506,13 +548,16 @@ float Encoder::apply_vernier_geometry_compensation(float raw_position_turns,
         return raw_position_turns;
     }
 
-    // Preserve the most recent scan direction through zero speed. Switching the
-    // directional LUT exactly at zero would create an artificial position step.
-    constexpr float kDirectionLatchSpeed = 1.0e-4f;
-    if (raw_velocity_turns > kDirectionLatchSpeed) {
-        vernier_geometry_direction_ = 1;
-    } else if (raw_velocity_turns < -kDirectionLatchSpeed) {
-        vernier_geometry_direction_ = -1;
+    const float correction =
+        vernier_geometry_position_correction(raw_position_turns);
+    const float corrected_observed = raw_position_turns + correction;
+    return corrected_observed / scale;
+}
+
+float Encoder::vernier_geometry_position_correction(
+        float raw_position_turns) const {
+    if (!config_.vernier_geometry_correction_enabled) {
+        return 0.0f;
     }
 
     const float phase = fmodf_pos(raw_position_turns, 1.0f);
@@ -527,9 +572,46 @@ float Encoder::apply_vernier_geometry_compensation(float raw_position_turns,
     const float directional = config_.vernier_direction_correction[bin0] +
         fraction * (config_.vernier_direction_correction[bin1] -
                     config_.vernier_direction_correction[bin0]);
-    const float corrected_observed = raw_position_turns + common +
+    return common +
         static_cast<float>(vernier_geometry_direction_) * directional;
-    return corrected_observed / scale;
+}
+
+void Encoder::initialize_vernier_circular_position(
+        float raw_output_position) {
+    const float scale =
+        config_.vernier_geometry_correction_enabled &&
+        std::isfinite(config_.vernier_effective_ratio_scale) &&
+        std::abs(config_.vernier_effective_ratio_scale) >= 1.0e-6f
+            ? config_.vernier_effective_ratio_scale : 1.0f;
+    vernier_raw_output_phase_ =
+        VernierResolver::wrap01(raw_output_position);
+    vernier_last_geometry_correction_ =
+        vernier_geometry_position_correction(vernier_raw_output_phase_);
+    vernier_output_circular_pos_ = VernierResolver::wrap01(
+        (raw_output_position + vernier_last_geometry_correction_) / scale);
+    vernier_output_circular_valid_ = true;
+}
+
+void Encoder::update_vernier_circular_position(float raw_output_delta) {
+    if (!vernier_output_circular_valid_) {
+        return;
+    }
+
+    const float scale =
+        config_.vernier_geometry_correction_enabled &&
+        std::isfinite(config_.vernier_effective_ratio_scale) &&
+        std::abs(config_.vernier_effective_ratio_scale) >= 1.0e-6f
+            ? config_.vernier_effective_ratio_scale : 1.0f;
+    vernier_raw_output_phase_ = VernierResolver::wrap01(
+        vernier_raw_output_phase_ + raw_output_delta);
+    const float correction =
+        vernier_geometry_position_correction(vernier_raw_output_phase_);
+    const float corrected_delta =
+        (raw_output_delta + correction -
+         vernier_last_geometry_correction_) / scale;
+    vernier_output_circular_pos_ = VernierResolver::wrap01(
+        vernier_output_circular_pos_ + corrected_delta);
+    vernier_last_geometry_correction_ = correction;
 }
 
 float Encoder::vernier_main_position_from_output(float output_position_turns) const {
@@ -589,39 +671,93 @@ bool Encoder::controller_feedback_ready() const {
            vernier_result_.locked;
 }
 
+void Encoder::reset_controller_velocity_filter() {
+    controller_velocity_filter_x1_ = 0.0f;
+    controller_velocity_filter_x2_ = 0.0f;
+    controller_velocity_filter_y1_ = 0.0f;
+    controller_velocity_filter_y2_ = 0.0f;
+    controller_velocity_filter_initialized_ = false;
+}
+
+float Encoder::filter_controller_velocity(float raw_velocity) {
+    // SguanFOC v3.0.1 encoder-speed filter: second-order Butterworth LPF,
+    // wc=300 rad/s, bilinear transform, evaluated at the 10 kHz base rate.
+    constexpr float wc = 300.0f;
+    const float tw = current_meas_period * wc;
+    const float tw2 = tw * tw;
+    const float den0 = tw2 + 2.828427124746f * tw + 4.0f;
+    const float b0 = tw2 / den0;
+    const float b1 = 2.0f * b0;
+    const float b2 = b0;
+    const float a1 = (-8.0f + 2.0f * tw2) / den0;
+    const float a2 = (tw2 - 2.828427124746f * tw + 4.0f) / den0;
+
+    if (!controller_velocity_filter_initialized_) {
+        controller_velocity_filter_x1_ = raw_velocity;
+        controller_velocity_filter_x2_ = raw_velocity;
+        controller_velocity_filter_y1_ = raw_velocity;
+        controller_velocity_filter_y2_ = raw_velocity;
+        controller_velocity_filter_initialized_ = true;
+        return raw_velocity;
+    }
+
+    const float output = b0 * raw_velocity +
+                         b1 * controller_velocity_filter_x1_ +
+                         b2 * controller_velocity_filter_x2_ -
+                         a1 * controller_velocity_filter_y1_ -
+                         a2 * controller_velocity_filter_y2_;
+    controller_velocity_filter_x2_ = controller_velocity_filter_x1_;
+    controller_velocity_filter_x1_ = raw_velocity;
+    controller_velocity_filter_y2_ = controller_velocity_filter_y1_;
+    controller_velocity_filter_y1_ = std::isfinite(output) ? output : 0.0f;
+    return controller_velocity_filter_y1_;
+}
+
 void Encoder::reset_vernier_output_velocity_estimate() {
     if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
         return;
     }
 
+    reset_controller_velocity_filter();
+
     VernierResolver::Result result = {};
     uint32_t pair_sequence = 0;
+    int64_t shadow_count = 0;
     uint32_t prim = cpu_enter_critical();
     result = vernier_result_;
     pair_sequence = mt6826s_pair_sequence_;
+    shadow_count = shadow_count64_;
     cpu_exit_critical(prim);
 
     // Use the auxiliary encoder only to determine the initial main-encoder
-    // unwrap branch. Runtime controller feedback is derived from the main PLL.
+    // unwrap branch. Runtime position follows exact main-encoder increments.
     if (result.valid) {
         vernier_main_continuous_pos_ = result.main_unwrapped;
+        vernier_main_anchor_pos_ = result.main_unwrapped;
+        vernier_anchor_shadow_count_ = shadow_count;
+        vernier_anchor_valid_ = true;
         vernier_last_main_phase_corr_ = result.main_phase_corr;
         vernier_main_continuous_valid_ = true;
+        vernier_last_shadow_count_ = shadow_count;
+        vernier_last_shadow_count_valid_ = true;
         const float raw_output_position =
             vernier_output_position_from_main(vernier_main_continuous_pos_);
+        initialize_vernier_circular_position(raw_output_position);
         vernier_output_pos_estimate_ =
             apply_vernier_geometry_compensation(raw_output_position, 0.0f);
         pos_estimate_ = vernier_output_pos_estimate_;
-        pos_circular_ = fmodf_pos(vernier_output_pos_estimate_,
-                                  axis_->controller_.config_.circular_setpoint_range);
+        pos_circular_ = vernier_output_circular_pos_;
+        joint_pos_rad_ = vernier_output_pos_estimate_ * 2.0f * M_PI;
         vernier_output_estimate_valid_ = true;
     } else {
         vernier_output_estimate_valid_ = false;
         vernier_main_continuous_valid_ = false;
+        vernier_anchor_valid_ = false;
+        vernier_last_shadow_count_valid_ = false;
+        vernier_output_circular_valid_ = false;
     }
 
     vernier_output_vel_estimate_ = 0.0f;
-    vernier_geometry_direction_ = 0;
     vernier_pair_vel_estimate_ = 0.0f;
     vernier_last_aux_correction_ = 0.0f;
     vernier_pair_vel_estimate_valid_ = result.valid;
@@ -635,9 +771,11 @@ void Encoder::reset_vernier_output_velocity_estimate() {
 void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate_turns) {
     VernierResolver::Result result = {};
     uint32_t pair_sequence = 0;
+    int64_t shadow_count = 0;
     uint32_t prim = cpu_enter_critical();
     result = vernier_result_;
     pair_sequence = mt6826s_pair_sequence_;
+    shadow_count = shadow_count64_;
     cpu_exit_critical(prim);
 
     if (dt <= 0.0f) {
@@ -655,12 +793,18 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
             return;
         }
         // Initial absolute branch q is from the Vernier/Nonius pair. After this
-        // point, the continuous controller coordinate follows main PLL deltas.
+        // point, the continuous controller coordinate follows main raw counts.
         vernier_main_continuous_pos_ = result.main_unwrapped;
+        vernier_main_anchor_pos_ = result.main_unwrapped;
+        vernier_anchor_shadow_count_ = shadow_count;
+        vernier_anchor_valid_ = true;
         vernier_last_main_phase_corr_ = result.main_phase_corr;
         vernier_main_continuous_valid_ = true;
+        vernier_last_shadow_count_ = shadow_count;
+        vernier_last_shadow_count_valid_ = true;
         const float raw_output_position =
             vernier_output_position_from_main(vernier_main_continuous_pos_);
+        initialize_vernier_circular_position(raw_output_position);
         vernier_output_pos_estimate_ =
             apply_vernier_geometry_compensation(raw_output_position, 0.0f);
         vernier_output_vel_estimate_ = 0.0f;
@@ -668,12 +812,61 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
         vernier_output_pair_sequence_ = pair_sequence;
         vernier_output_sample_dt_ = 0.0f;
     } else {
+        // Position is advanced only by exact integer encoder motion. The PLL
+        // phase is intentionally not integrated into the controller position:
+        // its sub-count settling can move while the raw encoder is stationary,
+        // which a high-gain position loop would turn into a real torque ripple.
+        int64_t delta_shadow = 0;
+        if (vernier_last_shadow_count_valid_) {
+            delta_shadow = shadow_count - vernier_last_shadow_count_;
+        }
+        vernier_last_shadow_count_ = shadow_count;
+        vernier_last_shadow_count_valid_ = true;
+
+        const float main_direction =
+            config_.vernier_main_reversed ? -1.0f : 1.0f;
         const float delta_main =
-            VernierResolver::wrap_pm_half(main_phase_corr - vernier_last_main_phase_corr_);
-        vernier_main_continuous_pos_ += delta_main;
+            main_direction * (float)delta_shadow / (float)config_.cpr;
+
+        // Reconstruct from an integer displacement relative to a fixed branch
+        // anchor. Do not repeatedly add one encoder count to a large float:
+        // around 2^9 motor turns a float32 ULP is already two 32768-CPR counts,
+        // so repeated one-count additions can round away forever.
+        if (!vernier_anchor_valid_) {
+            vernier_main_anchor_pos_ = vernier_main_continuous_pos_;
+            vernier_anchor_shadow_count_ = shadow_count;
+            vernier_anchor_valid_ = true;
+        }
+        const int64_t anchor_delta_counts =
+            shadow_count - vernier_anchor_shadow_count_;
+        vernier_main_continuous_pos_ =
+            vernier_main_anchor_pos_ +
+            main_direction * (float)anchor_delta_counts / (float)config_.cpr;
         vernier_last_main_phase_corr_ = main_phase_corr;
+
+        // Direction-dependent calibration is a hysteresis branch. Change it
+        // only after a real encoder count, never from a PLL velocity transient.
+        // delta_main is a motor-shaft displacement. Convert it to the output-
+        // shaft coordinate before advancing the circular joint position.
+        // Omitting the gear-ratio division makes pos_circular_ move roughly
+        // vernier_main_ratio times faster than the matching velocity estimate,
+        // which drives the position cascade into a violent reversal.
+        const float raw_output_delta =
+            vernier_output_velocity_from_main(delta_main);
+        if (raw_output_delta > 0.0f) {
+            vernier_geometry_direction_ = 1;
+        } else if (raw_output_delta < 0.0f) {
+            vernier_geometry_direction_ = -1;
+        }
         const float raw_output_position =
             vernier_output_position_from_main(vernier_main_continuous_pos_);
+        if (vernier_output_circular_valid_) {
+            update_vernier_circular_position(raw_output_delta);
+        } else {
+            // Recovery uses the resolved absolute branch. A delta alone
+            // cannot establish the correct [0, 1) joint phase.
+            initialize_vernier_circular_position(raw_output_position);
+        }
         const float raw_output_velocity =
             vernier_output_velocity_from_main(
                 normalized_main_velocity_from_raw_velocity(
@@ -683,12 +876,10 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
         vernier_output_estimate_valid_ = true;
     }
 
-    const float raw_output_position =
-        vernier_output_position_from_main(vernier_main_continuous_pos_);
     vernier_output_vel_estimate_ =
         vernier_output_velocity_from_main(
             normalized_main_velocity_from_raw_velocity(motor_vel_estimate_turns))
-        * vernier_geometry_velocity_scale(raw_output_position);
+        * vernier_geometry_velocity_scale(vernier_raw_output_phase_);
     vernier_last_aux_correction_ = 0.0f;
 
     if (pair_sequence != vernier_output_pair_sequence_) {
@@ -701,8 +892,8 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
     // the output-shaft velocity together with the output-shaft position.  The
     // motor-side PLL velocity remains used below for FOC phase velocity.
     vel_estimate_ = vernier_output_vel_estimate_;
-    pos_circular_ = fmodf_pos(vernier_output_pos_estimate_,
-                              axis_->controller_.config_.circular_setpoint_range);
+    pos_circular_ = vernier_output_circular_pos_;
+    joint_pos_rad_ = vernier_output_pos_estimate_ * 2.0f * M_PI;
 }
 
 void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) {
@@ -718,6 +909,14 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
     out->pair_valid = mt6826s_pair_valid_;
     out->main_sample_age_cycles = 0;
     out->max_main_sample_age_cycles = 0;
+    out->pll_phase_error_counts = delta_pos_cpr_counts_;
+    out->pll_velocity_counts_per_s = vel_estimate_counts_;
+    out->pll_position_counts = pos_estimate_counts_;
+    out->controller_motor_velocity_turns_per_s =
+        controller_velocity_filter_initialized_
+            ? controller_velocity_filter_y1_ : 0.0f;
+    out->shadow_count = shadow_count_;
+    out->count_in_cpr = count_in_cpr_;
     cpu_exit_critical(prim);
 
     Mt6826sSpi::Sample latest_main = {};
@@ -1050,7 +1249,16 @@ bool Encoder::update() {
         } break;
     }
 
-    shadow_count_ += delta_enc;
+    shadow_count64_ += (int64_t)delta_enc;
+    // Keep the legacy int32 telemetry count with explicitly defined wrapping.
+    // Avoid signed-overflow UB; realtime control uses shadow_count64_.
+    int64_t wrapped_shadow = (int64_t)shadow_count_ + (int64_t)delta_enc;
+    if (wrapped_shadow > INT32_MAX) {
+        wrapped_shadow -= (INT64_C(1) << 32);
+    } else if (wrapped_shadow < INT32_MIN) {
+        wrapped_shadow += (INT64_C(1) << 32);
+    }
+    shadow_count_ = (int32_t)wrapped_shadow;
     count_in_cpr_ += delta_enc;
     count_in_cpr_ = mod(count_in_cpr_, config_.cpr);
 
@@ -1059,39 +1267,54 @@ bool Encoder::update() {
     // Memory for pos_circular
     float pos_cpr_counts_last = pos_cpr_counts_;
 
-    //// run pll (for now pll is in units of encoder counts)
-    // Predict current pos
-    pos_estimate_counts_ += current_meas_period * vel_estimate_counts_;
-    pos_cpr_counts_      += current_meas_period * vel_estimate_counts_;
-    // Encoder model
-    auto encoder_model = [](float internal_pos)->int32_t {
-        return (int32_t)std::floor(internal_pos);
-    };
-    // discrete phase detector
-    float delta_pos_counts = (float)(shadow_count_ - encoder_model(pos_estimate_counts_));
-    float delta_pos_cpr_counts = (float)(count_in_cpr_ - encoder_model(pos_cpr_counts_));
+    //// Tustin PLL in encoder counts, matching SguanFOC's discretization.
+    float delta_pos_cpr_counts = (float)count_in_cpr_ - pos_cpr_counts_;
     delta_pos_cpr_counts = wrap_pm(delta_pos_cpr_counts, (float)(config_.cpr));
     delta_pos_cpr_counts_ += 0.1f * (delta_pos_cpr_counts - delta_pos_cpr_counts_); // for debug
-    // pll feedback
-    pos_estimate_counts_ += current_meas_period * pll_kp_ * delta_pos_counts;
-    pos_cpr_counts_ += current_meas_period * pll_kp_ * delta_pos_cpr_counts;
-    pos_cpr_counts_ = fmodf_pos(pos_cpr_counts_, (float)(config_.cpr));
-    vel_estimate_counts_ += current_meas_period * pll_ki_ * delta_pos_cpr_counts;
+    const float previous_error = pll_previous_error_valid_
+        ? pll_previous_error_counts_ : delta_pos_cpr_counts;
+    const float old_velocity = vel_estimate_counts_;
+    vel_estimate_counts_ +=
+        (pll_kp_ + 0.5f * pll_ki_ * current_meas_period) * delta_pos_cpr_counts +
+        (-pll_kp_ + 0.5f * pll_ki_ * current_meas_period) * previous_error;
+    pll_previous_error_counts_ = delta_pos_cpr_counts;
+    pll_previous_error_valid_ = true;
+    pos_estimate_counts_ += 0.5f * current_meas_period *
+                            (old_velocity + vel_estimate_counts_);
+    // The PLL estimates phase, not the multi-turn branch. Bounding the state
+    // preserves sub-count float32 resolution regardless of how far the shaft
+    // has travelled. shadow_count_ remains the authoritative branch counter.
+    pos_estimate_counts_ =
+        fmodf_pos(pos_estimate_counts_, (float)config_.cpr);
+    pos_cpr_counts_ = pos_estimate_counts_;
     bool snap_to_zero_vel = false;
     if (std::abs(vel_estimate_counts_) < 0.5f * current_meas_period * pll_ki_) {
         vel_estimate_counts_ = 0.0f;  //align delta-sigma on zero to prevent jitter
         snap_to_zero_vel = true;
     }
 
-    const float motor_pos_estimate_turns = pos_estimate_counts_ / (float)config_.cpr;
+    // Reconstruct the continuous estimate from an integer branch and the
+    // bounded PLL phase correction. Split quotient/remainder before converting
+    // to float so a large shadow count cannot quantize the circular phase.
+    const int64_t whole_motor_turns = shadow_count64_ / config_.cpr;
+    const int32_t shadow_remainder = (int32_t)(
+        shadow_count64_ - whole_motor_turns * config_.cpr);
+    const float pll_phase_correction = wrap_pm(
+        pos_cpr_counts_ - (float)count_in_cpr_, (float)config_.cpr);
+    const float motor_pos_estimate_turns =
+        (float)whole_motor_turns +
+        ((float)shadow_remainder + pll_phase_correction) /
+            (float)config_.cpr;
     const float motor_vel_estimate_turns = vel_estimate_counts_ / (float)config_.cpr;
+    const float controller_motor_velocity_turns =
+        filter_controller_velocity(motor_vel_estimate_turns);
 
     // For non-vernier modes, controller position and velocity are sourced from
     // the motor-side PLL. In vernier mode, publish_vernier_output_estimate()
     // overrides both pos_estimate_ and vel_estimate_ with output-shaft values.
     if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
         pos_estimate_ = motor_pos_estimate_turns;
-        vel_estimate_ = motor_vel_estimate_turns;
+        vel_estimate_ = controller_motor_velocity_turns;
     }
     
     // TODO: we should strictly require that this value is from the previous iteration
@@ -1102,6 +1325,7 @@ bool Encoder::update() {
     pos_circular = fmodf_pos(pos_circular, axis_->controller_.config_.circular_setpoint_range);
     if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
         pos_circular_ = pos_circular;
+        joint_pos_rad_ = motor_pos_estimate_turns * 2.0f * M_PI;
     }
 
     //// run encoder count interpolation
@@ -1138,7 +1362,8 @@ bool Encoder::update() {
     }
 
     if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
-        publish_vernier_output_estimate(current_meas_period, motor_vel_estimate_turns);
+        publish_vernier_output_estimate(current_meas_period,
+                                        controller_motor_velocity_turns);
     }
 
     return true;

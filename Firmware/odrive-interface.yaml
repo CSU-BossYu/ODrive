@@ -819,9 +819,11 @@ interfaces:
             doc: Action taken when the command or heartbeat watchdog expires. Persisted to NVM.
           circular_setpoints:
             type: bool
+            c_setter: set_circular_setpoints
           circular_setpoint_range:
             type: float32
             doc: circular range in [turns] for position setpoints when circular_setpoints is True
+            c_setter: set_circular_setpoint_range
           steps_per_circular_range:
             type: int32
             doc: Number of steps within the circular setpoint range. Set this and the circular setpoint range to powers of 2 for the best results.
@@ -851,25 +853,17 @@ interfaces:
             type: float32
             doc: "Electrical power threshold for spinout detection. This should be a positive value"
             unit: Watt
-          enable_adrc:
+          enable_sta:
             type: bool
-            doc: Enable ADRC as a bounded disturbance-trim term after the primary PI/MIT torque calculation. Disabled by default; tune only after the primary controller and friction feedforward are stable. Persisted to NVM.
-          adrc_trim_torque_limit:
-            type: float32
-            unit: N·m
-            doc: Absolute clamp on ADRC trim torque in controller torque units; output-shaft Nm in MODE_SPI_ABS_MT6826S_VERNIER. Set 0 to disable trim. Persisted to NVM.
-          adrc_trim_slew_rate:
-            type: float32
-            unit: N·m / sec
-            doc: Slew limit on ADRC trim torque in controller torque units; output-shaft Nm/s in MODE_SPI_ABS_MT6826S_VERNIER. Persisted to NVM.
+            doc: Experimental 2 kHz SguanFOC v3.0.1 STA speed controller. It starts disabled until plant-specific current-domain gains are available.
           # Friction compensation (controller torque units; output-shaft
           # Nm / turn / turn-s in MODE_SPI_ABS_MT6826S_VERNIER). Persisted to NVM.
           enable_friction_compensation:
             type: bool
-            doc: Enable asymmetric Stribeck friction feedforward for position/velocity servo modes at the torque-summing stage. Controller torque units; output-shaft units in MODE_SPI_ABS_MT6826S_VERNIER. Persisted to NVM.
+            doc: Inactive calibration-data compatibility field. The Sguan-aligned realtime torque path applies no friction compensation.
           enable_mit_friction_compensation:
             type: bool
-            doc: Enable asymmetric Stribeck friction feedforward for MIT packed-control servo mode. Use only when the upstream controller is not already applying friction feedforward. Persisted to NVM.
+            doc: Inactive calibration-data compatibility field. MIT applies no friction compensation.
           friction_pos_deadband:
             type: float32
             unit: turn
@@ -1003,6 +997,11 @@ interfaces:
         c_getter: pos_circular_.any().value_or(0.0f)
         unit: turns
         doc: Circular position estimate of the encoder, as a decimal from [0, 1).  Also known as "single-turn" position.
+      joint_pos_rad:
+        type: readonly float32
+        c_getter: joint_pos_rad_.any().value_or(0.0f)
+        unit: rad
+        doc: Output/joint position wrapped to the half-open interval [0, 2*pi). The continuous multi-turn estimate remains available as pos_estimate.
       pos_cpr_counts:
         type: readonly float32
         unit: counts
@@ -1051,6 +1050,7 @@ interfaces:
             type: float32
             c_setter: set_bandwidth
             unit: rad/s
+            doc: PLL natural frequency. The default yields Kp=650 and Ki=210000 with damping 0.70925.
           calib_range: 
             type: float32
             unit: turn

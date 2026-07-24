@@ -21,7 +21,9 @@ public:
         float calib_range = 0.02f; // Accuracy required to pass encoder cpr check
         float calib_scan_distance = 16.0f * M_PI; // rad electrical
         float calib_scan_omega = 4.0f * M_PI; // rad/s electrical
-        float bandwidth = 1000.0f;
+        // PLL natural frequency [rad/s]. The default reproduces SguanFOC's
+        // Kp=650, Ki=210000 design with the damping used in update_pll_gains().
+        float bandwidth = 458.25757f;
         int32_t phase_offset = 0;        // Offset between encoder count and rotor electrical phase
         float phase_offset_float = 0.0f; // Sub-count phase alignment offset
         int32_t cpr = ODRIVE_PRODUCTION_ENCODER_CPR;
@@ -107,22 +109,35 @@ public:
     Error error_ = ERROR_NONE;
     bool is_ready_ = false;
     int32_t shadow_count_ = 0;
+    int64_t shadow_count64_ = 0;
     int32_t count_in_cpr_ = 0;
     float interpolation_ = 0.0f;
     OutputPort<float> phase_ = 0.0f;     // [rad]
     OutputPort<float> phase_vel_ = 0.0f; // [rad/s]
-    float pos_estimate_counts_ = 0.0f;  // [count]
-    float pos_cpr_counts_ = 0.0f;  // [count]
+    // PLL phase state in [0, cpr). Keeping this bounded is essential: a
+    // continuous float32 count loses single-count resolution above 2^24 and
+    // creates a false stationary velocity limit cycle. shadow_count_ carries
+    // the multi-turn branch.
+    float pos_estimate_counts_ = 0.0f;  // [count], modulo CPR
+    float pos_cpr_counts_ = 0.0f;  // [count], published PLL phase
     float delta_pos_cpr_counts_ = 0.0f;  // [count] phase detector result for debug
     float vel_estimate_counts_ = 0.0f;  // [count/s]
     float pll_kp_ = 0.0f;   // [count/s / count]
     float pll_ki_ = 0.0f;   // [(count/s^2) / count]
+    float pll_previous_error_counts_ = 0.0f;
+    bool pll_previous_error_valid_ = false;
+    float controller_velocity_filter_x1_ = 0.0f;
+    float controller_velocity_filter_x2_ = 0.0f;
+    float controller_velocity_filter_y1_ = 0.0f;
+    float controller_velocity_filter_y2_ = 0.0f;
+    bool controller_velocity_filter_initialized_ = false;
     int32_t pos_abs_ = 0;
     float spi_error_rate_ = 0.0f;
 
     OutputPort<float> pos_estimate_ = 0.0f; // [turn]
     OutputPort<float> vel_estimate_ = 0.0f; // [turn/s]
     OutputPort<float> pos_circular_ = 0.0f; // [turn]
+    OutputPort<float> joint_pos_rad_ = 0.0f; // [rad], linear mechanical coordinate
 
     bool pos_estimate_valid_ = false;
     bool vel_estimate_valid_ = false;
@@ -146,13 +161,18 @@ public:
     float vernier_output_velocity_from_main(float main_velocity_turns) const;
     float apply_vernier_geometry_compensation(float raw_position_turns,
                                               float raw_velocity_turns);
+    float vernier_geometry_position_correction(float raw_position_turns) const;
     float vernier_geometry_velocity_scale(float raw_position_turns) const;
+    void initialize_vernier_circular_position(float raw_output_position);
+    void update_vernier_circular_position(float raw_output_delta);
     float vernier_main_position_from_output(float output_position_turns) const;
     float align_vernier_output_position(float position_turns, float reference_turns) const;
     float normalized_main_phase_from_raw_phase(float raw_phase) const;
     float normalized_main_velocity_from_raw_velocity(float raw_velocity) const;
     void publish_vernier_output_estimate(float dt, float motor_vel_estimate_turns);
     void reset_vernier_output_velocity_estimate();
+    float filter_controller_velocity(float raw_velocity);
+    void reset_controller_velocity_filter();
     bool start_mt6826s_main_sample();
     bool start_mt6826s_pair_sample();
     bool abs_spi_pos_updated_ = false;
@@ -204,6 +224,12 @@ public:
         uint32_t max_pair_transaction_cycles = 0;
         uint32_t main_sample_age_cycles = 0;
         uint32_t max_main_sample_age_cycles = 0;
+        float pll_phase_error_counts = 0.0f;
+        float pll_velocity_counts_per_s = 0.0f;
+        float pll_position_counts = 0.0f;
+        float controller_motor_velocity_turns_per_s = 0.0f;
+        int32_t shadow_count = 0;
+        int32_t count_in_cpr = 0;
     };
     void get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out);
     void reset_vernier_calibration();
@@ -225,6 +251,10 @@ public:
     VernierResolver::Result vernier_result_;
     float vernier_output_pos_estimate_ = 0.0f;
     float vernier_output_vel_estimate_ = 0.0f;
+    float vernier_raw_output_phase_ = 0.0f;
+    float vernier_output_circular_pos_ = 0.0f;
+    float vernier_last_geometry_correction_ = 0.0f;
+    bool vernier_output_circular_valid_ = false;
     float vernier_output_sample_dt_ = 0.0f;
     uint32_t vernier_output_pair_sequence_ = 0;
     bool vernier_output_estimate_valid_ = false;
@@ -234,8 +264,13 @@ public:
     bool vernier_pair_vel_estimate_valid_ = false;
     bool vernier_last_pair_position_valid_ = false;
     float vernier_main_continuous_pos_ = 0.0f;
+    float vernier_main_anchor_pos_ = 0.0f;
+    int64_t vernier_anchor_shadow_count_ = 0;
+    bool vernier_anchor_valid_ = false;
     float vernier_last_main_phase_corr_ = 0.0f;
     bool vernier_main_continuous_valid_ = false;
+    int64_t vernier_last_shadow_count_ = 0;
+    bool vernier_last_shadow_count_valid_ = false;
     int8_t vernier_geometry_direction_ = 0;
     uint32_t mt6826s_pair_sequence_ = 0;
     uint32_t mt6826s_vernier_sample_counter_ = 0;

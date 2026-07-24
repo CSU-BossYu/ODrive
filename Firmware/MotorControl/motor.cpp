@@ -5,6 +5,7 @@
 #include "odrive_main.h"
 
 #include <algorithm>
+#include <cmath>
 
 static constexpr auto CURRENT_ADC_LOWER_BOUND =        (uint32_t)((float)(1 << 12) * CURRENT_SENSE_MIN_VOLT / 3.3f);
 static constexpr auto CURRENT_ADC_UPPER_BOUND =        (uint32_t)((float)(1 << 12) * CURRENT_SENSE_MAX_VOLT / 3.3f);
@@ -309,12 +310,26 @@ void Motor::update_current_controller_gains() {
     float p_gain = config_.current_control_bandwidth * config_.phase_inductance;
     float plant_pole = config_.phase_resistance / config_.phase_inductance;
     current_control_.pi_gains_ = {p_gain, plant_pole * p_gain};
+    // Back-calculation tracks the saturated voltage with the PI integrator
+    // time constant Tt = Kp/Ki = L/R. Limit Kaw*Ts below 0.5 so unusual or
+    // stale calibration values cannot make the discrete tracking loop abrupt.
+    const float max_anti_windup_gain = 0.5f / current_meas_period;
+    current_control_.current_control_anti_windup_gain_ =
+        std::isfinite(plant_pole)
+            ? std::clamp(plant_pole, 0.0f, max_anti_windup_gain)
+            : 0.0f;
 }
 
 bool Motor::apply_config() {
     config_.parent = this;
     config_.R_wL_FF_enable = true;
     config_.bEMF_FF_enable = true;
+    // Roll back the Sguan-derived bandwidth that caused raw phase-current
+    // excursions above the hardware trip threshold on this plant. Preserve
+    // any other deliberately tuned value already stored in NVM.
+    if (std::abs(config_.current_control_bandwidth - 6595.0f) < 1.0e-3f) {
+        config_.current_control_bandwidth = 1500.0f;
+    }
     // Motor-model constants are baked per motor model (production_config.h).
     // Force-overwrite on every boot so NVM never holds a stale/wrong value.
     // Load-dependent tuning (current_lim, gains) is NOT overwritten here.

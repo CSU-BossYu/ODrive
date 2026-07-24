@@ -111,6 +111,32 @@ class CalibrationDynamicsTests(unittest.TestCase):
         self.assertAlmostEqual(fit.viscous_pos, expected[3], places=7)
         self.assertAlmostEqual(fit.viscous_neg, expected[4], places=7)
 
+    def test_mechanical_fit_constrains_unobservable_negative_inertia(self):
+        kt = 0.035
+        ratio = 42.0
+        torque_scale = kt * ratio
+        observations = []
+        for direction in (1, -1):
+            for velocity_abs in (0.02, 0.05, 0.10):
+                for acceleration in (-0.2, 0.0, 0.2):
+                    velocity = direction * velocity_abs
+                    # Emulate acceleration phase error that makes the
+                    # unconstrained inertia coefficient negative.
+                    torque = -0.05 * acceleration
+                    torque += (0.14 + 0.08 * velocity if direction > 0 else
+                               -0.17 + 0.11 * velocity)
+                    observations.append((velocity, acceleration,
+                                         torque / torque_scale))
+        fit = fit_mechanical_dynamics(
+            observations, torque_constant=kt,
+            motor_turns_per_output_turn=ratio)
+        self.assertAlmostEqual(fit.output_inertia, 0.0, places=7)
+        self.assertGreaterEqual(fit.coulomb_pos, 0.0)
+        self.assertGreaterEqual(fit.coulomb_neg, 0.0)
+        self.assertGreaterEqual(fit.viscous_pos, 0.0)
+        self.assertGreaterEqual(fit.viscous_neg, 0.0)
+        self.assertGreater(fit.residual_rms_torque, 0.0)
+
     def test_integer_pole_pairs_from_electrical_scan(self):
         scan = 8.0 * 3.141592653589793
         counts = round(scan * 32768 / (2.0 * 3.141592653589793 * 14))

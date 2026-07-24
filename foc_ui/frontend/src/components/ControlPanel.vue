@@ -31,7 +31,7 @@ const selectedMode = ref<ModeKey>('velocity')
 const requestedMode = ref<ModeKey | null>(null)
 const lastPositionSentAt = ref(0)
 
-const posTargetDeg = ref(0)
+const posTargetRad = ref(0)
 const posVelFFRpm = ref(0)
 const velTargetRpm = ref(12)
 const velTorqueFF = ref(0)
@@ -73,7 +73,8 @@ const selected = computed(() => modes.find((m) => m.key === selectedMode.value) 
 const isSelectedModeActive = computed(() => firmwareMode.value === selectedMode.value)
 const isStreaming = computed(() => streamMode.value === selectedMode.value)
 
-const posDeg = computed(() => (oSocket.latest.value?.ch.pos ?? 0) * 360)
+const TAU = 2 * Math.PI
+const posRad = computed(() => safeNumber(oSocket.latest.value?.ch.pos) * TAU)
 const velRpmActual = computed(() => (oSocket.latest.value?.ch.vel ?? 0) * 60)
 const shadowCount = computed(() => oSocket.latest.value?.ch.shadow_count ?? 0)
 const countInCpr = computed(() => oSocket.latest.value?.ch.count_in_cpr ?? 0)
@@ -81,7 +82,15 @@ const iq = computed(() => oSocket.latest.value?.ch.iq_meas ?? 0)
 const vbus = computed(() => oSocket.latest.value?.ch.vbus ?? 0)
 const ibus = computed(() => oSocket.latest.value?.ch.ibus ?? 0)
 
-const targetPosTurns = computed(() => safeNumber(posTargetDeg.value) / 360)
+const positionTargetIsValid = computed(() =>
+  typeof posTargetRad.value === 'number'
+  && Number.isFinite(posTargetRad.value)
+  && posTargetRad.value >= 0
+  && posTargetRad.value <= TAU,
+)
+const targetPosTurns = computed(() =>
+  positionTargetIsValid.value ? posTargetRad.value / TAU : 0,
+)
 const targetVelTurnsPerSec = computed(() => safeNumber(velTargetRpm.value) / 60)
 const velocityIsAggressive = computed(() => Math.abs(safeNumber(velTargetRpm.value)) > 60)
 
@@ -271,9 +280,13 @@ function toggleStream() {
 }
 
 function applyPosition() {
+  if (!positionTargetIsValid.value) {
+    lastPositionSentAt.value = 0
+    return
+  }
   stopStreaming(false)
   requestedMode.value = null
-  oSocket.setPos(safeNumber(posTargetDeg.value) / 360, safeNumber(posVelFFRpm.value) / 60, 0)
+  oSocket.setPos(targetPosTurns.value, safeNumber(posVelFFRpm.value) / 60, 0)
   lastPositionSentAt.value = Date.now()
 }
 
@@ -458,15 +471,16 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="selectedMode === 'position'" class="mode-fields">
-        <div class="explain">目标是输出轴绝对角度，不是增量移动。360 deg = 1 圈。</div>
-        <div class="conversion">当前输入：{{ format(safeNumber(posTargetDeg), 2) }} deg = {{ format(targetPosTurns, 4) }} 圈</div>
-        <label>输出轴绝对角度 (deg)
-          <input type="number" step="1" v-model.number="posTargetDeg" @keyup.enter="applyPosition" />
+        <div class="explain">目标角度限制在 [0, 2π] 的机械行程内；0 与 2π 是不同端点，不进行圆周最短路径折返。</div>
+        <div class="conversion">当前输入：{{ format(safeNumber(posTargetRad), 4) }} rad → 机械目标 {{ format(targetPosTurns, 4) }} 圈</div>
+        <label>输出轴单圈角度 (rad)
+          <input type="number" min="0" :max="TAU" step="0.01" v-model.number="posTargetRad" @keyup.enter="applyPosition" />
         </label>
         <label>速度前馈 (rpm)
           <input type="number" step="1" v-model.number="posVelFFRpm" @keyup.enter="applyPosition" />
         </label>
-        <button @click="applyPosition" class="primary">发送单次位置目标</button>
+        <button @click="applyPosition" class="primary" :disabled="!positionTargetIsValid">发送单次位置目标</button>
+        <span v-if="!positionTargetIsValid" class="pill warn">目标必须在 0 到 2π rad 之间</span>
         <span v-if="lastPositionSentAt" class="pill ok">位置目标已发送</span>
       </div>
 
@@ -514,7 +528,7 @@ onBeforeUnmount(() => {
     <div class="telemetry-card">
       <div class="card-title">当前读数</div>
       <div class="telemetry-grid">
-        <div><span>位置</span><strong>{{ format(posDeg, 4) }}</strong><em>deg</em></div>
+        <div><span>位置</span><strong>{{ format(posRad, 5) }}</strong><em>rad</em></div>
         <div><span>速度</span><strong>{{ format(velRpmActual, 3) }}</strong><em>rpm</em></div>
         <div><span>Iq</span><strong>{{ format(iq, 3) }}</strong><em>A</em></div>
         <div><span>母线</span><strong>{{ format(vbus, 1) }}</strong><em>V</em></div>

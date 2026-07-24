@@ -31,7 +31,7 @@ interface ControlParamDef extends ParamDef {
 
 const PARAMS: ParamDef[] = [
   { key: 'pos_gain',            label: '位置增益',       unit: '(rev/s)/rev', min: 0, max: 100, step: 0.1 },
-  { key: 'vel_gain',            label: '速度增益',       unit: 'Nm/(rev/s)',  min: 0, max: 10,  step: 0.001 },
+  { key: 'vel_gain',            label: '速度增益',       unit: 'Nm/(rev/s)',  min: 0, max: 100, step: 0.01 },
   { key: 'vel_integrator_gain', label: '速度积分增益',   unit: 'Nm/(rev/s)/s',min: 0, max: 100, step: 0.01 },
   { key: 'vel_limit',           label: '速度上限',       unit: 'rpm',         min: 0, max: 1800, step: 10, scale: 60 },
   { key: 'current_limit',       label: '电流上限',       unit: 'A',           min: 0, max: 50,  step: 0.1 },
@@ -68,10 +68,8 @@ const CONTROL_PARAMS: ControlParamDef[] = [
   { key: 'control_runtime_state', label: '运行标志', unit: 'bits', min: 0, max: 0xffffffff, step: 1, item: 0x58, isFloat: false, readonly: true },
   { key: 'last_timeout_reason', label: '上次超时原因', unit: '', min: 0, max: 0xffffffff, step: 1, item: 0x59, isFloat: false, readonly: true },
   { key: 'trajectory_done', label: '轨迹完成', unit: '', min: 0, max: 1, step: 1, item: 0x5A, isFloat: false, readonly: true },
-  // ADRC disturbance trim (armed-guarded — disarm to IDLE before setting).
-  { key: 'enable_adrc', label: 'ADRC 使能', unit: '', min: 0, max: 1, step: 1, item: 0x6E, isFloat: false },
-  { key: 'adrc_trim_torque_limit', label: 'ADRC 补偿上限', unit: 'Nm', min: 0, max: 5, step: 0.01, item: 0x6F, isFloat: true },
-  { key: 'adrc_trim_slew_rate', label: 'ADRC 补偿斜率', unit: 'Nm/s', min: 0, max: 100, step: 0.01, item: 0x6D, isFloat: true },
+  // Sguan STA selection (armed-guarded — disarm to IDLE before setting).
+  { key: 'enable_sta', label: 'Sguan STA 使能', unit: '', min: 0, max: 1, step: 1, item: 0x6E, isFloat: false },
 ]
 
 CONTROL_PARAMS.splice(13, 0,
@@ -120,7 +118,7 @@ const MOTOR_MODEL_PARAMS: MotorModelParamDef[] = [
 ]
 
 const values = ref<Record<string, number>>({
-  pos_gain: 20, vel_gain: 0.5, vel_integrator_gain: 10,
+  pos_gain: 7, vel_gain: 10, vel_integrator_gain: 1.5,
   vel_limit: 60, current_limit: 3, poll_hz: 20,
 })
 values.value.pos_integrator_gain = 0
@@ -132,7 +130,7 @@ const controlValues = ref<Record<string, number>>({
   velocity_accel_limit: 60,
   velocity_decel_limit: 60,
   quick_stop_decel_limit: 120,
-  can_watchdog_timeout_ms: 500,
+  can_watchdog_timeout_ms: 300,
   heartbeat_timeout_ms: 0,
   timeout_action: 2,
   servo_mode: 2,
@@ -142,9 +140,7 @@ const controlValues = ref<Record<string, number>>({
   vel_limit_tolerance: 1.2,
   enable_vel_limit: 1,
   enable_torque_mode_vel_limit: 1,
-  enable_adrc: 1,
-  adrc_trim_torque_limit: 0.5,
-  adrc_trim_slew_rate: 0.05,
+  enable_sta: 0,
 })
 
 const motorModelValues = ref<Record<string, number>>({})

@@ -160,7 +160,7 @@ public:
             }
             matrix[row][kParameters] = xty_[row];
         }
-        if (!solve(matrix)) {
+        if (!solve(matrix, kParameters)) {
             failure_reason_ = FAILURE_SINGULAR_REGRESSION;
             return false;
         }
@@ -168,6 +168,19 @@ public:
         std::array<float, kParameters> beta = {};
         for (size_t i = 0; i < kParameters; ++i) {
             beta[i] = matrix[i][kParameters];
+        }
+        // Measurement noise, gravity loading and acceleration-estimator phase
+        // lag can push an unconstrained least-squares coefficient below zero
+        // even though inertia and friction are physically nonnegative. Refit
+        // over every active parameter subset and retain the minimum-residual
+        // nonnegative solution instead of rejecting the complete calibration.
+        bool has_negative_coefficient = false;
+        for (float value : beta) {
+            has_negative_coefficient |= value < 0.0f;
+        }
+        if (has_negative_coefficient && !solve_nonnegative(&beta)) {
+            failure_reason_ = FAILURE_NONPHYSICAL_PARAMETERS;
+            return false;
         }
         float explained = 0.0f;
         for (size_t i = 0; i < kParameters; ++i) {
@@ -184,7 +197,7 @@ public:
         result->residual_rms_torque = residual_current_rms * torque_scale_;
         if (!std::isfinite(result->output_inertia) ||
             !std::isfinite(result->residual_rms_torque) ||
-            beta[0] <= 0.0f || beta[1] < 0.0f || beta[2] < 0.0f ||
+            beta[0] < 0.0f || beta[1] < 0.0f || beta[2] < 0.0f ||
             beta[3] < 0.0f || beta[4] < 0.0f) {
             failure_reason_ = FAILURE_NONPHYSICAL_PARAMETERS;
             return false;
@@ -205,23 +218,76 @@ public:
     uint32_t rejected_timing() const { return rejected_timing_; }
 
 private:
+    bool solve_nonnegative(std::array<float, kParameters>* result) const {
+        if (!result) return false;
+        bool found = false;
+        float best_error = INFINITY;
+        std::array<float, kParameters> best = {};
+        constexpr uint32_t kAllParameters = (1u << kParameters) - 1u;
+
+        for (uint32_t mask = 1u; mask <= kAllParameters; ++mask) {
+            std::array<size_t, kParameters> active = {};
+            size_t active_count = 0;
+            for (size_t index = 0; index < kParameters; ++index) {
+                if (mask & (1u << index)) active[active_count++] = index;
+            }
+
+            std::array<std::array<float, kParameters + 1>, kParameters> matrix = {};
+            for (size_t row = 0; row < active_count; ++row) {
+                for (size_t col = 0; col < active_count; ++col) {
+                    matrix[row][col] = xtx_[active[row]][active[col]];
+                }
+                matrix[row][active_count] = xty_[active[row]];
+            }
+            if (!solve(matrix, active_count)) continue;
+
+            std::array<float, kParameters> candidate = {};
+            bool feasible = true;
+            for (size_t row = 0; row < active_count; ++row) {
+                const float value = matrix[row][active_count];
+                if (!std::isfinite(value) || value < -1.0e-6f) {
+                    feasible = false;
+                    break;
+                }
+                candidate[active[row]] = std::max(value, 0.0f);
+            }
+            if (!feasible) continue;
+
+            float error = yty_;
+            for (size_t row = 0; row < kParameters; ++row) {
+                error -= 2.0f * candidate[row] * xty_[row];
+                for (size_t col = 0; col < kParameters; ++col) {
+                    error += candidate[row] * xtx_[row][col] * candidate[col];
+                }
+            }
+            if (std::isfinite(error) && error < best_error) {
+                best_error = error;
+                best = candidate;
+                found = true;
+            }
+        }
+        if (found) *result = best;
+        return found;
+    }
+
     static bool solve(
-            std::array<std::array<float, kParameters + 1>, kParameters>& a) {
-        for (size_t pivot = 0; pivot < kParameters; ++pivot) {
+            std::array<std::array<float, kParameters + 1>, kParameters>& a,
+            size_t size) {
+        for (size_t pivot = 0; pivot < size; ++pivot) {
             size_t best = pivot;
-            for (size_t row = pivot + 1; row < kParameters; ++row) {
+            for (size_t row = pivot + 1; row < size; ++row) {
                 if (std::abs(a[row][pivot]) > std::abs(a[best][pivot])) best = row;
             }
             if (std::abs(a[best][pivot]) < 1.0e-7f) return false;
             if (best != pivot) std::swap(a[best], a[pivot]);
             const float divisor = a[pivot][pivot];
-            for (size_t col = pivot; col <= kParameters; ++col) {
+            for (size_t col = pivot; col <= size; ++col) {
                 a[pivot][col] /= divisor;
             }
-            for (size_t row = 0; row < kParameters; ++row) {
+            for (size_t row = 0; row < size; ++row) {
                 if (row == pivot) continue;
                 const float factor = a[row][pivot];
-                for (size_t col = pivot; col <= kParameters; ++col) {
+                for (size_t col = pivot; col <= size; ++col) {
                     a[row][col] -= factor * a[pivot][col];
                 }
             }

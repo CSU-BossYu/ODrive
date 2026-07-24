@@ -112,8 +112,11 @@ turn with 0.20 turn/s^2 acceleration. A centered five-parameter regression fits
 the output-coordinate model
 `torque = J*acceleration + direction*Coulomb + B_direction*velocity`.
 
-The fit rejects missing directions, insufficient acceleration, singular
-excitation, and negative physical parameters. Static friction is not admitted as
+The fit rejects missing directions, insufficient acceleration, and singular
+excitation. If noise, gravity load, or estimator phase lag makes an unconstrained
+coefficient negative, the five-parameter fit is repeated as a nonnegative least-
+squares problem; an unobservable component is fixed at zero rather than failing
+the otherwise healthy calibration. Static friction is not admitted as
 an independent parameter from this moving experiment; commit maps each Coulomb
 candidate to the corresponding static-friction default unless a later dedicated
 breakaway experiment proves separately observable. `J` is consumed by controller

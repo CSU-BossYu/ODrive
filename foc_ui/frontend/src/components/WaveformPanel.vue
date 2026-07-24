@@ -34,7 +34,7 @@ const visibleDefs = computed(() =>
 )
 
 function displayValue(key: string, value: number): number {
-  if (key === 'pos') return value * 360
+  if (key === 'pos') return value * 2 * Math.PI
   if (key === 'vel') return value * 60
   return value
 }

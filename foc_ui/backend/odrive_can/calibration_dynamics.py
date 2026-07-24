@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import itertools
 import math
 from typing import Sequence
 
@@ -59,6 +60,37 @@ def _solve_linear(matrix: list[list[float]]) -> list[float]:
     return [matrix[row][-1] for row in range(size)]
 
 
+def _solve_nonnegative_normal_equations(
+        xtx: list[list[float]], xty: list[float], yty: float) -> list[float]:
+    """Exact small NNLS solve by enumerating active parameter subsets."""
+    size = len(xty)
+    best: list[float] | None = None
+    best_error = math.inf
+    for active_count in range(1, size + 1):
+        for active in itertools.combinations(range(size), active_count):
+            try:
+                reduced = [[xtx[row][col] for col in active] + [xty[row]]
+                           for row in active]
+                values = _solve_linear(reduced)
+            except ValueError:
+                continue
+            if any(not math.isfinite(value) or value < -1e-9
+                   for value in values):
+                continue
+            candidate = [0.0] * size
+            for index, value in zip(active, values):
+                candidate[index] = max(value, 0.0)
+            error = yty - 2.0 * sum(candidate[i] * xty[i]
+                                   for i in range(size))
+            error += sum(candidate[i] * xtx[i][j] * candidate[j]
+                         for i in range(size) for j in range(size))
+            if math.isfinite(error) and error < best_error:
+                best, best_error = candidate, error
+    if best is None:
+        raise ValueError('mechanical constrained fit is not observable')
+    return best
+
+
 def fit_mechanical_dynamics(
         observations: Sequence[tuple[float, float, float]], *,
         torque_constant: float, motor_turns_per_output_turn: float) -> MechanicalFit:
@@ -83,7 +115,8 @@ def fit_mechanical_dynamics(
     if beta[1] + beta[2] < 0:
         beta = [-value for value in beta]
     if any(value < 0 for value in beta):
-        raise ValueError('mechanical fit produced nonphysical parameters')
+        yty = sum(y * y for _, y in rows)
+        beta = _solve_nonnegative_normal_equations(xtx, xty, yty)
     torque_scale = torque_constant * abs(motor_turns_per_output_turn)
     errors = [y - sum(value * feature for value, feature in zip(beta, x))
               for x, y in rows]

@@ -391,10 +391,11 @@ OVERSPEED_SNAPSHOT_ITEMS: list[tuple[int, str, bool]] = [
 # (item, name, is_float). 0x58/0x59/0x5A are readonly; 0x5B setter maps to
 # (ControlMode, InputMode, TimeoutAction); 0x5C is the heartbeat watchdog.
 # 0x5D exposes the position-loop integrator gain. 0x60-0x63 expose the
-# controller velocity limit and enable gates. Items 0x6D-0x6F expose bounded
-# ADRC trim. Items 0x70-0x7C expose friction compensation (0x70 pos/vel
-# enable, 0x7C MIT enable, 0x71-0x7B Stribeck params; output-shaft
-# Nm/turn/turn-s, vernier mode). All items 0x50-0x7C are persisted to NVM via
+# controller velocity limit and enable gates. Item 0x6E is the experimental
+# Sguan STA switch; 0x6D/0x6F are reserved after ADRC removal. Items 0x70 and
+# 0x7C are readonly zero after realtime friction-compensation removal; the
+# remaining friction fields retain calibration data only. Config items are
+# persisted to NVM via
 # save_configuration (cmd 0x03) and guarded by the armed guard (disarm to edit),
 # except live-tunable gains explicitly allowed by the firmware.
 CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
@@ -416,10 +417,8 @@ CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x61, 'vel_limit_tolerance',      True),
     (0x62, 'enable_vel_limit',         False),
     (0x63, 'enable_torque_mode_vel_limit', False),
-    # ADRC trim (bounded additive disturbance compensation).
-    (0x6D, 'adrc_trim_slew_rate',      True),
-    (0x6E, 'enable_adrc',              False),
-    (0x6F, 'adrc_trim_torque_limit',   True),
+    # SguanFOC v3.0.1 speed STA.
+    (0x6E, 'enable_sta',               False),
     # Friction compensation (output-shaft Nm/turn/turn-s; vernier mode).
     (0x70, 'enable_friction_compensation',     False),
     (0x7C, 'enable_mit_friction_compensation', False),
@@ -434,6 +433,7 @@ CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x79, 'friction_viscous_neg',       True),
     (0x7A, 'friction_max_torque',        True),
     (0x7B, 'friction_torque_slew_rate',  True),
+    (0x7D, 'joint_pos_rad',               True),  # readonly linear joint position [rad]
 ]
 
 # control_runtime_state (0x58) flag bits.

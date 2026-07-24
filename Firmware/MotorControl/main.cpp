@@ -364,6 +364,7 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
         axis.encoder_.pos_estimate_.reset();
         axis.encoder_.vel_estimate_.reset();
         axis.encoder_.pos_circular_.reset();
+        axis.encoder_.joint_pos_rad_.reset();
         axis.motor_.Vdq_setpoint_.reset();
         axis.motor_.Idq_setpoint_.reset();
         axis.open_loop_controller_.Idq_setpoint_.reset();
@@ -403,7 +404,30 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
     bool controller_update_ok = true;
     MEASURE_TIME(axis.task_times_.controller_update) {
         if (encoder_update_ok) {
-            controller_update_ok = axis.controller_.update();
+            // Multi-rate cascade, aligned with SguanFOC v3.0.1:
+            //   current/FOC 10 kHz, velocity 2 kHz, position 400 Hz.
+            // Torque passthrough remains a true 10 kHz inner-loop command;
+            // servo and MIT modes hold their last torque between 2 kHz ticks.
+            constexpr uint32_t kVelocityDivider = 5u;
+            constexpr uint32_t kPositionDivider = 25u;
+            const bool torque_passthrough =
+                axis.controller_.config_.control_mode == Controller::CONTROL_MODE_TORQUE_CONTROL &&
+                axis.controller_.config_.input_mode != Controller::INPUT_MODE_MIT;
+            const bool run_velocity_step =
+                torque_passthrough || (n_evt_control_loop_ % kVelocityDivider) == 0u;
+
+            if (run_velocity_step) {
+                const float controller_period = torque_passthrough
+                    ? current_meas_period
+                    : current_meas_period * static_cast<float>(kVelocityDivider);
+                const bool run_position_step =
+                    (n_evt_control_loop_ % kPositionDivider) == 0u;
+                controller_update_ok = axis.controller_.update(
+                    controller_period, run_position_step,
+                    current_meas_period * static_cast<float>(kPositionDivider));
+            } else {
+                axis.controller_.publish_held_torque();
+            }
         } else {
             controller_update_ok = false;
         }

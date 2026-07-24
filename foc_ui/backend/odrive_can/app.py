@@ -36,7 +36,14 @@ app.include_router(can_router)
 async def index():
     index_path = FRONTEND_DIST / 'index.html'
     if index_path.is_file():
-        return HTMLResponse(index_path.read_text(encoding='utf-8'))
+        return HTMLResponse(
+            index_path.read_text(encoding='utf-8'),
+            headers={
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+            },
+        )
     return HTMLResponse(
         '<h2>FOC CAN backend is running</h2>'
         '<p>Build the frontend with <code>npm run build</code>, or use dev mode.</p>'

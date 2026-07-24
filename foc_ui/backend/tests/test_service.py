@@ -470,17 +470,15 @@ def test_build_vernier_auto_offsets_supports_multiple_cycles():
     assert min(offsets) == pytest.approx(-0.02)
 
 
-def test_control_config_items_include_velocity_adrc_and_friction():
-    """CONTROL_CONFIG_ITEMS exposes velocity-limit, ADRC trim and friction params."""
+def test_control_config_items_include_velocity_sta_and_friction_data():
+    """CONTROL_CONFIG_ITEMS exposes limits, STA, and retained fit data."""
     from odrive_can.protocol import CONTROL_CONFIG_ITEMS
     names = {name for _item, name, _is_float in CONTROL_CONFIG_ITEMS}
     for n in ('vel_limit',
               'vel_limit_tolerance',
               'enable_vel_limit',
               'enable_torque_mode_vel_limit',
-              'adrc_trim_slew_rate',
-              'enable_adrc',
-              'adrc_trim_torque_limit',
+              'enable_sta',
               'enable_friction_compensation',
               'enable_mit_friction_compensation',
               'friction_pos_deadband', 'friction_vel_deadband',
