@@ -16,6 +16,28 @@ constexpr float kPosDeadbandTurns = 3.0f / (32768.0f * 42.0f);  // ≈ 2.18e-6 t
 
 bool Controller::apply_config() {
     config_.parent = this;
+    // A robot joint is a bounded mechanical coordinate, not a periodic angle:
+    // 0 and 1 output turn are distinct endpoints. Keep the absolute Vernier
+    // coordinate bounded by commands, but never choose a wrapped equivalent
+    // target or take the shortest path through the opposite endpoint.
+    config_.circular_setpoints = false;
+    config_.circular_setpoint_range = 1.0f;
+    config_.enable_sta = false;
+    // Retain fitted friction parameters as calibration data only. Sguan's
+    // baseline torque path has no extra friction-compensation injection.
+    config_.enable_friction_compensation = false;
+    // Migrate the old ODrive default to SguanFOC's 7 rad/s position-loop
+    // bandwidth. Preserve any other user-tuned value.
+    if (std::abs(config_.pos_gain - 20.0f) < 1.0e-6f) {
+        config_.pos_gain = 7.0f;
+    }
+    // Migrate only the exact former defaults. Preserve gains already tuned or
+    // stored by the user, including the validated 10/1.5 pair.
+    if (std::abs(config_.vel_gain - (1.0f / 6.0f)) < 1.0e-6f &&
+        std::abs(config_.vel_integrator_gain - (2.0f / 6.0f)) < 1.0e-6f) {
+        config_.vel_gain = 10.0f;
+        config_.vel_integrator_gain = 1.5f;
+    }
     update_filter_gains();
     return true;
 }
@@ -26,7 +48,13 @@ void Controller::reset() {
     pos_integrator_vel_ = 0.0f;
     vel_integrator_torque_ = 0.0f;
     torque_setpoint_ = 0.0f;
-    reset_adrc();
+    held_motor_torque_ = 0.0f;
+    torque_output_ = 0.0f;
+    held_position_vel_des_ = 0.0f;
+    held_position_gain_multiplier_ = 1.0f;
+    held_position_error_ = 0.0f;
+    position_step_valid_ = false;
+    reset_sta();
     mechanical_power_ = 0.0f;
     electrical_power_ = 0.0f;
     overspeed_time_ = 0.0f;
@@ -111,23 +139,21 @@ void Controller::move_to_pos(float goal_point) {
 }
 
 void Controller::move_incremental(float displacement, bool from_input_pos = true){
+    const float base = from_input_pos ? input_pos_ : pos_setpoint_;
     if(from_input_pos){
-        input_pos_ += displacement;
+        set_input_pos_and_steps(base + displacement);
     } else{
-        input_pos_ = pos_setpoint_ + displacement;
+        set_input_pos_and_steps(base + displacement);
     }
 
     input_pos_updated();
 }
 
 void Controller::set_input_pos_and_steps(float const pos) {
-    input_pos_ = pos;
-    if (config_.circular_setpoints) {
-        float const range = config_.circular_setpoint_range;
-        axis_->steps_ = (int64_t)(fmodf_pos(pos, range) / range * config_.steps_per_circular_range);
-    } else {
-        axis_->steps_ = (int64_t)(pos * config_.steps_per_circular_range);
+    if (!std::isfinite(pos)) {
+        return;
     }
+    input_pos_ = std::clamp(pos, 0.0f, 1.0f);
 }
 
 void Controller::set_mit_input(float pos_rad, float vel_rad_per_s, float kp, float kd, float torque_ff) {
@@ -137,18 +163,34 @@ void Controller::set_mit_input(float pos_rad, float vel_rad_per_s, float kp, flo
         return;
     }
     // kp / kd are gains and must not be negative.
-    mit_pos_rad_ = pos_rad;
-    mit_vel_rad_per_s_ = vel_rad_per_s;
-    mit_kp_ = std::max(kp, 0.0f);
-    mit_kd_ = std::max(kd, 0.0f);
-    mit_torque_ff_ = torque_ff;
+    CRITICAL_SECTION() {
+        mit_pos_rad_ = pos_rad;
+        mit_vel_rad_per_s_ = vel_rad_per_s;
+        mit_kp_ = std::max(kp, 0.0f);
+        mit_kd_ = std::max(kd, 0.0f);
+        mit_torque_ff_ = torque_ff;
+    }
 }
 
 bool Controller::control_mode_updated() {
+    position_step_valid_ = false;
+    // A control-mode transition starts a new command epoch. Do not let the
+    // previous mode's velocity/feed-forward/PI memory become the initial
+    // velocity or torque of a newly planned position trajectory.
+    vel_setpoint_ = 0.0f;
+    torque_setpoint_ = 0.0f;
+    input_vel_ = 0.0f;
+    input_torque_ = 0.0f;
+    pos_integrator_vel_ = 0.0f;
+    vel_integrator_torque_ = 0.0f;
+    held_position_vel_des_ = 0.0f;
+    held_position_error_ = 0.0f;
+    held_position_gain_multiplier_ = 1.0f;
+    trajectory_done_ = true;
+    input_pos_updated_ = false;
+    reset_sta();
     if (config_.control_mode >= CONTROL_MODE_POSITION_CONTROL) {
-        InputPort<float>& estimate_src = config_.circular_setpoints ?
-                                pos_estimate_circular_src_ :
-                                pos_estimate_linear_src_;
+        InputPort<float>& estimate_src = pos_estimate_linear_src_;
         std::optional<float> estimate =
             axis_->encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER ?
             estimate_src.present() :
@@ -160,7 +202,6 @@ bool Controller::control_mode_updated() {
 
         pos_setpoint_ = *estimate;
         set_input_pos_and_steps(*estimate);
-        pos_integrator_vel_ = 0.0f;
     }
     return true;
 }
@@ -172,51 +213,142 @@ void Controller::update_filter_gains() {
     input_filter_kp_ = 0.25f * (input_filter_ki_ * input_filter_ki_); // Critically damped
 }
 
-void Controller::reset_adrc() {
-    adrc_initialized_ = false;
-    adrc_z1_ = 0.0f;
-    adrc_z2_ = 0.0f;
-    adrc_z3_ = 0.0f;
-    adrc_last_torque_ = 0.0f;
+void Controller::reset_sta() {
+    sta_integral_current_ = 0.0f;
+    sta_integral_frozen_ = false;
 }
 
-float Controller::update_adrc_torque(float pos_estimate, float vel_estimate,
-                                     float torque_cmd) {
-    if (!adrc_initialized_) {
-        adrc_z1_ = pos_estimate;
-        adrc_z2_ = vel_estimate;
-        adrc_z3_ = 0.0f;
-        adrc_last_torque_ = 0.0f;
-        adrc_initialized_ = true;
+float Controller::update_sta_velocity(float vel_estimate, float vel_des,
+                                      float torque_feedforward) {
+    // SguanFOC v3.0.1 float STA, evaluated at the 2 kHz speed-loop rate.
+    // Sguan's mechanical speed is rad/s and its output is q-axis current.
+    constexpr float kBoundaryRadPerSec = 12.0f;
+    constexpr float kNonlinearGain = 0.36f;
+    constexpr float kIntegralGain = 52.0f;
+    constexpr float kOutputCurrentLimit = 10.5f;
+    constexpr float kIntegralCurrentLimit = 50.0f;
+
+    const float speed_error_rad_per_sec =
+        (vel_des - vel_estimate) * (2.0f * M_PI);
+    const float abs_error = std::abs(speed_error_rad_per_sec);
+    const float sat = abs_error < kBoundaryRadPerSec
+        ? speed_error_rad_per_sec / kBoundaryRadPerSec
+        : (speed_error_rad_per_sec > 0.0f ? 1.0f : -1.0f);
+    const float nonlinear_current =
+        kNonlinearGain * std::sqrt(abs_error) * sat;
+
+    if (sta_integral_frozen_) {
+        if (speed_error_rad_per_sec * sta_integral_current_ < 0.0f ||
+            (sta_integral_current_ < kIntegralCurrentLimit &&
+             sta_integral_current_ > -kIntegralCurrentLimit)) {
+            sta_integral_frozen_ = false;
+        }
+    } else {
+        sta_integral_current_ += kIntegralGain * sat * update_period_;
+        if (sta_integral_current_ > kIntegralCurrentLimit) {
+            sta_integral_current_ = kIntegralCurrentLimit;
+            sta_integral_frozen_ = true;
+        } else if (sta_integral_current_ < -kIntegralCurrentLimit) {
+            sta_integral_current_ = -kIntegralCurrentLimit;
+            sta_integral_frozen_ = true;
+        }
     }
 
-    const float wo = std::clamp(adrc_bandwidth_, 1.0f, 0.25f * current_meas_hz);
-    const float beta1 = 3.0f * wo;
-    const float beta2 = 3.0f * wo * wo;
-    const float beta3 = wo * wo * wo;
-    const float b0 = std::max(adrc_b0_, 1.0e-6f);
+    const float iq_command = std::clamp(
+        nonlinear_current + sta_integral_current_,
+        -kOutputCurrentLimit, kOutputCurrentLimit);
+    const float motor_torque = iq_command * axis_->motor_.config_.torque_constant;
+    const float controller_to_motor_torque =
+        axis_->encoder_.controller_torque_to_motor_torque_scale();
+    const float controller_torque = motor_torque /
+        std::max(controller_to_motor_torque, 1.0e-6f);
+    return torque_feedforward + controller_torque;
+}
 
-    const float e = adrc_z1_ - pos_estimate;
-    adrc_z1_ += current_meas_period * (adrc_z2_ - beta1 * e);
-    adrc_z2_ += current_meas_period * (adrc_z3_ - beta2 * e + b0 * adrc_last_torque_);
-    adrc_z3_ += current_meas_period * (-beta3 * e);
-
-    if (std::isfinite(adrc_disturbance_limit_)) {
-        const float lim = std::abs(adrc_disturbance_limit_);
-        adrc_z3_ = std::clamp(adrc_z3_, -lim, lim);
+#if 0 // Removed from the Sguan-aligned realtime torque path.
+float Controller::update_friction_compensation(bool enabled,
+                                               float pos_err,
+                                               float vel_des,
+                                               float vel_estimate,
+                                               bool position_control_active) {
+    // Direction selection. Friction opposes ACTUAL motion, so when the shaft
+    // is moving the comp must follow sign(vel_estimate) — otherwise during
+    // overshoot/reversal (intended direction flips before actual velocity
+    // does) the Coulomb term lands in the same direction as friction and
+    // amplifies it instead of canceling. Only when essentially stationary do
+    // we fall back to the intended direction (vel_des, then pos_err) so the
+    // comp can break static friction in the direction we want to go.
+    int8_t dir = 0;
+    const float abs_v = std::abs(vel_estimate);
+    const float pos_motion_threshold =
+        std::max(config_.friction_pos_deadband, 4.0f * kPosDeadbandTurns);
+    const bool motion_requested =
+        std::abs(vel_des) > config_.friction_vel_deadband ||
+        (position_control_active && std::abs(pos_err) > pos_motion_threshold);
+    if (enabled && motion_requested) {
+        if (abs_v > config_.friction_vel_deadband) {
+            dir = vel_estimate > 0.0f ? 1 : -1;
+        } else if (std::abs(vel_des) > config_.friction_vel_deadband) {
+            dir = vel_des > 0.0f ? 1 : -1;
+        } else if (position_control_active &&
+                   std::abs(pos_err) > pos_motion_threshold) {
+            dir = pos_err > 0.0f ? 1 : -1;
+        }
     }
 
-    return torque_cmd - adrc_z3_ / b0;
+    if (dir == 0) {
+        // No motion, or comp disabled: slew back to zero. Don't hard-zero —
+        // enabled can flip mid-motion because set_controller_mode (0x00B) is
+        // not armed-guarded (unlike the enable flags 0x70/0x7C), and a sudden
+        // friction_torque_ -> 0 step would jerk the motor. With slew_rate
+        // = +inf (the default / disabled) this still collapses to zero in one
+        // step, matching the old behavior.
+        friction_dir_ = 0;
+        float target = 0.0f;
+        if (std::isfinite(config_.friction_torque_slew_rate)) {
+            const float step = std::abs(config_.friction_torque_slew_rate) * update_period_;
+            target = friction_torque_ + std::clamp(0.0f - friction_torque_, -step, step);
+        }
+        friction_torque_ = target;
+        return friction_torque_;
+    }
+
+    friction_dir_ = dir;
+    const bool positive = dir > 0;
+    const float Ts = positive ? config_.friction_static_pos : config_.friction_static_neg;
+    const float Tc = positive ? config_.friction_coulomb_pos : config_.friction_coulomb_neg;
+    const float B  = positive ? config_.friction_viscous_pos : config_.friction_viscous_neg;
+
+    // Gaussian Stribeck: Ts at v=0, decays to Tc above the Stribeck velocity.
+    // Floor to Ts within the vel deadband so breakaway torque is available
+    // when starting from rest.
+    const float vs = std::max(config_.friction_stribeck_vel, 1.0e-6f);
+    const float x = abs_v / vs;
+    float mag = Tc + (Ts - Tc) * expf(-(x * x));
+    if (abs_v <= config_.friction_vel_deadband) {
+        mag = std::max(mag, Ts);
+    }
+
+    // Compensation acts in the direction of motion (counteracts friction
+    // which opposes motion). Now that dir follows actual velocity when
+    // moving, the Coulomb term (dir*mag) and the viscous term (B*vel_estimate)
+    // share the same sign convention.
+    float target = dir * mag + B * vel_estimate;
+
+    if (std::isfinite(config_.friction_max_torque)) {
+        const float lim = std::abs(config_.friction_max_torque);
+        target = std::clamp(target, -lim, lim);
+    }
+    if (std::isfinite(config_.friction_torque_slew_rate)) {
+        const float step = std::abs(config_.friction_torque_slew_rate) * update_period_;
+        target = friction_torque_ + std::clamp(target - friction_torque_, -step, step);
+    }
+
+    friction_torque_ = target;
+    return friction_torque_;
 }
 
-float Controller::update_adrc(float pos_estimate, float vel_estimate,
-                              float pos_setpoint, float vel_setpoint) {
-    const float pos_err = pos_setpoint - pos_estimate;
-    const float vel_err = vel_setpoint - vel_estimate;
-    const float desired_accel = adrc_pos_gain_ * pos_err + adrc_vel_gain_ * vel_err;
-    const float b0 = std::max(adrc_b0_, 1.0e-6f);
-    return update_adrc_torque(pos_estimate, vel_estimate, desired_accel / b0);
-}
+#endif
 
 static float limitVel(const float vel_limit, const float vel_estimate, const float vel_gain, const float torque) {
     float Tmax = (vel_limit - vel_estimate) * vel_gain;
@@ -224,34 +356,18 @@ static float limitVel(const float vel_limit, const float vel_estimate, const flo
     return std::clamp(torque, Tmin, Tmax);
 }
 
-bool Controller::update() {
+bool Controller::update(float update_period, bool run_position_step,
+                        float position_step_period) {
+    update_period_ = std::max(update_period, 1.0e-6f);
+    position_step_period_ = position_step_period > 0.0f
+        ? position_step_period
+        : update_period_;
     ControlTimeout::mark_running(*axis_);
 
     std::optional<float> pos_estimate_linear = pos_estimate_linear_src_.present();
     std::optional<float> pos_estimate_circular = pos_estimate_circular_src_.present();
     std::optional<float> pos_wrap = pos_wrap_src_.present();
     std::optional<float> vel_estimate = vel_estimate_src_.present();
-
-    if (axis_->step_dir_active_) {
-        if (config_.circular_setpoints) {
-            if (!pos_wrap.has_value()) {
-                set_error(ERROR_INVALID_CIRCULAR_RANGE);
-                return false;
-            }
-            input_pos_ = (float)(axis_->steps_ % config_.steps_per_circular_range) * (*pos_wrap / (float)(config_.steps_per_circular_range));
-        } else {
-            input_pos_ = (float)(axis_->steps_) / (float)(config_.steps_per_circular_range);
-        }
-    }
-
-    // TODO also enable circular deltas for 2nd order filter, etc.
-    if (config_.circular_setpoints) {
-        if (!pos_wrap.has_value()) {
-            set_error(ERROR_INVALID_CIRCULAR_RANGE);
-            return false;
-        }
-        input_pos_ = fmodf_pos(input_pos_, *pos_wrap);
-    }
 
     // Update inputs
     switch (config_.input_mode) {
@@ -270,41 +386,43 @@ bool Controller::update() {
                 : (std::abs(target_vel) < std::abs(vel_setpoint_)
                        ? config_.velocity_decel_limit
                        : config_.velocity_accel_limit);
-            float max_step_size = std::abs(current_meas_period * rate);
+            float max_step_size = std::abs(update_period_ * rate);
             float full_step = target_vel - vel_setpoint_;
             float step = std::clamp(full_step, -max_step_size, max_step_size);
 
             vel_setpoint_ += step;
-            torque_setpoint_ = (step / current_meas_period) * config_.inertia;
+            torque_setpoint_ = (step / update_period_) * config_.inertia;
             if (ControlTimeout::quick_stop_active(*axis_) && std::abs(vel_setpoint_) < 1e-3f) {
                 vel_setpoint_ = 0.0f;
                 ControlTimeout::mark_holding(*axis_);
             }
         } break;
         case INPUT_MODE_TORQUE_RAMP: {
-            float max_step_size = std::abs(current_meas_period * config_.torque_ramp_rate);
+            float max_step_size = std::abs(update_period_ * config_.torque_ramp_rate);
             float full_step = input_torque_ - torque_setpoint_;
             float step = std::clamp(full_step, -max_step_size, max_step_size);
 
             torque_setpoint_ += step;
         } break;
         case INPUT_MODE_POS_FILTER: {
+            if (config_.control_mode >= CONTROL_MODE_POSITION_CONTROL &&
+                !run_position_step && position_step_valid_) {
+                break;
+            }
             // 2nd order pos tracking filter
             float delta_pos = input_pos_ - pos_setpoint_; // Pos error
-            if (config_.circular_setpoints) {
-                if (!pos_wrap.has_value()) {
-                    set_error(ERROR_INVALID_CIRCULAR_RANGE);
-                    return false;
-                }
-                delta_pos = wrap_pm(delta_pos, *pos_wrap);
-            }
             float delta_vel = input_vel_ - vel_setpoint_; // Vel error
             float accel = input_filter_kp_*delta_pos + input_filter_ki_*delta_vel; // Feedback
             torque_setpoint_ = accel * config_.inertia; // Accel
-            vel_setpoint_ += current_meas_period * accel; // delta vel
-            pos_setpoint_ += current_meas_period * vel_setpoint_; // Delta pos
+            const float filter_dt = config_.control_mode >= CONTROL_MODE_POSITION_CONTROL
+                ? position_step_period_ : update_period_;
+            vel_setpoint_ += filter_dt * accel; // delta vel
+            pos_setpoint_ += filter_dt * vel_setpoint_; // Delta pos
         } break;
         case INPUT_MODE_TRAP_TRAJ: {
+            if (!run_position_step && position_step_valid_) {
+                break;
+            }
             if(input_pos_updated_){
                 move_to_pos(input_pos_);
                 input_pos_updated_ = false;
@@ -326,11 +444,11 @@ bool Controller::update() {
                 pos_setpoint_ = traj_step.Y;
                 vel_setpoint_ = traj_step.Yd;
                 torque_setpoint_ = traj_step.Ydd * config_.inertia;
-                axis_->trap_traj_.t_ += current_meas_period;
+                axis_->trap_traj_.t_ += position_step_period_;
             }
         } break;
         case INPUT_MODE_TUNING: {
-            autotuning_phase_ = wrap_pm_pi(autotuning_phase_ + (2.0f * M_PI * autotuning_.frequency * current_meas_period));
+            autotuning_phase_ = wrap_pm_pi(autotuning_phase_ + (2.0f * M_PI * autotuning_.frequency * update_period_));
             float c = our_arm_cos_f32(autotuning_phase_);
             float s = our_arm_sin_f32(autotuning_phase_);
             pos_setpoint_ = input_pos_ + autotuning_.pos_amplitude * s; // + pos_amp_c * c
@@ -340,10 +458,9 @@ bool Controller::update() {
         case INPUT_MODE_MIT: {
             // MIT-style packed control: compute torque directly from the
             // per-frame kp/kd/t_ff against the current encoder estimates.
-            // MIT semantics expect the computed torque to reach the motor
-            // unmodified, so require torque control mode. In any other mode the
-            // velocity PI / position loop would re-process torque_setpoint_ and
-            // the result would no longer match the MIT command.
+            // Optional actuator-side friction compensation is added later, but
+            // the velocity PI / position loop must not re-process the MIT
+            // torque.
             if (config_.control_mode != CONTROL_MODE_TORQUE_CONTROL) {
                 set_error(ERROR_INVALID_INPUT_MODE);
                 return false;
@@ -357,7 +474,7 @@ bool Controller::update() {
             float vel_estimate_rad = *vel_estimate * 2.0f * M_PI;
 
             float pos_err = mit_pos_rad_ - pos_estimate_rad;
-            if (std::abs(pos_err) < kPosDeadbandTurns) {
+            if (std::abs(pos_err) < kPosDeadbandTurns * 2.0f * M_PI) {
                 pos_err = 0.0f;  // position deadband: suppress sub-count jitter
             }
             float vel_err = mit_vel_rad_per_s_ - vel_estimate_rad;
@@ -388,103 +505,73 @@ bool Controller::update() {
     const float Tlim = axis_->motor_.max_available_torque() / controller_to_motor_torque;
     torque_setpoint_ = std::clamp(torque_setpoint_, -Tlim, Tlim);
 
-    const bool mit_adrc_active = adrc_enabled_ &&
-        config_.control_mode == CONTROL_MODE_TORQUE_CONTROL &&
-        config_.input_mode == INPUT_MODE_MIT;
-
     // Position control
     // TODO Decide if we want to use encoder or pll position here
     float gain_scheduling_multiplier = 1.0f;
     float vel_des = vel_setpoint_;
-    bool adrc_active = adrc_enabled_ && config_.control_mode >= CONTROL_MODE_VELOCITY_CONTROL;
-    float adrc_pos_estimate = 0.0f;
-    float adrc_vel_estimate = 0.0f;
-    bool adrc_measurement_valid = false;
+    bool sta_active = config_.enable_sta && config_.control_mode >= CONTROL_MODE_VELOCITY_CONTROL;
     if (config_.control_mode >= CONTROL_MODE_POSITION_CONTROL) {
         float pos_err;
 
-        if (config_.circular_setpoints) {
-            if (!pos_estimate_circular.has_value() || !pos_wrap.has_value()) {
-                set_error(ERROR_INVALID_ESTIMATE);
-                return false;
-            }
-            // Keep pos setpoint from drifting
-            pos_setpoint_ = fmodf_pos(pos_setpoint_, *pos_wrap);
-            // Circular delta
-            pos_err = pos_setpoint_ - *pos_estimate_circular;
-            pos_err = wrap_pm(pos_err, *pos_wrap);
-            adrc_active = false;
-        } else {
-            if (!pos_estimate_linear.has_value()) {
-                set_error(ERROR_INVALID_ESTIMATE);
-                return false;
-            }
-            pos_err = pos_setpoint_ - *pos_estimate_linear;
-            if (!vel_estimate.has_value()) {
-                set_error(ERROR_INVALID_ESTIMATE);
-                return false;
-            }
-            adrc_pos_estimate = *pos_estimate_linear;
-            adrc_vel_estimate = *vel_estimate;
-            adrc_measurement_valid = true;
+        if (!pos_estimate_linear.has_value()) {
+            set_error(ERROR_INVALID_ESTIMATE);
+            return false;
         }
+        pos_err = pos_setpoint_ - *pos_estimate_linear;
 
         // Position deadband: zeros pos_err within kPosDeadbandTurns so the
         // position P+I and gain scheduling see zero error at the target.
         if (std::abs(pos_err) < kPosDeadbandTurns) {
             pos_err = 0.0f;
         }
-
-        if (!adrc_active && config_.pos_integrator_gain > 0.0f) {
-            pos_integrator_vel_ += config_.pos_integrator_gain * current_meas_period * pos_err;
-            const float pos_integrator_limit = std::abs(config_.vel_limit);
-            if (std::isfinite(pos_integrator_limit)) {
-                pos_integrator_vel_ = std::clamp(pos_integrator_vel_, -pos_integrator_limit, pos_integrator_limit);
+        if (run_position_step || !position_step_valid_) {
+            if (config_.pos_integrator_gain > 0.0f) {
+                pos_integrator_vel_ +=
+                    config_.pos_integrator_gain * position_step_period_ * pos_err;
+                const float pos_integrator_limit = std::abs(config_.vel_limit);
+                if (std::isfinite(pos_integrator_limit)) {
+                    pos_integrator_vel_ = std::clamp(
+                        pos_integrator_vel_, -pos_integrator_limit, pos_integrator_limit);
+                }
+            } else {
+                pos_integrator_vel_ = 0.0f;
             }
-        } else {
-            pos_integrator_vel_ = 0.0f;
+
+            held_position_vel_des_ =
+                vel_setpoint_ + config_.pos_gain * pos_err + pos_integrator_vel_;
+            held_position_gain_multiplier_ = 1.0f;
+            const float abs_pos_err = std::abs(pos_err);
+            if (config_.enable_gain_scheduling &&
+                abs_pos_err <= config_.gain_scheduling_width) {
+                held_position_gain_multiplier_ =
+                    abs_pos_err / config_.gain_scheduling_width;
+            }
+            held_position_error_ = pos_err;
+            position_step_valid_ = true;
         }
 
-        if (!adrc_active) {
-            vel_des += config_.pos_gain * pos_err + pos_integrator_vel_;
-        }
-        // V-shaped gain shedule based on position error
-        float abs_pos_err = std::abs(pos_err);
-        if (config_.enable_gain_scheduling && abs_pos_err <= config_.gain_scheduling_width) {
-            gain_scheduling_multiplier = abs_pos_err / config_.gain_scheduling_width;
-        }
+        vel_des = held_position_vel_des_;
+        gain_scheduling_multiplier = held_position_gain_multiplier_;
     } else {
         pos_integrator_vel_ = 0.0f;
+        position_step_valid_ = false;
     }
 
-    if (adrc_active && !adrc_measurement_valid) {
-        if (!pos_estimate_linear.has_value() || !vel_estimate.has_value()) {
-            set_error(ERROR_INVALID_ESTIMATE);
-            return false;
-        }
-        adrc_pos_estimate = *pos_estimate_linear;
-        adrc_vel_estimate = *vel_estimate;
-        adrc_measurement_valid = true;
-    }
-
-    if (mit_adrc_active && !adrc_measurement_valid) {
-        if (!pos_estimate_linear.has_value() || !vel_estimate.has_value()) {
-            set_error(ERROR_INVALID_ESTIMATE);
-            return false;
-        }
-        adrc_pos_estimate = *pos_estimate_linear;
-        adrc_vel_estimate = *vel_estimate;
-        adrc_measurement_valid = true;
-    }
-
-    if (!adrc_active && !mit_adrc_active) {
-        reset_adrc();
+    if (!sta_active) {
+        reset_sta();
     }
 
     // Velocity limiting
     float vel_lim = config_.vel_limit;
     if (config_.enable_vel_limit) {
         vel_des = std::clamp(vel_des, -vel_lim, vel_lim);
+    }
+
+    // A zero-speed command is an active stop, not an invitation for the STA
+    // integral to unwind through the gearbox backlash. Keep the experimental
+    // STA memoryless at standstill to prevent a self-sustaining limit cycle.
+    if (sta_active && std::abs(vel_des) <= config_.friction_vel_deadband) {
+        reset_sta();
     }
 
     // Check for overspeed fault (done in this module (controller) for cohesion with vel_lim)
@@ -494,7 +581,7 @@ bool Controller::update() {
             return false;
         }
         if (std::abs(*vel_estimate) > config_.vel_limit_tolerance * vel_lim) {
-            overspeed_time_ += current_meas_period;
+            overspeed_time_ += update_period_;
         } else {
             overspeed_time_ = 0.0f;
         }
@@ -510,58 +597,40 @@ bool Controller::update() {
         }
     }
 
-    // TODO: Change to controller working in torque units
-    // Torque per amp gain scheduling (ACIM)
     float vel_gain = config_.vel_gain;
     float vel_integrator_gain = config_.vel_integrator_gain;
-    if (axis_->motor_.config_.motor_type == Motor::MOTOR_TYPE_ACIM) {
-        float effective_flux = axis_->acim_estimator_.rotor_flux_;
-        float minflux = axis_->motor_.config_.acim_gain_min_flux;
-        if (std::abs(effective_flux) < minflux)
-            effective_flux = std::copysignf(minflux, effective_flux);
-        vel_gain /= effective_flux;
-        vel_integrator_gain /= effective_flux;
-        // TODO: also scale the integral value which is also changing units.
-        // (or again just do control in torque units)
-    }
 
     // Velocity control
     float torque = torque_setpoint_;
+    float torque_unsaturated = torque;
 
     float v_err = 0.0f;
-    if (mit_adrc_active) {
-        if (!adrc_measurement_valid) {
-            set_error(ERROR_INVALID_ESTIMATE);
-            return false;
-        }
-        torque = update_adrc_torque(adrc_pos_estimate, adrc_vel_estimate, torque);
-        vel_integrator_torque_ = 0.0f;
-    } else if (adrc_active) {
-        if (!adrc_measurement_valid) {
-            set_error(ERROR_INVALID_ESTIMATE);
-            return false;
-        }
-        const float adrc_pos_setpoint = config_.control_mode >= CONTROL_MODE_POSITION_CONTROL
-            ? pos_setpoint_
-            : adrc_pos_estimate;
-        torque += update_adrc(adrc_pos_estimate, adrc_vel_estimate,
-                              adrc_pos_setpoint, vel_setpoint_);
-        vel_integrator_torque_ = 0.0f;
-    } else if (config_.control_mode >= CONTROL_MODE_VELOCITY_CONTROL) {
+    float effective_vel_p_gain = 0.0f;
+    float effective_vel_i_gain = 0.0f;
+    if (config_.control_mode >= CONTROL_MODE_VELOCITY_CONTROL) {
         if (!vel_estimate.has_value()) {
             set_error(ERROR_INVALID_ESTIMATE);
             return false;
         }
 
         v_err = vel_des - *vel_estimate;
-        torque += (vel_gain * gain_scheduling_multiplier) * v_err;
-
-        // Velocity integral action before limiting
-        torque += vel_integrator_torque_;
+        if (sta_active) {
+            torque = update_sta_velocity(*vel_estimate, vel_des, torque_setpoint_);
+        } else {
+            effective_vel_p_gain = vel_gain * gain_scheduling_multiplier;
+            effective_vel_i_gain = vel_integrator_gain * gain_scheduling_multiplier;
+            torque += effective_vel_p_gain * v_err;
+            torque += vel_integrator_torque_;
+            torque_unsaturated = torque;
+        }
     }
 
     // Velocity limiting in current mode
-    if (config_.control_mode < CONTROL_MODE_VELOCITY_CONTROL && config_.enable_torque_mode_vel_limit) {
+    if (config_.control_mode < CONTROL_MODE_VELOCITY_CONTROL &&
+            config_.enable_vel_limit &&
+            config_.enable_torque_mode_vel_limit &&
+            std::isfinite(config_.vel_limit) &&
+            config_.vel_limit > 0.0f) {
         if (!vel_estimate.has_value()) {
             set_error(ERROR_INVALID_ESTIMATE);
             return false;
@@ -570,45 +639,37 @@ bool Controller::update() {
     }
 
     // Torque limiting
-    bool limited = false;
-    if (torque > Tlim) {
-        limited = true;
-        torque = Tlim;
-    }
-    if (torque < -Tlim) {
-        limited = true;
-        torque = -Tlim;
-    }
-    if (adrc_active || mit_adrc_active) {
-        adrc_last_torque_ = torque;
-    }
+    torque = std::clamp(torque, -Tlim, Tlim);
 
-    // Velocity integrator (behaviour dependent on limiting)
-    if (config_.control_mode < CONTROL_MODE_VELOCITY_CONTROL || adrc_active || mit_adrc_active) {
+    // Velocity integrator with back-calculation anti-windup.
+    if (config_.control_mode < CONTROL_MODE_VELOCITY_CONTROL || sta_active) {
         // reset integral if not in use
         vel_integrator_torque_ = 0.0f;
     } else {
-        if (limited) {
-            // TODO make decayfactor configurable
-            vel_integrator_torque_ *= 0.99f;
-        } else {
-            vel_integrator_torque_ += ((vel_integrator_gain * gain_scheduling_multiplier) * current_meas_period) * v_err;
-        }
+        // Match the tracking time constant to the PI integral time,
+        // Tt = Kp/Ki. Cap Kaw*Ts at 0.5 for discrete-time robustness.
+        const float raw_anti_windup_gain =
+            effective_vel_p_gain > 0.0f && effective_vel_i_gain >= 0.0f
+                ? effective_vel_i_gain / effective_vel_p_gain
+                : 0.0f;
+        const float max_anti_windup_gain = 0.5f / update_period_;
+        const float anti_windup_gain = std::isfinite(raw_anti_windup_gain)
+            ? std::clamp(raw_anti_windup_gain, 0.0f, max_anti_windup_gain)
+            : 0.0f;
+        const float saturation_residual = torque - torque_unsaturated;
+        vel_integrator_torque_ += update_period_ *
+            (effective_vel_i_gain * v_err +
+             anti_windup_gain * saturation_residual);
+
         // integrator limiting to prevent windup 
         vel_integrator_torque_ = std::clamp(vel_integrator_torque_, -config_.vel_integrator_limit, config_.vel_integrator_limit);
     }
 
-    float ideal_electrical_power = 0.0f;
-    if (axis_->motor_.config_.motor_type != Motor::MOTOR_TYPE_GIMBAL) {
-        ideal_electrical_power = axis_->motor_.current_control_.power_ - \
-            SQ(axis_->motor_.current_control_.Iq_measured_) * 1.5f * axis_->motor_.config_.phase_resistance - \
-            SQ(axis_->motor_.current_control_.Id_measured_) * 1.5f * axis_->motor_.config_.phase_resistance;
-    }
-    else {
-        ideal_electrical_power = axis_->motor_.current_control_.power_;
-    }
-    mechanical_power_ += config_.mechanical_power_bandwidth * current_meas_period * (torque * *vel_estimate * M_PI * 2.0f - mechanical_power_);
-    electrical_power_ += config_.electrical_power_bandwidth * current_meas_period * (ideal_electrical_power - electrical_power_);
+    float ideal_electrical_power = axis_->motor_.current_control_.power_ - \
+        SQ(axis_->motor_.current_control_.Iq_measured_) * 1.5f * axis_->motor_.config_.phase_resistance - \
+        SQ(axis_->motor_.current_control_.Id_measured_) * 1.5f * axis_->motor_.config_.phase_resistance;
+    mechanical_power_ += config_.mechanical_power_bandwidth * update_period_ * (torque * *vel_estimate * M_PI * 2.0f - mechanical_power_);
+    electrical_power_ += config_.electrical_power_bandwidth * update_period_ * (ideal_electrical_power - electrical_power_);
 
     // Spinout check
     // If mechanical power is negative (braking) and measured power is positive, something is wrong
@@ -623,7 +684,8 @@ bool Controller::update() {
         return false;
     }
 
-    torque_output_ = torque * controller_to_motor_torque;
+    held_motor_torque_ = torque * controller_to_motor_torque;
+    torque_output_ = held_motor_torque_;
 
     // TODO: this is inconsistent with the other errors which are sticky.
     // However if we make ERROR_INVALID_ESTIMATE sticky then it will be
@@ -631,4 +693,8 @@ bool Controller::update() {
     // calibration would leave the controller in an error state.
     error_ &= ~ERROR_INVALID_ESTIMATE;
     return true;
+}
+
+void Controller::publish_held_torque() {
+    torque_output_ = held_motor_torque_;
 }

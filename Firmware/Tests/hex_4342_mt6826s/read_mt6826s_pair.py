@@ -40,6 +40,9 @@ ITEM_MAIN_ERROR_COUNT = 0x09
 ITEM_AUX_ERROR_COUNT = 0x0A
 ITEM_RESOLVER_STATE = 0x0B
 ITEM_PAIR_ERROR_COUNT = 0x0C
+ITEM_CONTROL_ISR_CYCLES = 0x0D
+ITEM_CONTROL_ISR_MAX_CYCLES = 0x0E
+ITEM_CONTROL_ISR_COUNT = 0x0F
 ITEM_MAIN_RAW = 0x10
 ITEM_AUX_RAW = 0x11
 ITEM_MAIN_CRC = 0x12
@@ -59,6 +62,17 @@ ITEM_AUX_SEQUENCE = 0x1F
 ITEM_ENCODER_POS_ESTIMATE = 0x20
 ITEM_ENCODER_VEL_ESTIMATE = 0x21
 ITEM_ENCODER_POS_CIRCULAR = 0x22
+ITEM_PAIR_TRANSACTION_CYCLES = 0x2E
+ITEM_PAIR_TRANSACTION_MAX_CYCLES = 0x2F
+ITEM_CONTROL_LOOP_CYCLES = 0x31
+ITEM_CONTROL_LOOP_MAX_CYCLES = 0x32
+ITEM_CONTROL_LOOP_COUNT = 0x33
+ITEM_CONTROL_LOOP_OVER_50 = 0x39
+ITEM_CONTROL_LOOP_OVER_70 = 0x3A
+ITEM_CONTROL_LOOP_OVER_85 = 0x3B
+ITEM_CYCLE_COUNTER_HZ = 0x3C
+ITEM_MAIN_SAMPLE_AGE_CYCLES = 0x3D
+ITEM_MAIN_SAMPLE_AGE_MAX_CYCLES = 0x3E
 
 DEBUG_FIELD_NAMES = {
     "main_raw", "aux_raw", "main_crc", "aux_crc",
@@ -69,6 +83,11 @@ DEBUG_FIELD_NAMES = {
     "aux_status_warning_count", "aux_sample_count",
     "main_sequence", "aux_sequence",
     "encoder_pos_estimate", "encoder_vel_estimate", "encoder_pos_circular",
+    "pair_transaction_cycles", "pair_transaction_max_cycles",
+    "control_loop_cycles", "control_loop_max_cycles", "control_loop_count",
+    "control_loop_over_50", "control_loop_over_70", "control_loop_over_85",
+    "cycle_counter_hz", "main_sample_age_cycles", "main_sample_age_max_cycles",
+    "control_isr_cycles", "control_isr_max_cycles", "control_isr_count",
 }
 
 
@@ -104,6 +123,9 @@ def read_full_pair(bus, args):
         (ITEM_AUX_ERROR_COUNT, "aux_error_count"),
         (ITEM_RESOLVER_STATE, "resolver_state"),
         (ITEM_PAIR_ERROR_COUNT, "pair_error_count"),
+        (ITEM_CONTROL_ISR_CYCLES, "control_isr_cycles"),
+        (ITEM_CONTROL_ISR_MAX_CYCLES, "control_isr_max_cycles"),
+        (ITEM_CONTROL_ISR_COUNT, "control_isr_count"),
         (ITEM_MAIN_RAW, "main_raw"),
         (ITEM_AUX_RAW, "aux_raw"),
         (ITEM_MAIN_CRC, "main_crc"),
@@ -126,6 +148,17 @@ def read_full_pair(bus, args):
         (0x36, "dbg_cl_deadline_miss_cnt"),
         (0x37, "dbg_enc_pair_busy_cnt"),
         (0x38, "dbg_enc_pair_ok_cnt"),
+        (ITEM_PAIR_TRANSACTION_CYCLES, "pair_transaction_cycles"),
+        (ITEM_PAIR_TRANSACTION_MAX_CYCLES, "pair_transaction_max_cycles"),
+        (ITEM_CONTROL_LOOP_CYCLES, "control_loop_cycles"),
+        (ITEM_CONTROL_LOOP_MAX_CYCLES, "control_loop_max_cycles"),
+        (ITEM_CONTROL_LOOP_COUNT, "control_loop_count"),
+        (ITEM_CONTROL_LOOP_OVER_50, "control_loop_over_50"),
+        (ITEM_CONTROL_LOOP_OVER_70, "control_loop_over_70"),
+        (ITEM_CONTROL_LOOP_OVER_85, "control_loop_over_85"),
+        (ITEM_CYCLE_COUNTER_HZ, "cycle_counter_hz"),
+        (ITEM_MAIN_SAMPLE_AGE_CYCLES, "main_sample_age_cycles"),
+        (ITEM_MAIN_SAMPLE_AGE_MAX_CYCLES, "main_sample_age_max_cycles"),
     ]:
         data[name], _ = read_item_value(bus, args, item_id)
 
@@ -231,6 +264,22 @@ def print_sample(data, cpr):
         f"crcA={data.get('aux_crc_error_count')}",
     ]
     print(f"  DEBUG: {' '.join(dbg)}")
+    cycle_hz = data.get("cycle_counter_hz")
+    if cycle_hz:
+        to_us = lambda cycles: None if cycles is None else cycles * 1e6 / cycle_hz
+        print(
+            "  TIMING: "
+            f"loop={to_us(data.get('control_loop_cycles')):.2f}us "
+            f"loopMax={to_us(data.get('control_loop_max_cycles')):.2f}us "
+            f"isr={to_us(data.get('control_isr_cycles')):.2f}us "
+            f"isrMax={to_us(data.get('control_isr_max_cycles')):.2f}us "
+            f"pair={to_us(data.get('pair_transaction_cycles')):.2f}us "
+            f"pairMax={to_us(data.get('pair_transaction_max_cycles')):.2f}us "
+            f"age={to_us(data.get('main_sample_age_cycles')):.2f}us "
+            f"ageMax={to_us(data.get('main_sample_age_max_cycles')):.2f}us "
+            f"budgetCross(50/70/85)={data.get('control_loop_over_50')}/"
+            f"{data.get('control_loop_over_70')}/{data.get('control_loop_over_85')}"
+        )
 
 
 def main():
@@ -306,6 +355,14 @@ def main():
                 "main_sample_count", "aux_dma_error_count",
                 "aux_crc_error_count", "aux_fixed_bit_error_count",
                 "aux_status_warning_count", "aux_sample_count",
+                "pair_transaction_cycles", "pair_transaction_max_cycles",
+                "control_loop_cycles", "control_loop_max_cycles", "control_loop_count",
+                "control_loop_over_50", "control_loop_over_70", "control_loop_over_85",
+                "cycle_counter_hz", "main_sample_age_cycles", "main_sample_age_max_cycles",
+                "control_isr_cycles", "control_isr_max_cycles", "control_isr_count",
+                "dbg_foc_bad_timing_cnt", "dbg_cl_adc_fail_pre_cnt",
+                "dbg_cl_adc_fail_post_cnt", "dbg_cl_deadline_miss_cnt",
+                "dbg_enc_pair_busy_cnt", "dbg_enc_pair_ok_cnt",
             ])
             print(f"CSV logging to {args.csv}")
 
@@ -336,6 +393,17 @@ def main():
                     data["main_sample_count"], data["aux_dma_error_count"],
                     data["aux_crc_error_count"], data["aux_fixed_bit_error_count"],
                     data["aux_status_warning_count"], data["aux_sample_count"],
+                    data.get("pair_transaction_cycles"), data.get("pair_transaction_max_cycles"),
+                    data.get("control_loop_cycles"), data.get("control_loop_max_cycles"),
+                    data.get("control_loop_count"), data.get("control_loop_over_50"),
+                    data.get("control_loop_over_70"), data.get("control_loop_over_85"),
+                    data.get("cycle_counter_hz"), data.get("main_sample_age_cycles"),
+                    data.get("main_sample_age_max_cycles"),
+                    data.get("control_isr_cycles"), data.get("control_isr_max_cycles"),
+                    data.get("control_isr_count"),
+                    data.get("dbg_foc_bad_timing_cnt"), data.get("dbg_cl_adc_fail_pre_cnt"),
+                    data.get("dbg_cl_adc_fail_post_cnt"), data.get("dbg_cl_deadline_miss_cnt"),
+                    data.get("dbg_enc_pair_busy_cnt"), data.get("dbg_enc_pair_ok_cnt"),
                 ])
                 csv_file.flush()
 

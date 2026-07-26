@@ -154,6 +154,9 @@ public:
         Mt6826sSpi::Sample main = {};
         Mt6826sSpi::Sample aux = {};
         uint32_t sequence = 0;
+        uint32_t request_cycles = 0;
+        uint32_t main_complete_cycles = 0;
+        uint32_t aux_complete_cycles = 0;
         bool valid = false;
     };
 

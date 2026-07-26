@@ -13,7 +13,6 @@
 #include <adc.h>
 #include <dma.h>
 #include <tim.h>
-#include <usart.h>
 #include <freertos_vars.h>
 
 // this should technically be in task_timer.cpp but let's not make a one-line file
@@ -32,10 +31,6 @@ uint8_t __attribute__((section(".testdata"))) fake_otp[FLASH_OTP_END + 1 - FLASH
 
 Stm32SpiArbiter spi3_arbiter{&hspi3};
 Stm32SpiArbiter& ext_spi_arbiter = spi3_arbiter;
-
-UART_HandleTypeDef* uart_a = &huart4;
-UART_HandleTypeDef* uart_b = &huart2; // TODO: this could be supported in ODrive v3.6 (or similar) using STM32's USART2
-UART_HandleTypeDef* uart_c = nullptr;
 
 Drv8301 m0_gate_driver{
     &spi3_arbiter,
@@ -76,25 +71,17 @@ Encoder encoders[AXIS_COUNT] = {
     }
 };
 
-// TODO: this has no hardware dependency and should be allocated depending on config
-Endstop endstops[2 * AXIS_COUNT];
-MechanicalBrake mechanical_brakes[AXIS_COUNT];
-
 Controller controllers[AXIS_COUNT];
 TrapezoidalTrajectory trap[AXIS_COUNT];
 
 std::array<Axis, AXIS_COUNT> axes{{
     {
         0, // axis_num
-        1, // step_gpio_pin
-        2, // dir_gpio_pin
         (osPriority)(osPriorityHigh + (osPriority)1), // thread_priority
         encoders[0], // encoder
         controllers[0], // controller
         motors[0], // motor
         trap[0], // trap
-        endstops[0], endstops[1], // min_endstop, max_endstop
-        mechanical_brakes[0], // mechanical brake
     },
 }};
 
@@ -173,17 +160,10 @@ Stm32Gpio gpios[GPIO_COUNT] = {
 std::array<GpioFunction, 3> alternate_functions[GPIO_COUNT] = {
     /* GPIO0 (inexistent): */ {{}},
 
-#if HW_VERSION_MINOR >= 3
-    /* GPIO1: */ {{{ODrive::GPIO_MODE_UART_A, GPIO_AF8_UART4}, {ODrive::GPIO_MODE_PWM, GPIO_AF2_TIM5}}},
-    /* GPIO2: */ {{{ODrive::GPIO_MODE_UART_A, GPIO_AF8_UART4}, {ODrive::GPIO_MODE_PWM, GPIO_AF2_TIM5}}},
-    /* GPIO3: */ {{{ODrive::GPIO_MODE_UART_B, GPIO_AF7_USART2}, {ODrive::GPIO_MODE_PWM, GPIO_AF2_TIM5}}},
-#else
     /* GPIO1: */ {{}},
     /* GPIO2: */ {{}},
     /* GPIO3: */ {{}},
-#endif
-
-    /* GPIO4: */ {{{ODrive::GPIO_MODE_UART_B, GPIO_AF7_USART2}, {ODrive::GPIO_MODE_PWM, GPIO_AF2_TIM5}}},
+    /* GPIO4: */ {{}},
     /* GPIO5: */ {{}},
     /* GPIO6: */ {{}},
     /* GPIO7: */ {{}},
@@ -191,18 +171,12 @@ std::array<GpioFunction, 3> alternate_functions[GPIO_COUNT] = {
     /* ENC0_A: */ {{}},
     /* ENC0_B: */ {{}},
     /* ENC0_Z: */ {{}},
-    /* ENC1_A: */ {{{ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},
-    /* ENC1_B: */ {{{ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},
+    /* ENC1_A: */ {{}},
+    /* ENC1_B: */ {{}},
     /* ENC1_Z: */ {{}},
-    /* CAN_R: */ {{{ODrive::GPIO_MODE_CAN_A, GPIO_AF9_CAN1}, {ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},
-    /* CAN_D: */ {{{ODrive::GPIO_MODE_CAN_A, GPIO_AF9_CAN1}, {ODrive::GPIO_MODE_I2C_A, GPIO_AF4_I2C1}}},
+    /* CAN_R: */ {{{ODrive::GPIO_MODE_CAN_A, GPIO_AF9_CAN1}}},
+    /* CAN_D: */ {{{ODrive::GPIO_MODE_CAN_A, GPIO_AF9_CAN1}}},
 };
-
-#if HW_VERSION_MINOR <= 2
-PwmInput pwm0_input{&htim5, {0, 0, 0, 4}}; // 0 means not in use
-#else
-PwmInput pwm0_input{&htim5, {1, 2, 3, 4}};
-#endif
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 USBD_HandleTypeDef& usb_dev_handle = hUsbDeviceFS;
@@ -219,6 +193,13 @@ void system_init() {
 
     // Configure the system clock
     SystemClock_Config();
+
+    // Calibration records and paired-encoder skew use DWT->CYCCNT as their
+    // monotonic CPU-cycle timestamp. Debug probes often enable this counter as
+    // a side effect, but standalone firmware must do so explicitly.
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0u;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
     // If the OTP is pristine, use the fake-otp in RAM instead
     const uint8_t* otp_ptr = (const uint8_t*)FLASH_OTP_BASE;
@@ -246,7 +227,6 @@ bool board_init() {
     MX_SPI3_Init();
     MX_ADC3_Init();
     MX_TIM2_Init();
-    MX_TIM5_Init();
     MX_TIM13_Init();
 
     // External interrupt lines are individually enabled in stm32_gpio.cpp
@@ -270,30 +250,6 @@ bool board_init() {
 
     HAL_NVIC_SetPriority(TIM8_UP_TIM13_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
-
-    if (odrv.config_.enable_uart_a) {
-        uart_a->Init.BaudRate = odrv.config_.uart_a_baudrate;
-        MX_UART4_Init();
-    }
-
-    if (odrv.config_.enable_uart_b) {
-        uart_b->Init.BaudRate = odrv.config_.uart_b_baudrate;
-        MX_USART2_UART_Init();
-    }
-
-    if (odrv.config_.enable_i2c_a) {
-        // Set up the direction GPIO as input
-        get_gpio(3).config(GPIO_MODE_INPUT, GPIO_PULLUP);
-        get_gpio(4).config(GPIO_MODE_INPUT, GPIO_PULLUP);
-        get_gpio(5).config(GPIO_MODE_INPUT, GPIO_PULLUP);
-
-        osDelay(1); // This has no effect but was here before.
-        i2c_stats_.addr = (0xD << 3);
-        i2c_stats_.addr |= get_gpio(3).read() ? 0x1 : 0;
-        i2c_stats_.addr |= get_gpio(4).read() ? 0x2 : 0;
-        i2c_stats_.addr |= get_gpio(5).read() ? 0x4 : 0;
-        MX_I2C1_Init(i2c_stats_.addr);
-    }
 
     if (odrv.config_.enable_can_a) {
         // The CAN initialization will (and must) init its own GPIOs before the
@@ -414,11 +370,6 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     }
 }
 
-void TIM5_IRQHandler(void) {
-    COUNT_IRQ(TIM5_IRQn);
-    pwm0_input.on_capture();
-}
-
 volatile uint32_t timestamp_ = 0;
 volatile bool counting_down_ = false;
 
@@ -512,16 +463,6 @@ void ControlLoop_IRQHandler(void) {
 
     odrv.task_timers_armed_ = odrv.task_timers_armed_ && !TaskTimer::enabled;
     TaskTimer::enabled = false;
-}
-
-void I2C1_EV_IRQHandler(void) {
-    COUNT_IRQ(I2C1_EV_IRQn);
-    HAL_I2C_EV_IRQHandler(&hi2c1);
-}
-
-void I2C1_ER_IRQHandler(void) {
-    COUNT_IRQ(I2C1_ER_IRQn);
-    HAL_I2C_ER_IRQHandler(&hi2c1);
 }
 
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS; // defined in usbd_conf.c

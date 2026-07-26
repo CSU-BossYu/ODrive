@@ -25,7 +25,6 @@
 /* Global constant data ------------------------------------------------------*/
 constexpr float adc_full_scale = static_cast<float>(1UL << 12UL);
 constexpr float adc_ref_voltage = 3.3f;
-const uint32_t stack_size_analog_thread = 1024;  // Bytes
 /* Global variables ----------------------------------------------------------*/
 
 // This value is updated by the DC-bus reading ADC.
@@ -35,7 +34,6 @@ float ibus_ = 0.0f; // exposed for monitoring only
 bool brake_resistor_armed = false;
 bool brake_resistor_saturated = false;
 float brake_resistor_current = 0.0f;
-osThreadId analog_thread = 0;
 /* Private constant data -----------------------------------------------------*/
 /* CPU critical section helpers ----------------------------------------------*/
 
@@ -383,29 +381,3 @@ void update_brake_current() {
 }
 
 
-/* Analog speed control input */
-
-static void update_analog_endpoint(const struct PWMMapping_t *map, int gpio)
-{
-    float fraction = get_adc_voltage(get_gpio(gpio)) / 3.3f;
-    float value = map->min + (fraction * (map->max - map->min));
-    fibre::set_endpoint_from_float(map->endpoint, value);
-}
-
-static void analog_polling_thread(void *)
-{
-    while (true) {
-        for (int i = 0; i < GPIO_COUNT; i++) {
-            struct PWMMapping_t *map = &odrv.config_.analog_mappings[i];
-
-            if (fibre::is_endpoint_ref_valid(map->endpoint))
-                update_analog_endpoint(map, i);
-        }
-        osDelay(10);
-    }
-}
-
-void start_analog_thread() {
-    osThreadDef(analog_thread_def, analog_polling_thread, osPriorityLow, 0, stack_size_analog_thread / sizeof(StackType_t));
-    analog_thread = osThreadCreate(osThread(analog_thread_def), NULL);
-}

@@ -15,10 +15,10 @@ public:
     struct Config_t {
         ControlMode control_mode = CONTROL_MODE_POSITION_CONTROL;  //see: ControlMode_t
         InputMode input_mode = INPUT_MODE_PASSTHROUGH;             //see: InputMode_t
-        float pos_gain = 20.0f;                  // [(turn/s) / turn]
+        float pos_gain = 7.0f;                   // [(turn/s) / turn], SguanFOC position Kp
         float pos_integrator_gain = 0.0f;        // [(turn/s) / (turn * s)]
-        float vel_gain = 1.0f / 6.0f;            // [Nm/(turn/s)]
-        float vel_integrator_gain = 2.0f / 6.0f; // [Nm/(turn/s * s)]
+        float vel_gain = 10.0f;                  // [Nm/(turn/s)], output-shaft PI
+        float vel_integrator_gain = 1.5f;        // [Nm/(turn/s * s)]
         float vel_limit = 2.0f;                  // [turn/s] Infinity to disable.
         float vel_limit_tolerance = 1.2f;        // ratio to vel_lim. Infinity to disable.
         float vel_integrator_limit = INFINITY;   // Vel. integrator clamping value. Infinity to disable.
@@ -35,7 +35,6 @@ public:
         uint32_t steps_per_circular_range = 1024;
         float inertia = 0.0f;                    // [Nm/(turn/s^2)]
         float input_filter_bandwidth = 2.0f;     // [1/s]
-        float homing_speed = 0.25f;              // [turn/s]
         float gain_scheduling_width = 10.0f;
         bool enable_gain_scheduling = false;
         bool enable_vel_limit = true;
@@ -46,10 +45,32 @@ public:
         float spinout_electrical_power_threshold = 10.0f; // [W] electrical power threshold for spinout detection
         float spinout_mechanical_power_threshold = -10.0f; // [W] mechanical power threshold for spinout detection
 
+        // SguanFOC v3.0.1 super-twisting speed controller at 2 kHz.
+        // Opt-in until its current-domain gains are converted for this plant.
+        bool enable_sta = false;
+
+        // Legacy friction-identification results retained as calibration data.
+        // The Sguan-aligned realtime controller does not inject this model.
+        bool enable_friction_compensation = false;      // legacy calibration data only
+        bool enable_mit_friction_compensation = false;  // legacy calibration data only
+        float friction_pos_deadband = 0.0f;        // [turn], output shaft
+        float friction_vel_deadband = 0.001f;      // [turn/s], output shaft
+        float friction_stribeck_vel = 0.01f;       // [turn/s], output shaft
+        float friction_static_pos = 0.0f;          // [Nm], output shaft
+        float friction_static_neg = 0.0f;          // [Nm], output shaft
+        float friction_coulomb_pos = 0.0f;         // [Nm], output shaft
+        float friction_coulomb_neg = 0.0f;         // [Nm], output shaft
+        float friction_viscous_pos = 0.0f;         // [Nm/(turn/s)]
+        float friction_viscous_neg = 0.0f;         // [Nm/(turn/s)]
+        float friction_max_torque = INFINITY;      // [Nm], output shaft. Infinity = disabled.
+        float friction_torque_slew_rate = INFINITY;// [Nm/s], output shaft. Infinity = disabled.
+
         // custom setters
         Controller* parent;
         void set_input_filter_bandwidth(float value) { input_filter_bandwidth = value; parent->update_filter_gains(); }
         void set_steps_per_circular_range(uint32_t value) { steps_per_circular_range = value > 0 ? value : steps_per_circular_range; }
+        void set_circular_setpoints(bool) { circular_setpoints = false; }
+        void set_circular_setpoint_range(float) { circular_setpoint_range = 1.0f; }
         void set_control_mode(ControlMode value) { control_mode = value; parent->control_mode_updated(); }
     };
 
@@ -62,7 +83,7 @@ public:
     void input_pos_updated() {
         input_pos_updated_ = true;
         pos_integrator_vel_ = 0.0f;
-        reset_adrc();
+        reset_sta();
     }
     bool control_mode_updated();
     void set_input_pos_and_steps(float pos);
@@ -77,12 +98,13 @@ public:
     void move_incremental(float displacement, bool from_goal_point);
 
     void update_filter_gains();
-    void reset_adrc();
-    float update_adrc_torque(float pos_estimate, float vel_estimate,
-                             float torque_cmd);
-    float update_adrc(float pos_estimate, float vel_estimate,
-                      float pos_setpoint, float vel_setpoint);
-    bool update();
+    void reset_sta();
+    float update_sta_velocity(float vel_estimate, float vel_des,
+                              float torque_feedforward);
+    bool update(float update_period = current_meas_period,
+                bool run_position_step = true,
+                float position_step_period = 0.0f);
+    void publish_held_torque();
 
     Config_t config_;
     Axis* axis_ = nullptr; // set by Axis constructor
@@ -145,18 +167,15 @@ public:
     float pos_integrator_vel_ = 0.0f;       // [turn/s]
     float vel_integrator_torque_ = 0.0f;    // [Nm]
     float torque_setpoint_ = 0.0f;  // [Nm], output-shaft Nm in vernier mode
-
-    bool adrc_enabled_ = true;
-    bool adrc_initialized_ = false;
-    float adrc_b0_ = 1.0f;             // [(turn/s^2) / Nm]
-    float adrc_bandwidth_ = 30.0f;     // [1/s], ESO bandwidth
-    float adrc_pos_gain_ = 100.0f;     // [1/s^2]
-    float adrc_vel_gain_ = 20.0f;      // [1/s]
-    float adrc_disturbance_limit_ = 1000.0f; // [turn/s^2]
-    float adrc_z1_ = 0.0f;             // estimated position [turn]
-    float adrc_z2_ = 0.0f;             // estimated velocity [turn/s]
-    float adrc_z3_ = 0.0f;             // estimated disturbance [turn/s^2]
-    float adrc_last_torque_ = 0.0f;    // last applied ADRC torque [Nm]
+    float held_motor_torque_ = 0.0f; // [Nm], republished on divided outer-loop ticks
+    float update_period_ = current_meas_period;
+    float position_step_period_ = current_meas_period;
+    float held_position_vel_des_ = 0.0f;
+    float held_position_gain_multiplier_ = 1.0f;
+    float held_position_error_ = 0.0f;
+    bool position_step_valid_ = false;
+    float sta_integral_current_ = 0.0f; // Sguan STA integral term [Aq]
+    bool sta_integral_frozen_ = false;
 
     float input_pos_ = 0.0f;     // [turns]
     float input_vel_ = 0.0f;     // [turn/s]

@@ -1,7 +1,7 @@
 """CAN CSV recorder for ODrive telemetry data.
 
 Records the 14-channel synthesized telemetry dict to a CSV file.
-Same start/stop/record pattern as ``foc_backend.recorder.Recorder``.
+Provides start/stop/record handling for CAN telemetry.
 
 Columns:
   t_ms, pos, vel, iq_sp, iq_meas, vbus, ibus,

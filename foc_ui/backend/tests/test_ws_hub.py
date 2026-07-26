@@ -186,10 +186,15 @@ class TestWsHubBroadcast:
                 await hub.broadcast_telemetry(ch, time.monotonic())
                 await asyncio.sleep(0.001)  # 1ms between calls = 1000Hz
 
+        started = time.monotonic()
         loop.run_until_complete(rapid_broadcast())
+        elapsed = time.monotonic() - started
 
-        # 100 calls at 1ms intervals (~100ms total), 60Hz cap = ~6 sends
-        assert len(ws.sent) < 20  # Well below 100
+        # Windows may round a 1ms asyncio sleep to a much longer scheduler
+        # tick. Assert against measured elapsed time instead of assuming the
+        # loop completed in exactly 100ms.
+        assert len(ws.sent) <= int(elapsed * 60) + 2
+        assert len(ws.sent) < 100
         assert len(ws.sent) >= 1  # At least one got through
         loop.close()
 

@@ -46,12 +46,9 @@
  * tuning (gains, current_lim, trap_traj, ControlTimeout) stays in NVM.
  *
  * Values are C-compatible (enums as numbers) because this header is included
- * by C and C++ code. motor_type: 0=HIGH_CURRENT. encoder.mode: 0x106 =
+ * by C and C++ code. encoder.mode: 0x106 =
  * SPI_ABS_MT6826S_VERNIER.
  */
-#ifndef ODRIVE_PRODUCTION_MOTOR_TYPE
-#define ODRIVE_PRODUCTION_MOTOR_TYPE 0  /* MOTOR_TYPE_HIGH_CURRENT */
-#endif
 #ifndef ODRIVE_PRODUCTION_POLE_PAIRS
 #define ODRIVE_PRODUCTION_POLE_PAIRS 14
 #endif

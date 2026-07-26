@@ -1,17 +1,24 @@
 """CAN-aware WebSocket hub for ODrive telemetry broadcast.
 
-Mirrors the serial ``foc_backend.ws_hub.WsHub`` pattern:
+Provides:
   - Singleton hub with per-client downsample (60 Hz)
   - Broadcast methods for telemetry, heartbeat, status, log, ext_resp
   - Dead client cleanup on send failure
 
 Message schema (backend -> browser):
   telemetry:  {"type":"telemetry","t":<ms>,"ch":{...14 keys...}}
+  can_frames: {"type":"can_frames","t":<ms>,"frames":[{dir,cmd,node,data,t},...]}
   heartbeat:  {"type":"heartbeat","t":<ms>,"axis_error":<u32>,...}
   status:     {"type":"status","t":<ms>,"connected":<bool>,...}
   log:        {"type":"log","t":<ms>,"tag":"CAN|SAFETY|...","text":"..."}
   ext_resp:   {"type":"ext_resp","sub_cmd":<int>,"item":<int>,...}
   rec_state:  {"type":"rec_state","recording":<bool>,"path":<str|null>}
+  friction_progress: {"type":"friction_progress","progress":<0..100>,"stage":<str>}
+  friction_result:   {"type":"friction_result","ok":<bool>,...}
+  friction_started:  {"type":"friction_started"}
+  vernier_progress:  {"type":"vernier_progress","progress":<0..100>,"stage":<str>}
+  vernier_result:    {"type":"vernier_result","ok":<bool>,...}
+  vernier_started:   {"type":"vernier_started"}
   error:      {"type":"error","msg":<str>}
 """
 
@@ -97,6 +104,21 @@ class ODriveWsHub:
                 for ws in dead:
                     self._clients.pop(ws, None)
 
+    async def broadcast_can_frames(self, frames: list) -> None:
+        """Broadcast a batch of raw CAN frames (rx + tx) for the monitor pane.
+
+        Batched by the main flusher (~10 Hz) so a high frame rate doesn't flood
+        the WebSocket. Each frame: {dir, cmd, node, data, t}.
+        """
+        if not self._clients:
+            return
+        payload = {
+            'type': 'can_frames',
+            't': int(time.monotonic() * 1000),
+            'frames': frames,
+        }
+        await self._broadcast_json(payload)
+
     async def broadcast_heartbeat(self, hb: dict, ts: float) -> None:
         """Broadcast heartbeat (push-based, not downsampled)."""
         payload = {
@@ -109,7 +131,9 @@ class ODriveWsHub:
     async def broadcast_status(self, connected: bool, interface: str,
                                channel: str, node_id: int,
                                frames_rx: int, frames_tx: int,
-                               bus_errors: int, poll_hz: float) -> None:
+                               bus_errors: int, poll_hz: float,
+                               device_alive: bool = False,
+                               queue_dropped: int = 0) -> None:
         """Broadcast connection status (2Hz heartbeat from main.py)."""
         payload = {
             'type': 'status',
@@ -122,6 +146,8 @@ class ODriveWsHub:
             'frames_tx': frames_tx,
             'bus_errors': bus_errors,
             'poll_hz': poll_hz,
+            'device_alive': device_alive,
+            'queue_dropped': queue_dropped,
         }
         await self._broadcast_json(payload)
 
@@ -142,6 +168,46 @@ class ODriveWsHub:
             'type': 'ext_resp',
             't': int(time.monotonic() * 1000),
             **resp,
+        }
+        await self._broadcast_json(payload)
+
+    async def broadcast_friction_progress(self, progress: float,
+                                          stage: str) -> None:
+        """Broadcast friction-calibration sweep progress (0..100 + stage)."""
+        payload = {
+            'type': 'friction_progress',
+            't': int(time.monotonic() * 1000),
+            'progress': progress,
+            'stage': stage,
+        }
+        await self._broadcast_json(payload)
+
+    async def broadcast_friction_result(self, result: dict) -> None:
+        """Broadcast the final friction-calibration result (ok + values)."""
+        payload = {
+            'type': 'friction_result',
+            't': int(time.monotonic() * 1000),
+            **result,
+        }
+        await self._broadcast_json(payload)
+
+    async def broadcast_vernier_progress(self, progress: float,
+                                         stage: str) -> None:
+        """Broadcast vernier auto-sampling sweep progress (0..100 + stage)."""
+        payload = {
+            'type': 'vernier_progress',
+            't': int(time.monotonic() * 1000),
+            'progress': progress,
+            'stage': stage,
+        }
+        await self._broadcast_json(payload)
+
+    async def broadcast_vernier_result(self, result: dict) -> None:
+        """Broadcast the final vernier auto-sampling result (ok + values)."""
+        payload = {
+            'type': 'vernier_result',
+            't': int(time.monotonic() * 1000),
+            **result,
         }
         await self._broadcast_json(payload)
 

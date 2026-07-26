@@ -291,6 +291,7 @@ void Mt6826sSpiPair::init(Mt6826sSpi* main_sensor, Mt6826sSpi* aux_sensor) {
     completion_ctx_ = nullptr;
 
     pending_pair_ = {};
+    pending_pair_.request_cycles = DWT->CYCCNT;
     latest_pair_ = {};
     pending_error_ = ERROR_NONE;
     next_sequence_ = 0;
@@ -347,6 +348,7 @@ void Mt6826sSpiPair::handle_main_done(const Mt6826sSpi::Sample& sample, bool suc
     }
 
     pending_pair_.main = sample;
+    pending_pair_.main_complete_cycles = DWT->CYCCNT;
     if (!success || !sample.valid) {
         pending_error_ = ERROR_MAIN_READ_FAIL;
     }
@@ -365,6 +367,7 @@ void Mt6826sSpiPair::handle_aux_done(const Mt6826sSpi::Sample& sample, bool succ
     }
 
     pending_pair_.aux = sample;
+    pending_pair_.aux_complete_cycles = DWT->CYCCNT;
     if (!success || !sample.valid) {
         if (pending_error_ == ERROR_NONE) {
             pending_error_ = ERROR_AUX_READ_FAIL;

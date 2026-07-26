@@ -141,35 +141,22 @@ interfaces:
           min_heap_space: readonly uint32
           max_stack_usage_axis: readonly uint32
           max_stack_usage_usb: readonly uint32
-          max_stack_usage_uart: readonly uint32
           max_stack_usage_can: readonly uint32
           max_stack_usage_startup: readonly uint32
-          max_stack_usage_analog: readonly uint32
           stack_size_axis: readonly uint32
           stack_size_usb: readonly uint32
-          stack_size_uart: readonly uint32
           stack_size_startup: readonly uint32
           stack_size_can: readonly uint32
-          stack_size_analog: readonly uint32
           prio_axis: readonly int32
           prio_usb: readonly int32
-          prio_uart: readonly int32
           prio_startup: readonly int32
           prio_can: readonly int32
-          prio_analog: readonly int32
           usb:
             c_is_class: False
             attributes:
               rx_cnt: readonly uint32
               tx_cnt: readonly uint32
               tx_overrun_cnt: readonly uint32
-          i2c:
-            c_is_class: False
-            attributes:
-              addr: readonly uint8
-              addr_match_cnt: readonly uint32
-              rx_cnt: readonly uint32
-              error_cnt: readonly uint32
       user_config_loaded: readonly uint32
       misconfigured:
         # TODO: make this a system error
@@ -180,29 +167,15 @@ interfaces:
           which setting is problematic. This variable does not cover all
           misconfigurations.
 
-          Possible causes:
-           - A GPIO was set to a mode that it doesn't support
-           - A GPIO was set to a mode for which the corresponding feature was
-             not enabled. Example: `GPIO_MODE_UART_A` was used without enabling
-             `config.enable_uart_a`.
-           - A feature was enabled which is not supported on this hardware.
-             Example: `config.enable_uart_c` set to true on ODrive v3.x.
-           - A GPIO was used as an interrupt input for two internal components
-             or two GPIOs that are mutually exclusive in their interrupt
-             capability were both used as interrupt input.
-             Example: `Axis:config.step_gpio_pin` of both axes were set to the same GPIO.
-            
-      oscilloscope: {type: Oscilloscope}
+          One possible cause is assigning a GPIO mode that the selected pin does
+          not support.
+
       can: {type: Can}
       test_property: uint32
       otp_valid: readonly bool
         
     functions:
       test_function: {in: {delta: int32},out: {cnt: int32}}
-      get_adc_voltage: 
-        in: {gpio: uint32}
-        out: {voltage: float32}
-        doc: Reads the ADC voltage of the specified GPIO. The GPIO should be in `GPIO_MODE_ANALOG_IN`.}
       save_configuration: {out: {success: bool}, doc: Saves the current configuration to non-volatile memory and reboots the board.}
       erase_configuration:
         doc: Resets all `config` variables to their default values and reboots the controller
@@ -231,91 +204,10 @@ interfaces:
   ODrive.Config:
     c_is_class: False
     attributes:
-      enable_uart_a:
-        type: bool
-        brief: Enables/disables UART_A.
-        doc: |
-          You also need to set the corresponding GPIOs to GPIO_MODE_UART_A.
-          Refer to [interfaces](interfaces.md) to see which pins support UART_A.
-          Changing this requires a reboot.
-      enable_uart_b:
-        type: bool
-        brief: Enables/disables UART_B.
-        doc: |
-          You also need to set the corresponding GPIOs to GPIO_MODE_UART_B.
-          Refer to [interfaces](interfaces.md) to see which pins support UART_B.
-          Changing this requires a reboot.
-      enable_uart_c: {type: bool, doc: Not supported on ODrive v3.x.}
-      uart_a_baudrate:
-        type: uint32
-        unit: baud/s
-        brief: Defines the baudrate used on the UART interface.
-        doc: |
-          Some baudrates will have a small timing error due to hardware limitations.
-
-          Here's an (incomplete) list of baudrates for ODrive v3.x:
-          
-          +-------------+---------------+-----------+
-          | Configured  | Actual        | Error [%] |
-          +=============+===============+===========+
-          | 1.2 KBps    | 1.2 KBps      | 0         |
-          +-------------+---------------+-----------+
-          | 2.4 KBps    | 2.4 KBps      | 0         |
-          +-------------+---------------+-----------+
-          | 9.6 KBps    | 9.6 KBps      | 0         |
-          +-------------+---------------+-----------+
-          | 19.2 KBps   | 19.195 KBps   | 0.02      |
-          +-------------+---------------+-----------+
-          | 38.4 KBps   | 38.391 KBps   | 0.02      |
-          +-------------+---------------+-----------+
-          | 57.6 KBps   | 57.613 KBps   | 0.02      |
-          +-------------+---------------+-----------+
-          | 115.2 KBps  | 115.068 KBps  | 0.11      |
-          +-------------+---------------+-----------+
-          | 230.4 KBps  | 230.769 KBps  | 0.16      |
-          +-------------+---------------+-----------+
-          | 460.8 KBps  | 461.538 KBps  | 0.16      |
-          +-------------+---------------+-----------+
-          | 921.6 KBps  | 913.043 KBps  | 0.93      |
-          +-------------+---------------+-----------+
-          | 1.792 MBps  | 1.826 MBps    | 1.9       |
-          +-------------+---------------+-----------+
-          | 1.8432 MBps | 1.826 MBps    | 0.93      |
-          +-------------+---------------+-----------+
-
-
-          For more information refer to Section 30.3.4 and Table 142 (the column with f_PCLK = 42 MHz) in the
-          `STM datasheet <https://www.st.com/content/ccc/resource/technical/document/reference_manual/3d/6d/5a/66/b4/99/40/d4/DM00031020.pdf/files/DM00031020.pdf/jcr:content/translations/en.DM00031020.pdf>`__.
-
-      uart_b_baudrate:
-        type: uint32
-        unit: baud/s
-        brief: Defines the baudrate used on the UART interface.
-        doc: See `uart_a_baudrate` for details.
-      uart_c_baudrate: {type: uint32, doc: Not supported on ODrive v3.x.}
       enable_can_a:
         type: bool
         doc: |
           Enables CAN. Changing this setting requires a reboot.
-      enable_i2c_a:
-        type: bool
-        doc: |
-          Enables I2C. The I2C pins on ODrive v3.x are in conflict with CAN.
-          This setting has no effect if `enable_can_a` is also true.
-          This setting has no effect on ODrive v3.2 or earlier.
-          Changing this setting requires a reboot.
-      usb_cdc_protocol:
-        type: StreamProtocolType
-        doc: |
-          The protocol that's being run on the device's virtual COM port on
-          USB.
-          Note that the ODrive has two independent interfaces on USB: One
-          is the virtual COM port (affected by this option) and the other
-          one is a vendor specific interface which always runs Fibre.
-          So changing this option does not affect the working of odrivetool.
-      uart0_protocol: StreamProtocolType
-      uart1_protocol: StreamProtocolType
-      uart2_protocol: StreamProtocolType
       max_regen_current: 
         type: float32
         unit: Amps
@@ -367,9 +259,6 @@ interfaces:
 
       error_gpio_pin: {type: uint32}
 
-      gpio3_analog_mapping: {type: Endpoint, c_name: 'analog_mappings[3]', doc: Make sure the corresponding GPIO is in `GPIO_MODE_ANALOG_IN`.}
-      gpio4_analog_mapping: {type: Endpoint, c_name: 'analog_mappings[4]', doc: Make sure the corresponding GPIO is in `GPIO_MODE_ANALOG_IN`.}
-
   ODrive.Can:
     c_is_class: True
     attributes:
@@ -382,13 +271,6 @@ interfaces:
           baud_rate: {type: uint32, c_setter: 'set_baud_rate'}
           protocol:
             type: Protocol
-
-  ODrive.Endpoint:
-    c_is_class: False
-    attributes:
-      endpoint: endpoint_ref
-      min: float32
-      max: float32
 
   ODrive.Axis:
     c_is_class: True
@@ -416,25 +298,14 @@ interfaces:
             doc: |
               An amount of time greater than `config.watchdog_timeout` passed
               without the watchdog being fed.
-          MIN_ENDSTOP_PRESSED:
-            brief: The min endstop was pressed
-          MAX_ENDSTOP_PRESSED:
-            brief: The max endstop was pressed
           ESTOP_REQUESTED:
             brief: The estop message was sent over CAN
-          HOMING_WITHOUT_ENDSTOP:
-            bit: 17
-            doc: the min endstop was not enabled during homing
           OVER_TEMP:
             # unused
             doc: Check `motor.error` for more details.
           UNKNOWN_POSITION:
             doc: There isn't a valid position estimate available.
-      step_dir_active: readonly bool
       last_drv_fault: readonly uint32
-      steps: 
-        type: readonly int64
-        brief: The current commanded position, in steps, while in `step_dir` mode
       current_state: 
         type: readonly AxisState
         brief: The current state of the axis
@@ -444,10 +315,6 @@ interfaces:
         doc: |
           This is used to command the axis to change state or perform certain routines.
           Values input here will be "consumed" and queued by the state machine handler.  Thus, reading this value back will usually show `UNDEFINED` (0).
-      is_homed: 
-        type: bool
-        c_name: homing_.is_homed
-        brief: Whether or not the axis has been successfully homed.
       config:
         c_is_class: False
         attributes:
@@ -460,27 +327,10 @@ interfaces:
           startup_closed_loop_control:
             type: bool
             doc: Enable closed loop control after calibration/startup
-          startup_homing:
-            type: bool
-            doc: Enable homing after calibration/startup
-          enable_step_dir:
-            type: bool
-            doc: |
-              Enable step/dir input after calibration.
-              Make sure to set the corresponding GPIO's mode to `GPIO_MODE_DIGITAL`.
-          step_dir_always_on:
-            type: bool
-            doc: |
-              Keep step/dir enabled while the motor is disabled.
-              This is ignored if enable_step_dir is false.
-              This setting only takes effect on a state transition
-              into idle or out of closed loop control.
           watchdog_timeout:
             type: float32
             unit: s
           enable_watchdog: bool
-          step_gpio_pin: {type: uint16, c_setter: 'set_step_gpio_pin'}
-          dir_gpio_pin: {type: uint16, c_setter: 'set_dir_gpio_pin'}
           calibration_lockin: # TODO: this is a subset of lockin state
             c_is_class: False
             attributes:
@@ -494,21 +344,15 @@ interfaces:
       motor: Motor
       controller: Controller
       encoder: Encoder
-      acim_estimator: AcimEstimator
       trap_traj: TrapezoidalTrajectory
-      min_endstop: Endstop
-      max_endstop: Endstop
-      mechanical_brake: MechanicalBrake
       task_times:
         c_is_class: False
         attributes:
           thermistor_update: TaskTimer
           encoder_update: TaskTimer
-          endstop_update: TaskTimer
           can_heartbeat: TaskTimer
           controller_update: TaskTimer
           open_loop_controller_update: TaskTimer
-          acim_estimator_update: TaskTimer
           motor_update: TaskTimer
           current_controller_update: TaskTimer
           dc_calib: TaskTimer
@@ -629,7 +473,7 @@ interfaces:
               Out[3]: 0.029788672924041748
               ```
               Some motors will have a considerably different phase resistance
-              and inductance than this. For example, gimbal motors, some small
+              and inductance than this. For example, some small
               motors (e.g. < 10A peak current). If you think this applies to you
               try increasing `config.resistance_calib_max_voltage` from
               its default value of 1 using odrivetool and repeat the motor
@@ -673,9 +517,6 @@ interfaces:
               `config.resistance_calib_max_voltage` is no more than half
               your bus voltage.
 
-              For gimbal motors, it is recommended to set the
-              `config.calibration_current` and `config.current_lim`
-              to half your bus voltage, or less.
           CURRENT_SENSE_SATURATION:
             bit: 10
             doc: |
@@ -798,6 +639,11 @@ interfaces:
               If these are valid and `pre_calibrated` is set to `True`, motor calibration can be skipped.
           phase_inductance: {type: float32, unit: henry, c_setter: set_phase_inductance}
           phase_resistance: {type: float32, unit: ohm, c_setter: set_phase_resistance}
+          flux_linkage:
+            type: float32
+            unit: V/(electrical rad/s)
+            c_setter: set_flux_linkage
+            doc: Calibrated permanent-magnet flux linkage. Torque constant is derived as 1.5*pole_pairs*flux_linkage and uses peak q-axis current (Nm/A_peak,q).
           current_lim:
             type: float32
             unit: A
@@ -814,41 +660,6 @@ interfaces:
             type: float32
             unit: °C
             doc: Not implemented.
-
-  ODrive.Oscilloscope:
-    c_is_class: True
-    attributes:
-      size: readonly uint32
-    functions:
-      get_val: {in: {index: uint32}, out: {val: float32}}
-  
-  ODrive.AcimEstimator:
-    c_is_class: True
-    attributes:
-      rotor_flux: {type: readonly float32, unit: A, doc: estimated magnitude of the rotor flux}
-      slip_vel:
-        type: readonly float32
-        unit: rad/s
-        doc: estimated slip between physical and electrical angular velocity}
-        c_getter: slip_vel_.any().value_or(0.0f)
-      phase_offset:
-        type: readonly float32
-        unit: rad
-        doc: estimate offset between physical and electrical angular position}
-      stator_phase_vel:
-        type: readonly float32
-        unit: rad/s
-        doc: calculated setpoint for the electrical velocity}
-        c_getter: stator_phase_vel_.any().value_or(0.0f)
-      stator_phase:
-        type: readonly float32
-        unit: rad
-        doc: calculated setpoint for the electrical phase}
-        c_getter: stator_phase_.any().value_or(0.0f)
-      config:
-        c_is_class: False
-        attributes:
-          slip_velocity: float32
 
   ODrive.Controller:
     c_is_class: True
@@ -1008,17 +819,15 @@ interfaces:
             doc: Action taken when the command or heartbeat watchdog expires. Persisted to NVM.
           circular_setpoints:
             type: bool
+            c_setter: set_circular_setpoints
           circular_setpoint_range:
             type: float32
             doc: circular range in [turns] for position setpoints when circular_setpoints is True
+            c_setter: set_circular_setpoint_range
           steps_per_circular_range:
             type: int32
             doc: Number of steps within the circular setpoint range. Set this and the circular setpoint range to powers of 2 for the best results.
             c_setter: set_steps_per_circular_range
-          homing_speed:
-            type: float32
-            unit: turn/s
-            doc: The speed at which the axis moves towards the `min_endstop` during `AXIS_STATE_HOMING`
           inertia:
             type: float32
             unit: N·m/(turn/s^2)
@@ -1044,6 +853,61 @@ interfaces:
             type: float32
             doc: "Electrical power threshold for spinout detection. This should be a positive value"
             unit: Watt
+          enable_sta:
+            type: bool
+            doc: Experimental 2 kHz SguanFOC v3.0.1 STA speed controller. It starts disabled until plant-specific current-domain gains are available.
+          # Friction compensation (controller torque units; output-shaft
+          # Nm / turn / turn-s in MODE_SPI_ABS_MT6826S_VERNIER). Persisted to NVM.
+          enable_friction_compensation:
+            type: bool
+            doc: Inactive calibration-data compatibility field. The Sguan-aligned realtime torque path applies no friction compensation.
+          enable_mit_friction_compensation:
+            type: bool
+            doc: Inactive calibration-data compatibility field. MIT applies no friction compensation.
+          friction_pos_deadband:
+            type: float32
+            unit: turn
+            doc: Output-shaft position deadband; below this, position error does not select a friction direction. Persisted to NVM.
+          friction_vel_deadband:
+            type: float32
+            unit: turn/s
+            doc: Output-shaft velocity deadband; |vel| at or below this is treated as rest (static friction magnitude applies). Persisted to NVM.
+          friction_stribeck_vel:
+            type: float32
+            unit: turn/s
+            doc: Stribeck velocity at which the friction magnitude transitions from static toward Coulomb. Persisted to NVM.
+          friction_static_pos:
+            type: float32
+            unit: N·m
+            doc: Static (breakaway) friction magnitude, positive direction, output-shaft Nm. Persisted to NVM.
+          friction_static_neg:
+            type: float32
+            unit: N·m
+            doc: Static (breakaway) friction magnitude, negative direction, output-shaft Nm. Persisted to NVM.
+          friction_coulomb_pos:
+            type: float32
+            unit: N·m
+            doc: Coulomb friction magnitude, positive direction, output-shaft Nm. Persisted to NVM.
+          friction_coulomb_neg:
+            type: float32
+            unit: N·m
+            doc: Coulomb friction magnitude, negative direction, output-shaft Nm. Persisted to NVM.
+          friction_viscous_pos:
+            type: float32
+            unit: N·m / (turn/s)
+            doc: Viscous friction coefficient, positive direction. Persisted to NVM.
+          friction_viscous_neg:
+            type: float32
+            unit: N·m / (turn/s)
+            doc: Viscous friction coefficient, negative direction. Persisted to NVM.
+          friction_max_torque:
+            type: float32
+            unit: N·m
+            doc: Clamp on friction compensation magnitude, output-shaft Nm. Set to infinity to disable (rely on the final motor torque limit). Persisted to NVM.
+          friction_torque_slew_rate:
+            type: float32
+            unit: N·m / sec
+            doc: Slew limit on the friction compensation output to avoid torque steps. Set to infinity to disable. Persisted to NVM.
       autotuning:
         c_is_class: False
         doc: Automatically generate sine waves for frequency-domain response tuning
@@ -1133,6 +997,11 @@ interfaces:
         c_getter: pos_circular_.any().value_or(0.0f)
         unit: turns
         doc: Circular position estimate of the encoder, as a decimal from [0, 1).  Also known as "single-turn" position.
+      joint_pos_rad:
+        type: readonly float32
+        c_getter: joint_pos_rad_.any().value_or(0.0f)
+        unit: rad
+        doc: Output/joint position wrapped to the half-open interval [0, 2*pi). The continuous multi-turn estimate remains available as pos_estimate.
       pos_cpr_counts:
         type: readonly float32
         unit: counts
@@ -1169,6 +1038,11 @@ interfaces:
             doc: Auxiliary encoder phase offset in turns.
           phase_offset: int32
           phase_offset_float: float32
+          electrical_phase_delay:
+            type: float32
+            unit: s
+            c_setter: set_electrical_phase_delay
+            doc: Electrical phase advance delay identified from closed-loop back-EMF phase versus speed.
           direction: int32
           pre_calibrated: {type: bool, c_setter: set_pre_calibrated}
           enable_phase_interpolation: bool
@@ -1176,6 +1050,7 @@ interfaces:
             type: float32
             c_setter: set_bandwidth
             unit: rad/s
+            doc: PLL natural frequency. The default yields Kp=650 and Ki=210000 with damping 0.70925.
           calib_range: 
             type: float32
             unit: turn
@@ -1212,35 +1087,6 @@ interfaces:
           accel_limit: {type: float32, unit: turn/s^2}
           decel_limit: {type: float32, unit: turn/s^2}
 
-  ODrive.Endstop:
-    c_is_class: True
-    attributes:
-      endstop_state: readonly bool
-      config:
-        c_is_class: False
-        attributes:
-          gpio_num: {type: uint16, c_setter: set_gpio_num, doc: Make sure the corresponding GPIO is in `GPIO_MODE_DIGITAL`.}
-          enabled: {type: bool, c_setter: set_enabled}
-          offset: {type: float32, unit: turns}
-          is_active_high: bool
-          debounce_ms: {type: uint32, c_setter: set_debounce_ms}
-
-  ODrive.MechanicalBrake:
-    c_is_class: True
-    attributes:
-      config:
-        c_is_class: False
-        attributes:
-          gpio_num: {type: uint16, c_setter: set_gpio_num}
-          is_active_low: bool
-    functions:
-      engage:
-        doc: |
-          This function engages the mechanical brake if one is present and enabled.
-      release:
-        doc: |
-          This function releases the mecahncal brake if one is present and enabled.
-
   ODrive.TaskTimer:
     c_is_class: True
     attributes:
@@ -1275,10 +1121,6 @@ interfaces:
           gpio15_mode: {type: ODrive.GpioMode, doc: Mode of GPIO15 (changes take effect after reboot), c_name: 'gpio_modes[15]'}
           gpio16_mode: {type: ODrive.GpioMode, doc: Mode of GPIO16 (changes take effect after reboot), c_name: 'gpio_modes[16]'}
 
-          gpio1_pwm_mapping: {type: ODrive.Endpoint, c_name: 'pwm_mappings[0]', doc: Make sure the corresponding GPIO is in `GPIO_MODE_PWM`.}
-          gpio2_pwm_mapping: {type: ODrive.Endpoint, c_name: 'pwm_mappings[1]', doc: Make sure the corresponding GPIO is in `GPIO_MODE_PWM`.}
-          gpio3_pwm_mapping: {type: ODrive.Endpoint, c_name: 'pwm_mappings[2]', doc: Make sure the corresponding GPIO is in `GPIO_MODE_PWM`.}
-          gpio4_pwm_mapping: {type: ODrive.Endpoint, c_name: 'pwm_mappings[3]', doc: Make sure the corresponding GPIO is in `GPIO_MODE_PWM`.}
       axis0: {type: ODrive.Axis, c_name: get_axis(0)}
 
 valuetypes:
@@ -1286,48 +1128,15 @@ valuetypes:
     values:
       DIGITAL:
         doc: |
-          The pin can be used for one or more of these functions:
-          Step, dir, enable, SPI encoder nCS (this one is exclusive).
+          Generic digital input.
       DIGITAL_PULL_UP:
         doc: Same as `DIGITAL` but with the internal pull-up resistor enabled.
       DIGITAL_PULL_DOWN:
         doc: Same as `DIGITAL` but with the internal pull-down resistor enabled.
-      ANALOG_IN:
-        doc: |
-          The pin can be used for one or more of these functions:
-          Sin/cos encoders, analog input, `get_adc_voltage()`.
-      UART_A: {doc: See `config.enable_uart_a`.}
-      UART_B: {doc: This mode is not supported on ODrive v3.x.}
-      UART_C: {doc: This mode is not supported on ODrive v3.x.}
       CAN_A: {doc: See `config.enable_can_a`.}
-      I2C_A: {doc: See `config.enable_i2c_a`.}
-      SPI_A: {doc: Note that the SPI pins on ODrive v3.x are hardwired so they
-        cannot be configured through software. Consequently, even though SPI_A
-        is exposed, this mode is of no use on ODrive v3.x.}
-      PWM: {doc: See `config.gpio1_pwm_mapping`.}
-      MECH_BRAKE:
-        value: 14
-        doc: This is to support external mechanical brakes.
       STATUS:
         value: 15
         doc: The pin is used for status output (see `config.error_gpio_pin`)
-
-  ODrive.StreamProtocolType:
-    values:
-      Fibre:
-        doc: |
-          Machine-to-machine protocol which gives access to all features of the
-          ODrive. This protocol is used by the official odrivetool and GUI.
-          Developers who wish to interact with this protocol are advised to do
-          so through libfibre.
-      Ascii:
-        doc: |
-          Human readable protocol designed for easy implementation for cases
-          where the use of libfibre is not desired or feasible.
-          Refer to [this page](ascii-protocol.md) for details.
-      Stdout: {doc: Output of printf(). Only intended for developers who modify
-          ODrive firmware.}
-      AsciiAndStdout: {doc: Combination of `Ascii` and `Stdout`.}
 
   ODrive.Can.Protocol:
     flags: 
@@ -1371,11 +1180,6 @@ valuetypes:
         doc: |
           Can only be entered if the motor is calibrated (`motor.is_calibrated`)
           or the motor direction is unspecified (`encoder.config.direction` == 1)
-      HOMING:
-        value: 11
-        brief: Run axis homing function.
-        doc:
-          Endstops must be enabled to use this feature.
   ODrive.Encoder.Mode:
     values:
       SPI_ABS_MT6826S:
@@ -1391,7 +1195,7 @@ valuetypes:
       # highest level of control, to allow "<" style comparisons.
       VOLTAGE_CONTROL:
         doc: |
-          Note: This mode is not used internally.  For voltage-only FOC, use `MotorType.GIMBAL`
+          This mode is not supported by this production firmware.
       TORQUE_CONTROL:
         doc: |
           Uses only the inner torque control loop.
@@ -1567,19 +1371,3 @@ valuetypes:
         doc: |
           TORQUE_CONTROL + MIT. Default timeout action TORQUE_ZERO (clears
           per-frame kp/kd/t_ff on watchdog expiry so a stale frame cannot hold torque).
-
-  ODrive.Motor.MotorType:
-    values:
-      HIGH_CURRENT:
-        doc: |
-          Used for all standard "hobby-style" motors Permanant Magnet AC (PMAC) or Brushless DC (BLDC) motors.  This is the default.
-          Note: Assumes sinusoidal back-EMF, "wye" connected motors.  Trapezoidal bEMF may have reduced controllability.
-      #LowCurrent: # not implemented
-      GIMBAL:
-        value: 2
-        doc: |
-          Enables voltage-only FOC where V=IR can be assumed to be correct.
-          Used for high-phase-resistance motors (> 1 ohm), which are typically sold as "Gimbal" motors.
-      ACIM:
-        doc: |
-          Used for FOC control of AC Induction Motors (ACIM), aka Asynchronous motors, 

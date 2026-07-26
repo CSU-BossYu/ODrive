@@ -7,6 +7,8 @@ extern "C" {
 #endif
 
 #include <cmsis_os.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 extern osThreadId usb_thread;
@@ -20,18 +22,16 @@ typedef struct {
 
 extern USBStats_t usb_stats_;
 
-void usb_rx_process_packet(uint8_t *buf, uint32_t len, uint8_t endpoint_pair);
 void start_usb_server(void);
+size_t usb_stdout_write(const uint8_t* data, size_t length);
+// Queues the complete frame atomically or queues nothing. Intended for binary
+// calibration records that must never be interleaved with stdout text.
+bool usb_stdout_write_frame(const uint8_t* data, size_t length);
+bool usb_stdout_is_connected(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-
-#ifdef __cplusplus
-#include <fibre/../../stream_utils.hpp>
-extern fibre::BufferedStreamSink<64> usb_cdc_stdout_sink;
-extern bool usb_cdc_stdout_pending;
-#endif
 
 #endif // __INTERFACE_USB_HPP

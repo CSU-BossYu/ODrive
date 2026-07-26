@@ -23,8 +23,6 @@ extern bool brake_resistor_armed;
 extern bool brake_resistor_saturated;
 extern float brake_resistor_current;
 extern uint16_t adc_measurements_[ADC_CHANNEL_COUNT];
-extern osThreadId analog_thread;
-extern const uint32_t stack_size_analog_thread;
 /* Exported macro ------------------------------------------------------------*/
 /* Exported functions --------------------------------------------------------*/
 
@@ -35,7 +33,6 @@ void safety_critical_apply_brake_resistor_timings(uint32_t low_off, uint32_t hig
 // called from STM platform code
 extern "C" {
 void vbus_sense_adc_cb(uint32_t adc_value);
-void pwm_in_cb(TIM_HandleTypeDef *htim);
 }
 
 // Initalisation
@@ -45,8 +42,6 @@ void sync_timers(TIM_HandleTypeDef* htim_a, TIM_HandleTypeDef* htim_b,
                  uint16_t TIM_CLOCKSOURCE_ITRx, uint16_t count_offset,
                  TIM_HandleTypeDef* htim_refbase = nullptr);
 void start_general_purpose_adc();
-void pwm_in_init();
-void start_analog_thread();
 
 // ADC getters
 uint16_t channel_from_gpio(Stm32Gpio gpio);

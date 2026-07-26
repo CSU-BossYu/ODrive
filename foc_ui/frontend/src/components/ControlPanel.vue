@@ -31,7 +31,7 @@ const selectedMode = ref<ModeKey>('velocity')
 const requestedMode = ref<ModeKey | null>(null)
 const lastPositionSentAt = ref(0)
 
-const posTargetDeg = ref(0)
+const posTargetRad = ref(0)
 const posVelFFRpm = ref(0)
 const velTargetRpm = ref(12)
 const velTorqueFF = ref(0)
@@ -72,8 +72,17 @@ const firmwareMode = computed<ModeKey | null>(() => {
 const selected = computed(() => modes.find((m) => m.key === selectedMode.value) ?? modes[0])
 const isSelectedModeActive = computed(() => firmwareMode.value === selectedMode.value)
 const isStreaming = computed(() => streamMode.value === selectedMode.value)
+const modeTransitioning = computed(() => requestedMode.value !== null)
+const canActivateSelectedMode = computed(() =>
+  oSocket.ready.value
+  && !modeTransitioning.value
+)
+const canSendSelectedCommand = computed(() =>
+  oSocket.ready.value && isSelectedModeActive.value
+)
 
-const posDeg = computed(() => (oSocket.latest.value?.ch.pos ?? 0) * 360)
+const TAU = 2 * Math.PI
+const posRad = computed(() => safeNumber(oSocket.latest.value?.ch.pos) * TAU)
 const velRpmActual = computed(() => (oSocket.latest.value?.ch.vel ?? 0) * 60)
 const shadowCount = computed(() => oSocket.latest.value?.ch.shadow_count ?? 0)
 const countInCpr = computed(() => oSocket.latest.value?.ch.count_in_cpr ?? 0)
@@ -81,7 +90,15 @@ const iq = computed(() => oSocket.latest.value?.ch.iq_meas ?? 0)
 const vbus = computed(() => oSocket.latest.value?.ch.vbus ?? 0)
 const ibus = computed(() => oSocket.latest.value?.ch.ibus ?? 0)
 
-const targetPosTurns = computed(() => safeNumber(posTargetDeg.value) / 360)
+const positionTargetIsValid = computed(() =>
+  typeof posTargetRad.value === 'number'
+  && Number.isFinite(posTargetRad.value)
+  && posTargetRad.value >= 0
+  && posTargetRad.value <= TAU,
+)
+const targetPosTurns = computed(() =>
+  positionTargetIsValid.value ? posTargetRad.value / TAU : 0,
+)
 const targetVelTurnsPerSec = computed(() => safeNumber(velTargetRpm.value) / 60)
 const velocityIsAggressive = computed(() => Math.abs(safeNumber(velTargetRpm.value)) > 60)
 
@@ -152,12 +169,23 @@ function format(v: number, digits = 2): string {
   return Number.isFinite(v) ? v.toFixed(digits) : '--'
 }
 
+function degToRad(deg: number): number {
+  return deg * Math.PI / 180
+}
+
+function rpmToRadPerSec(rpm: number): number {
+  return rpm * 2 * Math.PI / 60
+}
+
 function setCalibrationNotice(text: string, kind: 'dim' | 'ok' | 'warn' | 'err' = 'dim') {
   calibrationNotice.value = text
   calibrationNoticeKind.value = kind
 }
 
 function selectMode(mode: ModeKey) {
+  // Stop any active streaming when switching mode cards — otherwise the old
+  // stream keeps firing (e.g. velocity commands) with no visible stop button.
+  stopStreaming(true)
   selectedMode.value = mode
 }
 
@@ -192,10 +220,18 @@ function enterSelectedMode(targetMode: ModeKey) {
   if (targetMode === 'mit') oSocket.sendMit(0, 0, 0, 0, 0)
   oSocket.setServoMode(selected.value.servoMode)
   oSocket.setMode(selected.value.controlMode, selected.value.inputMode)
-  setTimeout(() => oSocket.setState(8), targetMode === 'mit' ? 200 : 150)
+  setTimeout(() => {
+    // Guard against a stale timeout firing after the user disabled or
+    // switched modes — don't re-arm into CLOSED_LOOP if we no longer want it.
+    if (requestedMode.value === targetMode) oSocket.setState(8)
+  }, targetMode === 'mit' ? 200 : 150)
 }
 
 function activateSelectedMode() {
+  if (!canActivateSelectedMode.value) {
+    if (!oSocket.ready.value) setCalibrationNotice('请先连接 CAN，再进入控制模式', 'err')
+    return
+  }
   stopStreaming(false)
   requestedMode.value = selectedMode.value
   requestCalibrationSnapshot()
@@ -203,6 +239,7 @@ function activateSelectedMode() {
 }
 
 function disableAxis() {
+  if (!oSocket.ready.value) return
   stopStreaming(true)
   requestedMode.value = null
   oSocket.setState(1)
@@ -215,8 +252,8 @@ function commandFor(mode: ModeKey) {
   }
   if (mode === 'mit') {
     return () => oSocket.sendMit(
-      safeNumber(mitPosDeg.value) / 360,
-      safeNumber(mitVelRpm.value) / 60,
+      degToRad(safeNumber(mitPosDeg.value)),
+      rpmToRadPerSec(safeNumber(mitVelRpm.value)),
       safeNumber(mitKp.value),
       safeNumber(mitKd.value),
       safeNumber(mitTorque.value),
@@ -227,7 +264,10 @@ function commandFor(mode: ModeKey) {
 
 function startStreaming(mode: ModeKey) {
   const fn = commandFor(mode)
-  if (!fn) return
+  if (!fn || !oSocket.ready.value || firmwareMode.value !== mode) {
+    setCalibrationNotice('请先进入所选控制模式，再发送目标值', 'err')
+    return
+  }
   stopStreaming(false)
   selectedMode.value = mode
   requestedMode.value = null
@@ -256,9 +296,14 @@ function toggleStream() {
 }
 
 function applyPosition() {
+  if (!positionTargetIsValid.value || !canSendSelectedCommand.value) {
+    lastPositionSentAt.value = 0
+    if (!canSendSelectedCommand.value) setCalibrationNotice('请先进入位置规划模式，再发送目标位置', 'err')
+    return
+  }
   stopStreaming(false)
   requestedMode.value = null
-  oSocket.setPos(safeNumber(posTargetDeg.value) / 360, safeNumber(posVelFFRpm.value) / 60, 0)
+  oSocket.setPos(targetPosTurns.value, safeNumber(posVelFFRpm.value) / 60, 0)
   lastPositionSentAt.value = Date.now()
 }
 
@@ -292,7 +337,11 @@ function requestAxisState(state: number, label: string, action: 'full' | 'motor'
   calibrationStartedAt.value = Date.now()
   oSocket.clearErrors()
   oSocket.setState(1)
-  window.setTimeout(() => oSocket.setState(state), 80)
+  window.setTimeout(() => {
+    // Guard against a stale timeout firing after the user disabled or
+    // switched calibration targets.
+    if (activeCalibration.value === action) oSocket.setState(state)
+  }, 80)
   setCalibrationNotice(`${label} 已启动，等待状态回报`, 'warn')
   startCalibrationPolling()
 }
@@ -323,7 +372,7 @@ function clearPrecalibrated() {
 
 function saveConfiguration() {
   oSocket.extCmd(0x03, 0x00, 3, 0, 3.0)
-  setCalibrationNotice('已请求保存配置，控制器可能会重启', 'warn')
+  setCalibrationNotice('正在保存配置；控制器不会重启', 'warn')
 }
 
 function evaluateCalibrationStatus() {
@@ -369,6 +418,11 @@ watch(firmwareMode, (mode) => {
 
 watch(() => oSocket.ready.value, (ready) => {
   if (ready) requestCalibrationSnapshot()
+  else stopStreaming(false)
+})
+
+watch(firmwareMode, (mode) => {
+  if (streamMode.value && mode !== streamMode.value) stopStreaming(false)
 })
 
 watch(streamHz, () => {
@@ -424,13 +478,21 @@ onBeforeUnmount(() => {
           <div class="card-title">{{ selected.title }}</div>
           <div class="card-sub">{{ modeStatusText }}</div>
         </div>
-        <button @click="activateSelectedMode" class="primary" :class="{ active: isSelectedModeActive }">
+        <button
+          @click="activateSelectedMode"
+          class="primary"
+          :class="{ active: isSelectedModeActive }"
+          :disabled="isSelectedModeActive || !canActivateSelectedMode"
+        >
           {{ isSelectedModeActive ? '已在该模式' : requestedMode === selectedMode ? '切换中...' : '进入模式' }}
         </button>
       </div>
 
       <div v-if="closedLoopBlockers.length" class="explain warn">
         闭环前置条件未满足：{{ closedLoopBlockers.join(' / ') }}
+      </div>
+      <div v-if="calibrationNotice && calibrationNoticeKind === 'err'" class="explain operation-error">
+        {{ calibrationNotice }}
       </div>
 
       <div class="encoder-readout">
@@ -439,15 +501,17 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="selectedMode === 'position'" class="mode-fields">
-        <div class="explain">目标是输出轴绝对角度，不是增量移动。360 deg = 1 圈。</div>
-        <div class="conversion">当前输入：{{ format(safeNumber(posTargetDeg), 2) }} deg = {{ format(targetPosTurns, 4) }} 圈</div>
-        <label>输出轴绝对角度 (deg)
-          <input type="number" step="1" v-model.number="posTargetDeg" @keyup.enter="applyPosition" />
+        <div class="explain">目标角度限制在 [0, 2π] 的机械行程内；0 与 2π 是不同端点，不进行圆周最短路径折返。</div>
+        <div class="conversion">当前输入：{{ format(safeNumber(posTargetRad), 4) }} rad → 机械目标 {{ format(targetPosTurns, 4) }} 圈</div>
+        <label>输出轴单圈角度 (rad)
+          <input type="number" min="0" :max="TAU" step="0.01" v-model.number="posTargetRad" />
         </label>
         <label>速度前馈 (rpm)
-          <input type="number" step="1" v-model.number="posVelFFRpm" @keyup.enter="applyPosition" />
+          <input type="number" step="1" v-model.number="posVelFFRpm" />
         </label>
-        <button @click="applyPosition" class="primary">发送单次位置目标</button>
+        <button @click="applyPosition" class="primary" :disabled="!positionTargetIsValid || !canSendSelectedCommand">发送单次位置目标</button>
+        <span v-if="!canSendSelectedCommand" class="command-lock">进入位置规划模式后才能发送目标</span>
+        <span v-if="!positionTargetIsValid" class="pill warn">目标必须在 0 到 2π rad 之间</span>
         <span v-if="lastPositionSentAt" class="pill ok">位置目标已发送</span>
       </div>
 
@@ -459,16 +523,16 @@ onBeforeUnmount(() => {
           当前台架上这个速度偏激进。之前 300 rpm 测试在到达目标前已经撞到 3A 电流限制。
         </div>
         <label>目标转速 (rpm)
-          <input type="number" step="1" v-model.number="velTargetRpm" @keyup.enter="toggleStream" />
+          <input type="number" step="1" v-model.number="velTargetRpm" />
         </label>
         <label>力矩前馈 (Nm)
-          <input type="number" step="0.001" v-model.number="velTorqueFF" @keyup.enter="toggleStream" />
+          <input type="number" step="0.001" v-model.number="velTorqueFF" />
         </label>
       </div>
 
       <div v-else-if="selectedMode === 'torque'" class="mode-fields">
         <label>目标力矩 (Nm)
-          <input type="number" step="0.001" v-model.number="torqueTarget" @keyup.enter="toggleStream" />
+          <input type="number" step="0.001" v-model.number="torqueTarget" />
         </label>
       </div>
 
@@ -486,7 +550,12 @@ onBeforeUnmount(() => {
         <label>发送频率 (Hz)
           <input type="number" min="1" max="100" step="1" v-model.number="streamHz" />
         </label>
-        <button @click="toggleStream" class="stream-button" :class="{ active: isStreaming }">
+        <button
+          @click="toggleStream"
+          class="stream-button"
+          :class="{ active: isStreaming }"
+          :disabled="!isStreaming && !canSendSelectedCommand"
+        >
           {{ isStreaming ? '正在发送，点击停止' : '开始持续发送' }}
         </button>
       </div>
@@ -495,14 +564,14 @@ onBeforeUnmount(() => {
     <div class="telemetry-card">
       <div class="card-title">当前读数</div>
       <div class="telemetry-grid">
-        <div><span>位置</span><strong>{{ format(posDeg, 4) }}</strong><em>deg</em></div>
+        <div><span>位置</span><strong>{{ format(posRad, 5) }}</strong><em>rad</em></div>
         <div><span>速度</span><strong>{{ format(velRpmActual, 3) }}</strong><em>rpm</em></div>
         <div><span>Iq</span><strong>{{ format(iq, 3) }}</strong><em>A</em></div>
         <div><span>母线</span><strong>{{ format(vbus, 1) }}</strong><em>V</em></div>
       </div>
     </div>
 
-    <div class="calibration-card">
+    <div v-if="false" class="calibration-card">
       <div class="card-head">
         <div>
           <div class="card-title">校准</div>
@@ -525,7 +594,7 @@ onBeforeUnmount(() => {
         <div class="calibration-results">
           <div v-for="r in calibrationResults" :key="r.item">
             <span>{{ r.label }}</span>
-            <strong>{{ r.status === 0 && r.value != null ? format(r.value, r.item <= 0x02 ? 6 : 0) : '--' }}</strong>
+            <strong>{{ r.status === 0 && r.value != null ? format(r.value ?? 0, r.item <= 0x02 ? 6 : 0) : '--' }}</strong>
             <em>{{ r.unit }}</em>
           </div>
         </div>
@@ -563,9 +632,9 @@ onBeforeUnmount(() => {
         {{ allErrors.map((e) => `${e.category}:${e.name}`).join(' / ') }}
       </div>
       <div class="fault-actions">
-        <button @click="clearErrors" class="warn">清除错误</button>
-        <button @click="disableAxis" class="danger">失能</button>
-        <button @click="oSocket.estop()" class="danger">急停</button>
+        <button @click="clearErrors" class="warn" :disabled="!oSocket.ready.value">清除错误</button>
+        <button @click="disableAxis" class="danger" :disabled="!oSocket.ready.value">失能</button>
+        <button @click="oSocket.estop()" class="danger estop" :disabled="!oSocket.ready.value">急停</button>
       </div>
     </div>
   </div>
@@ -575,7 +644,7 @@ onBeforeUnmount(() => {
 .control-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 11px;
   min-height: 0;
   overflow-y: auto;
 }
@@ -594,19 +663,20 @@ onBeforeUnmount(() => {
 .mode-card {
   display: grid;
   gap: 3px;
-  min-height: 72px;
+  min-height: 74px;
   text-align: left;
   padding: 9px;
-  background: rgba(15, 23, 42, 0.8);
-  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(10, 17, 28, 0.65);
+  border-color: var(--border-subtle);
 }
 .mode-card.selected {
   border-color: var(--accent);
-  background: rgba(59, 130, 246, 0.12);
+  background: linear-gradient(145deg, rgba(79, 140, 255, 0.16), rgba(79, 140, 255, 0.05));
+  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.08);
 }
 .mode-card.active {
   border-color: var(--ok);
-  background: rgba(34, 197, 94, 0.13);
+  background: linear-gradient(145deg, rgba(52, 211, 153, 0.15), rgba(52, 211, 153, 0.04));
   box-shadow: inset 3px 0 0 var(--ok);
 }
 .mode-card.pending {
@@ -631,9 +701,9 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 10px;
   padding: 10px;
-  background: rgba(2, 6, 23, 0.42);
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 6px;
+  background: rgba(5, 11, 19, 0.38);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
 }
 .card-title {
   font-size: 15px;
@@ -656,10 +726,19 @@ onBeforeUnmount(() => {
   min-height: 32px;
 }
 .stream-button.active, button.primary.active {
-  background: var(--ok);
-  border-color: var(--ok);
-  color: white;
+  background: rgba(52, 211, 153, 0.16);
+  border-color: rgba(52, 211, 153, 0.5);
+  color: #6ee7b7;
   font-weight: 700;
+}
+.command-lock {
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+.estop {
+  margin-left: auto;
+  font-weight: 800;
+  letter-spacing: .08em;
 }
 .explain {
   padding: 7px 8px;
@@ -674,6 +753,11 @@ onBeforeUnmount(() => {
   color: var(--warn);
   border-color: rgba(245, 158, 11, 0.35);
   background: rgba(245, 158, 11, 0.1);
+}
+.explain.operation-error {
+  color: #fda4af;
+  border-color: rgba(251, 113, 133, 0.35);
+  background: rgba(251, 113, 133, 0.08);
 }
 .conversion {
   padding: 6px 8px;

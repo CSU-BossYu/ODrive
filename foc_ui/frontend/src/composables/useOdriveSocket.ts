@@ -7,13 +7,16 @@ import { ref, type Ref } from 'vue'
 import type {
   ODriveInboundMsg, ODriveOutboundMsg,
   ODriveStatusMsg, ODriveTelemetryMsg, ODriveHeartbeatMsg,
-  ODriveExtRespMsg, LogMsg,
+  ODriveExtRespMsg, ODriveFrictionResultMsg, ODriveVernierResultMsg,
+  ODriveCalibrationSnapshotMsg, LogMsg,
+  CanFrameDef,
 } from '../types'
 
 const MAX_LOGS = 1000
 const MAX_EXT = 100
+const MAX_CAN_FRAMES = 500
 // Firmware CAN extended-protocol version this UI expects (device info 0x05/0x01).
-export const EXPECTED_PROTOCOL_VERSION = 0x00000103
+export const EXPECTED_PROTOCOL_VERSION = 0x0000010A
 
 interface ODriveSocket {
   connected: Ref<boolean>
@@ -22,6 +25,7 @@ interface ODriveSocket {
   latest: Ref<ODriveTelemetryMsg | null>
   heartbeat: Ref<ODriveHeartbeatMsg | null>
   logs: Ref<LogMsg[]>
+  canFrames: Ref<CanFrameDef[]>
   extResponses: Ref<ODriveExtRespMsg[]>
   extSeq: Ref<number>
   recording: Ref<boolean>
@@ -29,6 +33,13 @@ interface ODriveSocket {
   controlConfig: Ref<Record<string, number | null> | null>
   userConfigLoaded: Ref<number | null>
   protocolVersion: Ref<number | null>
+  frictionRunning: Ref<boolean>
+  frictionProgress: Ref<{ progress: number; stage: string } | null>
+  frictionResult: Ref<ODriveFrictionResultMsg | null>
+  vernierRunning: Ref<boolean>
+  vernierProgress: Ref<{ progress: number; stage: string } | null>
+  vernierResult: Ref<ODriveVernierResultMsg | null>
+  calibrationSnapshot: Ref<ODriveCalibrationSnapshotMsg | null>
   connect: () => void
   disconnect: () => void
   send: (m: ODriveOutboundMsg) => void
@@ -47,12 +58,27 @@ interface ODriveSocket {
   getControlConfig: () => void
   setControlConfig: (item: number, value: number, isFloat?: boolean) => void
   setServoMode: (mode: number) => void
+  vernierCalib: (item: number, value?: number, isFloat?: boolean, timeout?: number) => void
   setPollHz: (hz: number) => void
   recStart: (path?: string) => void
   recStop: () => void
   getOverspeedSnapshot: () => void
   fetchUserConfigLoaded: () => void
   fetchProtocolVersion: () => void
+  frictionCalibrate: (maxTorque?: number, velThreshold?: number) => void
+  frictionCalibrateCancel: () => void
+  vernierAutoCalibrate: (
+    pointCount?: number,
+    sweepTurns?: number,
+    searchRadius?: number,
+    settlePosTol?: number,
+    rampVel?: number,
+    sweepCycles?: number,
+  ) => void
+  vernierAutoCancel: () => void
+  startCalibration: (geometryTurns?: number) => void
+  getCalibrationStatus: (includeCandidate?: boolean) => void
+  abortCalibration: () => void
   clearLogs: () => void
 }
 
@@ -67,6 +93,9 @@ export function useOdriveSocket(): ODriveSocket {
   const latest = ref<ODriveTelemetryMsg | null>(null)
   const heartbeat = ref<ODriveHeartbeatMsg | null>(null)
   const logs = ref<LogMsg[]>([])
+  // Raw CAN frames (rx + tx) for the monitor pane. Ring buffer; the pane
+  // renders the tail. Batches arrive ~10 Hz from the backend flusher.
+  const canFrames = ref<CanFrameDef[]>([])
   const extResponses = ref<ODriveExtRespMsg[]>([])
   // Monotonic counter incremented on every ext_resp. Watching .length stops
   // firing once the ring buffer is full (push+shift keeps length constant),
@@ -85,6 +114,17 @@ export function useOdriveSocket(): ODriveSocket {
   // Firmware CAN extended-protocol version (device info item 0x01).
   // null = not yet queried.
   const protocolVersion = ref<number | null>(null)
+  // Friction-calibration sweep state. frictionRunning is true between
+  // friction_started and friction_result; frictionProgress holds the latest
+  // progress update; frictionResult holds the final measured/derived values.
+  const frictionRunning = ref(false)
+  const frictionProgress = ref<{ progress: number; stage: string } | null>(null)
+  const frictionResult = ref<ODriveFrictionResultMsg | null>(null)
+  // Vernier auto-sampling sweep state (mirrors the friction refs).
+  const vernierRunning = ref(false)
+  const vernierProgress = ref<{ progress: number; stage: string } | null>(null)
+  const vernierResult = ref<ODriveVernierResultMsg | null>(null)
+  const calibrationSnapshot = ref<ODriveCalibrationSnapshotMsg | null>(null)
 
   let ws: WebSocket | null = null
   let reconnectTimer: number | null = null
@@ -131,11 +171,19 @@ export function useOdriveSocket(): ODriveSocket {
       latest.value = null
       status.value = null
       heartbeat.value = null
+      canFrames.value = []
       recording.value = false
       overspeedSnapshot.value = null
       controlConfig.value = null
       userConfigLoaded.value = null
       protocolVersion.value = null
+      frictionRunning.value = false
+      frictionProgress.value = null
+      frictionResult.value = null
+      vernierRunning.value = false
+      vernierProgress.value = null
+      vernierResult.value = null
+      calibrationSnapshot.value = null
       if (keepaliveTimer != null) {
         window.clearInterval(keepaliveTimer)
         keepaliveTimer = null
@@ -175,10 +223,14 @@ export function useOdriveSocket(): ODriveSocket {
       case 'status': {
         const wasReady = ready.value
         status.value = msg
-        ready.value = msg.connected
+        ready.value = msg.connected && msg.device_alive
+        if (!ready.value) {
+          latest.value = null
+          heartbeat.value = null
+        }
         // On (re)connect, fetch whether the firmware loaded a saved config
         // and the protocol version it speaks.
-        if (msg.connected && !wasReady) {
+        if (ready.value && !wasReady) {
           fetchUserConfigLoaded()
           fetchProtocolVersion()
         }
@@ -187,6 +239,13 @@ export function useOdriveSocket(): ODriveSocket {
       case 'log':
         pushLog(logs.value, msg)
         break
+      case 'can_frames': {
+        // Append the batch to the ring buffer; trim the head if over cap.
+        const arr = canFrames.value
+        for (const f of msg.frames) arr.push(f)
+        if (arr.length > MAX_CAN_FRAMES) arr.splice(0, arr.length - MAX_CAN_FRAMES)
+        break
+      }
       case 'ext_resp':
         extResponses.value.push(msg)
         if (extResponses.value.length > MAX_EXT)
@@ -197,6 +256,9 @@ export function useOdriveSocket(): ODriveSocket {
           protocolVersion.value = msg.status === 0 ? msg.value : null
         } else if (msg.sub_cmd === 0x05 && msg.item === 0x06) {
           userConfigLoaded.value = msg.status === 0 ? msg.value : 0
+        } else if (msg.sub_cmd === 0x03 && msg.item === 0x00 && msg.status === 0) {
+          // Save no longer reboots. Refresh the live NVM status explicitly.
+          fetchUserConfigLoaded()
         }
         break
       case 'rec_state':
@@ -207,6 +269,35 @@ export function useOdriveSocket(): ODriveSocket {
         break
       case 'control_config':
         controlConfig.value = msg.config
+        break
+      case 'friction_started':
+        frictionRunning.value = true
+        frictionProgress.value = null
+        frictionResult.value = null
+        break
+      case 'friction_progress':
+        frictionProgress.value = { progress: msg.progress, stage: msg.stage }
+        break
+      case 'friction_result':
+        frictionResult.value = msg
+        frictionRunning.value = false
+        frictionProgress.value = null
+        break
+      case 'vernier_started':
+        vernierRunning.value = true
+        vernierProgress.value = null
+        vernierResult.value = null
+        break
+      case 'vernier_progress':
+        vernierProgress.value = { progress: msg.progress, stage: msg.stage }
+        break
+      case 'vernier_result':
+        vernierResult.value = msg
+        vernierRunning.value = false
+        vernierProgress.value = null
+        break
+      case 'calibration_snapshot':
+        calibrationSnapshot.value = msg
         break
       case 'pong':
         // Backend keepalive reply; liveness is implied by telemetry flow.
@@ -275,22 +366,60 @@ export function useOdriveSocket(): ODriveSocket {
     send({ type: 'set_control_config', item, value, is_float: isFloat })
   }
   function setServoMode(mode: number) { send({ type: 'set_servo_mode', mode }) }
+  function vernierCalib(item: number, value?: number, isFloat = false, timeout?: number) {
+    send({ type: 'vernier_calib', item, value, is_float: isFloat, timeout })
+  }
   function setPollHz(hz: number) { send({ type: 'set_poll_hz', hz }) }
   function recStart(path?: string) { send({ type: 'rec', action: 'start', path }) }
   function recStop() { send({ type: 'rec', action: 'stop' }) }
   function getOverspeedSnapshot() { send({ type: 'get_overspeed_snapshot' }) }
   function fetchUserConfigLoaded() { extCmd(0x05, 0x06) }
   function fetchProtocolVersion() { extCmd(0x05, 0x01) }
-  function clearLogs() { logs.value = []; extResponses.value = [] }
+  function frictionCalibrate(maxTorque?: number, velThreshold?: number) {
+    send({ type: 'friction_calibrate', max_torque: maxTorque, vel_threshold: velThreshold })
+  }
+  function frictionCalibrateCancel() { send({ type: 'friction_calibrate_cancel' }) }
+  function vernierAutoCalibrate(
+    pointCount?: number,
+    sweepTurns?: number,
+    searchRadius?: number,
+    settlePosTol?: number,
+    rampVel?: number,
+    sweepCycles?: number,
+  ) {
+    send({
+      type: 'vernier_auto_calibrate',
+      point_count: pointCount,
+      sweep_turns: sweepTurns,
+      search_radius: searchRadius,
+      settle_pos_tol: settlePosTol,
+      ramp_vel: rampVel,
+      sweep_cycles: sweepCycles,
+    })
+  }
+  function vernierAutoCancel() { send({ type: 'vernier_auto_cancel' }) }
+  function startCalibration(geometryTurns = 2) {
+    send({ type: 'calibration_start', geometry_turns: geometryTurns })
+  }
+  function getCalibrationStatus(includeCandidate = false) {
+    send({ type: 'calibration_status', include_candidate: includeCandidate })
+  }
+  function abortCalibration() { send({ type: 'calibration_abort' }) }
+  function clearLogs() { logs.value = []; extResponses.value = []; canFrames.value = [] }
 
   _singleton = {
-    connected, ready, status, latest, heartbeat, logs, extResponses,
+    connected, ready, status, latest, heartbeat, logs, canFrames, extResponses,
     extSeq, recording, overspeedSnapshot, controlConfig, userConfigLoaded, protocolVersion,
+    frictionRunning, frictionProgress, frictionResult,
+    vernierRunning, vernierProgress, vernierResult,
+    calibrationSnapshot,
     connect, disconnect, send,
     setState, setMode, setPos, setVel, setTorque, sendMit,
     setGain, setLimits, clearErrors, estop, reboot,
-    extCmd, getControlConfig, setControlConfig, setServoMode,
-    setPollHz, recStart, recStop, getOverspeedSnapshot, fetchUserConfigLoaded, fetchProtocolVersion, clearLogs,
+    extCmd, getControlConfig, setControlConfig, setServoMode, vernierCalib,
+    setPollHz, recStart, recStop, getOverspeedSnapshot, fetchUserConfigLoaded, fetchProtocolVersion,
+    frictionCalibrate, frictionCalibrateCancel, vernierAutoCalibrate, vernierAutoCancel,
+    startCalibration, getCalibrationStatus, abortCalibration, clearLogs,
   }
   connect()
   return _singleton

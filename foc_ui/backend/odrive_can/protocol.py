@@ -88,7 +88,6 @@ class AxisState(IntEnum):
     ENCODER_OFFSET_CALIBRATION = 7
     CLOSED_LOOP_CONTROL        = 8
     LOCKIN_SPIN                = 9
-    HOMING                     = 11
 
 
 # --------------------------------------------------------------------------- #
@@ -131,12 +130,9 @@ AXIS_ERROR_BITS: dict[int, str] = {
     0x00100: 'ENCODER_FAILED',
     0x00200: 'CONTROLLER_FAILED',
     0x00800: 'WATCHDOG_TIMER_EXPIRED',
-    0x01000: 'MIN_ENDSTOP_PRESSED',
-    0x02000: 'MAX_ENDSTOP_PRESSED',
-    0x04000: 'ESTOP_REQUESTED',
-    0x20000: 'HOMING_WITHOUT_ENDSTOP',
-    0x40000: 'OVER_TEMP',
-    0x80000: 'UNKNOWN_POSITION',
+    0x01000: 'ESTOP_REQUESTED',
+    0x02000: 'OVER_TEMP',
+    0x04000: 'UNKNOWN_POSITION',
 }
 
 # Motor error (DBC VAL_ 3 Motor_Error, line 156)
@@ -220,6 +216,92 @@ class ExtSubCmd(IntEnum):
     GET_VERNIER_DIAGNOSTICS = 0x0A
     GET_CONTROL_CONFIG      = 0x0B
     SET_CONTROL_CONFIG      = 0x0C
+    VERNIER_CALIBRATION     = 0x0D
+    GET_FAULT_SNAPSHOT      = 0x0E
+    CALIBRATION_SESSION     = 0x0F
+
+
+class CalibrationSessionState(IntEnum):
+    EMPTY      = 0
+    COLLECTING = 1
+    COLLECTED  = 2
+    FITTING    = 3
+    IDENTIFIED = 4
+    VALIDATING = 5
+    VALIDATED  = 6
+    STAGED     = 7
+    COMMITTED  = 8
+    FAILED     = 9
+    ABORTED    = 10
+    STALE      = 11
+
+
+class CalibrationProfile(IntEnum):
+    FULL          = 0
+    ELECTRICAL    = 1
+    MECHANICAL    = 2
+    VALIDATE_ONLY = 3
+
+
+class CalibrationSessionItem(IntEnum):
+    SCHEMA_VERSION   = 0x00
+    SESSION_ID       = 0x01
+    STATE            = 0x02
+    STAGE            = 0x03
+    FAILURE_CODE     = 0x04
+    FLAGS            = 0x05
+    TRANSITION_COUNT = 0x06
+    REQUEST_OPTIONS  = 0x07
+    PROGRESS_PERMILLE = 0x08
+    BUFFERED_RECORDS = 0x09
+    DROPPED_RECORDS  = 0x0A
+    BUFFER_HIGH_WATERMARK = 0x0B
+    BUFFER_CAPACITY  = 0x0C
+    TRANSPORT_FRAMES_SENT = 0x0D
+    TRANSPORT_QUEUE_RETRIES = 0x0E
+    TRANSPORT_DISCONNECT_WAITS = 0x0F
+    START            = 0x10
+    ABORT            = 0x11
+    RESULT_VALIDITY  = 0x20
+    PHASE_RESISTANCE = 0x21
+    PHASE_INDUCTANCE = 0x22
+    ENCODER_DIRECTION = 0x23
+    PHASE_OFFSET     = 0x24
+    PHASE_OFFSET_FLOAT = 0x25
+    EFFECTIVE_RATIO_SCALE = 0x26
+    GEOMETRY_RAW_RMS = 0x27
+    GEOMETRY_CORRECTED_RMS = 0x28
+    GEOMETRY_DIRECTION_PEAK_TO_PEAK = 0x29
+    GEOMETRY_USED_SAMPLES = 0x2A
+    FLUX_LINKAGE = 0x2B
+    TORQUE_CONSTANT = 0x2C
+    FLUX_SAMPLE_STDDEV = 0x2D
+    FLUX_USED_SAMPLES = 0x2E
+    POLE_PAIRS = 0x2F
+    OUTPUT_INERTIA = 0x30
+    FRICTION_COULOMB_POS = 0x31
+    FRICTION_COULOMB_NEG = 0x32
+    FRICTION_VISCOUS_POS = 0x33
+    FRICTION_VISCOUS_NEG = 0x34
+    MECHANICAL_RESIDUAL_RMS_TORQUE = 0x35
+    MECHANICAL_USED_SAMPLES = 0x36
+    ELECTRICAL_DELAY = 0x37
+    DELAY_RESIDUAL_PHASE_OFFSET = 0x38
+    DELAY_RESIDUAL_RMS = 0x39
+    DELAY_USED_SAMPLES = 0x3A
+    MECHANICAL_ATTEMPTED_SAMPLES = 0x3B
+    MECHANICAL_REJECTED_INVALID = 0x3C
+    MECHANICAL_REJECTED_SATURATED = 0x3D
+    MECHANICAL_REJECTED_LOW_VELOCITY = 0x3E
+    MECHANICAL_MAX_ABS_VELOCITY = 0x3F
+    MECHANICAL_REJECTED_TIMING = 0x40
+    DELAY_ATTEMPTED_SAMPLES = 0x41
+    DELAY_REJECTED_INVALID = 0x42
+    DELAY_REJECTED_SATURATED = 0x43
+    DELAY_REJECTED_SPEED = 0x44
+    DELAY_REJECTED_EMF = 0x45
+    DELAY_REJECTED_PHASE = 0x46
+    DELAY_MAX_ABS_ELECTRICAL_SPEED = 0x47
 
 
 class ExtStatus(IntEnum):
@@ -229,6 +311,7 @@ class ExtStatus(IntEnum):
     INVALID_TYPE  = 3
     INVALID_VALUE = 4
     BUSY_ARMED    = 5
+    STORAGE_ERROR = 6
 
 
 class ExtType(IntEnum):
@@ -307,10 +390,14 @@ OVERSPEED_SNAPSHOT_ITEMS: list[tuple[int, str, bool]] = [
 # Control configuration item IDs (ext sub_cmd 0x0B Get / 0x0C Set).
 # (item, name, is_float). 0x58/0x59/0x5A are readonly; 0x5B setter maps to
 # (ControlMode, InputMode, TimeoutAction); 0x5C is the heartbeat watchdog.
-# 0x5D exposes the position-loop integrator gain. All items 0x50-0x5D are
-# persisted to NVM (controller.config / axis.config.can) via
-# save_configuration (cmd 0x03). ADRC runtime state is no longer exposed on
-# the CAN config face.
+# 0x5D exposes the position-loop integrator gain. 0x60-0x63 expose the
+# controller velocity limit and enable gates. Item 0x6E is the experimental
+# Sguan STA switch; 0x6D/0x6F are reserved after ADRC removal. Items 0x70 and
+# 0x7C are readonly zero after realtime friction-compensation removal; the
+# remaining friction fields retain calibration data only. Config items are
+# persisted to NVM via
+# save_configuration (cmd 0x03) and guarded by the armed guard (disarm to edit),
+# except live-tunable gains explicitly allowed by the firmware.
 CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x50, 'velocity_accel_limit',    True),
     (0x51, 'velocity_decel_limit',    True),
@@ -326,6 +413,27 @@ CONTROL_CONFIG_ITEMS: list[tuple[int, str, bool]] = [
     (0x5B, 'servo_mode',              False),
     (0x5C, 'heartbeat_timeout_ms',    False),
     (0x5D, 'pos_integrator_gain',      True),
+    (0x60, 'vel_limit',                True),
+    (0x61, 'vel_limit_tolerance',      True),
+    (0x62, 'enable_vel_limit',         False),
+    (0x63, 'enable_torque_mode_vel_limit', False),
+    # SguanFOC v3.0.1 speed STA.
+    (0x6E, 'enable_sta',               False),
+    # Friction compensation (output-shaft Nm/turn/turn-s; vernier mode).
+    (0x70, 'enable_friction_compensation',     False),
+    (0x7C, 'enable_mit_friction_compensation', False),
+    (0x71, 'friction_pos_deadband',      True),
+    (0x72, 'friction_vel_deadband',      True),
+    (0x73, 'friction_stribeck_vel',      True),
+    (0x74, 'friction_static_pos',        True),
+    (0x75, 'friction_static_neg',        True),
+    (0x76, 'friction_coulomb_pos',       True),
+    (0x77, 'friction_coulomb_neg',       True),
+    (0x78, 'friction_viscous_pos',       True),
+    (0x79, 'friction_viscous_neg',       True),
+    (0x7A, 'friction_max_torque',        True),
+    (0x7B, 'friction_torque_slew_rate',  True),
+    (0x7D, 'joint_pos_rad',               True),  # readonly linear joint position [rad]
 ]
 
 # control_runtime_state (0x58) flag bits.
@@ -476,6 +584,126 @@ def decode_extended_response(data: bytes) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Frame meaning decoder (for the live CAN monitor pane)
+# --------------------------------------------------------------------------- #
+
+def _mit_uint_to_float(raw: int, low: float, high: float, bits: int) -> float:
+    """Inverse of _mit_float_to_uint: raw int -> physical float."""
+    return low + (high - low) * raw / ((1 << bits) - 1)
+
+
+def decode_frame_meaning(cmd_id: int, data: bytes, direction: str) -> str:
+    """One-line human-readable decode of a CAN frame's payload.
+
+    direction is 'rx' (firmware -> host) or 'tx' (host -> firmware). Returns
+    '' for empty payloads or cmds without a decoder (the pane falls back to
+    showing just the cmd name + raw hex on the left).
+    """
+    cmd = int(cmd_id)
+    n = len(data)
+    try:
+        if cmd == CmdId.HEARTBEAT and direction == 'rx':
+            hb = decode_heartbeat(data)
+            if not hb:
+                return ''
+            return (f"state={hb.get('axis_state')} "
+                    f"err=0x{hb.get('axis_error', 0):x}")
+        if cmd == CmdId.GET_ENCODER_ESTIMATES:
+            if n < 8:
+                return 'request'
+            d = decode_encoder_estimates(data)
+            return (f"pos={d['pos_estimate']:.4f}rev "
+                    f"vel={d['vel_estimate']:.4f}rev/s") if d else ''
+        if cmd == CmdId.GET_ENCODER_COUNT:
+            if n < 8:
+                return 'request'
+            d = decode_encoder_count(data)
+            return f"shadow={d['shadow_count']} cpr={d['count_in_cpr']}" if d else ''
+        if cmd == CmdId.GET_IQ:
+            if n < 8:
+                return 'request'
+            d = decode_iq(data)
+            return (f"iq_sp={d['iq_setpoint']:.3f} "
+                    f"iq_meas={d['iq_measured']:.3f}A") if d else ''
+        if cmd == CmdId.GET_BUS_VOLTAGE_CURRENT:
+            if n < 8:
+                return 'request'
+            d = decode_bus_vi(data)
+            return f"vbus={d['vbus']:.2f}V ibus={d['ibus']:.3f}A" if d else ''
+        if cmd == CmdId.GET_MOTOR_ERROR and direction == 'rx':
+            return f"motor_err=0x{decode_motor_error(data):x}"
+        if cmd == CmdId.GET_ENCODER_ERROR and direction == 'rx':
+            return f"enc_err=0x{decode_encoder_error(data):x}"
+        if cmd == CmdId.GET_CONTROLLER_ERROR and direction == 'rx':
+            return f"ctrl_err=0x{decode_controller_error(data):x}"
+        if cmd == CmdId.EXTENDED_COMMAND:
+            if direction == 'rx' and n >= 8:
+                r = decode_extended_response(data)
+                return (f"sub=0x{r.get('sub_cmd', 0):02x} "
+                        f"item=0x{r.get('item', 0):02x} "
+                        f"status={r.get('status')} val={r.get('value')}")
+            if direction == 'tx' and n >= 4:
+                sub, item, typ = data[0], data[1], data[2]
+                val: Any = ''
+                if n >= 8:
+                    if typ == ExtType.FLOAT32:
+                        val = struct.unpack_from('<f', data, 4)[0]
+                    elif typ == ExtType.INT32:
+                        val = struct.unpack_from('<i', data, 4)[0]
+                    else:
+                        val = struct.unpack_from('<I', data, 4)[0]
+                return f"sub=0x{sub:02x} item=0x{item:02x} type={typ} val={val}"
+        if cmd == CmdId.SET_INPUT_POS and direction == 'tx' and n >= 8:
+            pos = struct.unpack_from('<f', data, 0)[0]
+            vel_ff = struct.unpack_from('<h', data, 4)[0] * 0.001
+            tq_ff = struct.unpack_from('<h', data, 6)[0] * 0.001
+            return f"pos={pos:.4f}rev vel_ff={vel_ff:.3f} tq_ff={tq_ff:.3f}Nm"
+        if cmd == CmdId.SET_INPUT_VEL and direction == 'tx' and n >= 8:
+            vel, tq = struct.unpack_from('<ff', data, 0)
+            return f"vel={vel:.4f}rev/s tq_ff={tq:.3f}Nm"
+        if cmd == CmdId.SET_INPUT_TORQUE and direction == 'tx' and n >= 4:
+            return f"torque={struct.unpack_from('<f', data, 0)[0]:.3f}Nm"
+        if cmd == CmdId.SET_LIMITS and direction == 'tx' and n >= 8:
+            vl, cl = struct.unpack_from('<ff', data, 0)
+            return f"vel_limit={vl:.3f} cur_limit={cl:.3f}A"
+        if cmd == CmdId.SET_AXIS_STATE and direction == 'tx' and n >= 4:
+            s = struct.unpack_from('<I', data, 0)[0]
+            try:
+                return f"state={AxisState(s).name}"
+            except ValueError:
+                return f"state={s}"
+        if cmd == CmdId.SET_CONTROLLER_MODE and direction == 'tx' and n >= 8:
+            c, i = struct.unpack_from('<II', data, 0)
+            return f"ctrl={c} input={i}"
+        if cmd == CmdId.SET_MIT_CONTROL and direction == 'tx' and n >= 8:
+            b = data
+            p = _mit_uint_to_float((b[0] << 8) | b[1], MIT_P_MIN, MIT_P_MAX, 16)
+            v = _mit_uint_to_float((b[2] << 4) | (b[3] >> 4), MIT_V_MIN, MIT_V_MAX, 12)
+            kp = _mit_uint_to_float(((b[3] & 0x0F) << 8) | b[4], MIT_KP_MIN, MIT_KP_MAX, 12)
+            kd = _mit_uint_to_float((b[5] << 4) | (b[6] >> 4), MIT_KD_MIN, MIT_KD_MAX, 12)
+            t = _mit_uint_to_float(((b[6] & 0x0F) << 8) | b[7], MIT_T_MIN, MIT_T_MAX, 12)
+            return f"p={p:.3f} v={v:.3f} kp={kp:.2f} kd={kd:.3f} t_ff={t:.3f}Nm"
+        if cmd == CmdId.SET_POS_GAIN and direction == 'tx' and n >= 4:
+            return f"pos_gain={struct.unpack_from('<f', data, 0)[0]:.4f}"
+        if cmd == CmdId.SET_VEL_GAINS and direction == 'tx' and n >= 8:
+            g, ig = struct.unpack_from('<ff', data, 0)
+            return f"vel_gain={g:.4f} vel_int_gain={ig:.4f}"
+        if cmd == CmdId.SET_LINEAR_COUNT and direction == 'tx' and n >= 4:
+            return f"count={struct.unpack_from('<i', data, 0)[0]}"
+        if cmd == CmdId.CLEAR_ERRORS and direction == 'tx':
+            return 'clear_errors'
+        if cmd == CmdId.ESTOP and direction == 'tx':
+            return 'estop'
+        if cmd == CmdId.REBOOT and direction == 'tx':
+            return 'reboot'
+        if cmd == CmdId.NMT and direction == 'tx':
+            return 'nmt heartbeat feed'
+    except Exception:
+        return ''
+    return ''
+
+
+# --------------------------------------------------------------------------- #
 # Encode Functions  (Python values -> CAN payload bytes)
 # --------------------------------------------------------------------------- #
 
@@ -615,7 +843,12 @@ def encode_mit_control(p_des: float, v_des: float, kp: float,
 
 
 def encode_mit_neutral() -> bytes:
-    """Encode a neutral MIT frame (all zeros = p=0, v=0, kp=0, kd=0, t=0)."""
+    """Encode a neutral MIT frame.
+
+    Firmware decodes both adjacent center raw codes for signed MIT fields as
+    exact zero, so the normal rounded encoding is neutral despite the even
+    12/16-bit quantization.
+    """
     return encode_mit_control(0.0, 0.0, 0.0, 0.0, 0.0)
 
 

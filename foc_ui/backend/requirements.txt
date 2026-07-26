@@ -8,10 +8,6 @@ fastapi==0.115.6
 # ASGI server (BSD-3-Clause)
 uvicorn[standard]==0.34.0
 
-# Serial port access (BSD-3-Clause) -- includes the `serial.tools.list_ports`
-# helper used by /api/ports.
-pyserial==3.5
-
 # Request/response validation (MIT) -- bundled with FastAPI, pinned for stability.
 pydantic==2.10.4
 
@@ -20,5 +16,5 @@ pydantic==2.10.4
 websockets==14.1
 
 # CAN bus access (MIT) -- supports PCAN, SocketCAN, Kvaser, etc.
-# Used by the optional odrive_can backend package.
+# Used by the CAN backend package.
 python-can==4.4.2

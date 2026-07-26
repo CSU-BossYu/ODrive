@@ -11,7 +11,7 @@
 #include <stdlib.h>
 
 #include <Drivers/STM32/stm32_nvm.h>
-#include <fibre/../../crc.hpp>
+#include <Utilities/crc.hpp>
 
 
 /* Private defines -----------------------------------------------------------*/
@@ -26,7 +26,7 @@
 
 // IMPORTANT: if you change, reorder or otherwise modify any of the fields in
 // the config structs without changing its total length, make sure to increment this number:
-static constexpr uint16_t config_version = 0x0008;
+static constexpr uint16_t config_version = 0x0011;
 
 /* Private variables ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/

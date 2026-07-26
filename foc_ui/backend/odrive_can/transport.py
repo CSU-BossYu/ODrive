@@ -1,10 +1,10 @@
 """python-can Bus wrapper with reader thread and async dispatch.
 
-Mirrors the pattern of ``foc_backend.serial_link.SerialLink``:
+Provides:
   - A dedicated reader thread polls ``bus.recv()`` for incoming CAN frames
   - Frames are filtered by node_id and dispatched to an asyncio callback
     via a cross-thread queue
-  - Synchronous ``send()`` for outbound frames (blocking pyserial-style,
+  - Synchronous ``send()`` for outbound frames (python-can may block,
     run in executor by the caller when needed)
 
 Default configuration:
@@ -37,6 +37,10 @@ except ImportError:
 
 # Async callback type: (cmd_id, data_bytes, timestamp_monotonic) -> None
 FrameCallback = Callable[[int, bytes, float], Awaitable[None]]
+# Raw-frame monitor callback (both directions): (dir, cmd_id, node_id, data, ts)
+# dir is 'rx' (firmware -> host) or 'tx' (host -> firmware).
+CanFrameCallback = Callable[[str, int, int, bytes, float], Awaitable[None]]
+RX_QUEUE_MAX = 2048
 
 
 class CanTransport:
@@ -49,6 +53,10 @@ class CanTransport:
                  node_id: int = 0):
         self._loop = loop
         self._on_frame = on_frame
+        # Raw-frame monitor (rx + tx). Set by main.py to feed the WS can-frame
+        # display. Independent of _on_frame so the service's cache routing is
+        # unaffected.
+        self._on_can_frame: Optional[CanFrameCallback] = None
         self._node_id = node_id
 
         self._bus: Optional[object] = None  # can.BusABC
@@ -58,12 +66,13 @@ class CanTransport:
         self._send_lock = threading.Lock()
 
         # Cross-thread handoff queue
-        self._q: asyncio.Queue = asyncio.Queue()
+        self._q: asyncio.Queue = asyncio.Queue(maxsize=RX_QUEUE_MAX)
 
         # Stats
         self.frames_rx: int = 0
         self.frames_tx: int = 0
         self.bus_errors: int = 0
+        self.queue_dropped: int = 0
 
         # Connection info
         self.interface: Optional[str] = None
@@ -94,6 +103,7 @@ class CanTransport:
         self.frames_rx = 0
         self.frames_tx = 0
         self.bus_errors = 0
+        self.queue_dropped = 0
         self._stop_evt.clear()
 
         self._bus = _can.Bus(
@@ -153,15 +163,27 @@ class CanTransport:
             raise RuntimeError('CAN transport not open')
 
         nid = node_id if node_id is not None else self._node_id
-        arb_id = make_frame_id(nid, int(cmd_id))
+        cmd = int(cmd_id)
+        if not 0 <= nid <= 63:
+            raise ValueError(f'node_id out of range: {nid}')
+        if not 0 <= cmd <= 0x1F:
+            raise ValueError(f'command ID out of range: {cmd}')
+        if len(data) > 8:
+            raise ValueError(f'classic CAN payload too long: {len(data)}')
+        arb_id = make_frame_id(nid, cmd)
         msg = _can.Message(
             arbitration_id=arb_id,
-            data=data[:8],  # classic CAN: max 8 bytes
+            data=data,
             is_extended_id=False,
         )
         with self._send_lock:
             bus.send(msg)  # type: ignore[attr-defined]
             self.frames_tx += 1
+        # Mirror the sent frame to the raw-frame monitor. _put_nowait is
+        # thread-safe (call_soon_threadsafe), safe to call from this executor
+        # thread while holding _send_lock.
+        self._put_nowait(('frame', 'tx', cmd, nid, data,
+                          time.monotonic()))
 
     def send_request(self, cmd_id: CmdId | int,
                      node_id: Optional[int] = None) -> None:
@@ -180,31 +202,35 @@ class CanTransport:
     def _reader_main(self) -> None:
         bus = self._bus
         assert bus is not None
-        try:
-            while not self._stop_evt.is_set():
-                try:
-                    msg = bus.recv(timeout=0.1)  # type: ignore[attr-defined]
-                except Exception:
-                    self.bus_errors += 1
-                    continue
+        while not self._stop_evt.is_set():
+            try:
+                msg = bus.recv(timeout=0.1)  # type: ignore[attr-defined]
+            except Exception:
+                # Persistent bus fault (e.g. USB unplug) raises on every call;
+                # back off so we don't busy-spin and peg a CPU core.
+                self.bus_errors += 1
+                time.sleep(0.1)
+                continue
 
-                if msg is None:
-                    continue
+            if msg is None:
+                continue
 
-                # Filter: only process frames for our node_id
+            # Parse inside the loop so a malformed frame doesn't kill the
+            # reader thread (which would leave the bus "open" but deaf).
+            try:
                 if msg.is_extended_id:
                     continue
                 nid, cmd_id = parse_frame_id(msg.arbitration_id)
                 if nid != self._node_id:
                     continue
-
-                self.frames_rx += 1
-                ts = time.monotonic()
                 data = bytes(msg.data)
-                self._put_nowait(('frame', cmd_id, data, ts))
+            except Exception as exc:
+                self._put_nowait(('error', f'bad frame: {exc}'))
+                continue
 
-        except Exception as exc:
-            self._put_nowait(('error', str(exc)))
+            self.frames_rx += 1
+            ts = time.monotonic()
+            self._put_nowait(('frame', 'rx', cmd_id, nid, data, ts))
 
     # ------------------------------------------------------------------ #
     # Cross-thread Queue
@@ -212,9 +238,15 @@ class CanTransport:
 
     def _put_nowait(self, item) -> None:
         try:
-            self._loop.call_soon_threadsafe(self._q.put_nowait, item)
+            self._loop.call_soon_threadsafe(self._enqueue, item)
         except RuntimeError:
             pass  # event loop closed
+
+    def _enqueue(self, item) -> None:
+        try:
+            self._q.put_nowait(item)
+        except asyncio.QueueFull:
+            self.queue_dropped += 1
 
     async def pump(self) -> None:
         """Event-loop coroutine: drain the queue and dispatch to callback.
@@ -226,8 +258,12 @@ class CanTransport:
             kind = item[0]
             try:
                 if kind == 'frame':
-                    _, cmd_id, data, ts = item
-                    if self._on_frame is not None:
+                    _, dir, cmd_id, node_id, data, ts = item
+                    if self._on_can_frame is not None:
+                        await self._on_can_frame(dir, cmd_id, node_id, data, ts)
+                    # Service cache routing is rx-only: tx frames are our own
+                    # sends and must not be re-processed as inbound telemetry.
+                    if dir == 'rx' and self._on_frame is not None:
                         await self._on_frame(cmd_id, data, ts)
                 elif kind == 'error':
                     _, text = item

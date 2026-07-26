@@ -24,7 +24,6 @@ int NVM_read(size_t offset, uint8_t *data, size_t length);
 int NVM_start_write(size_t length);
 int NVM_write(size_t offset, uint8_t *data, size_t length);
 int NVM_commit(void);
-void NVM_demo(void);
 
 #ifdef __cplusplus
 }

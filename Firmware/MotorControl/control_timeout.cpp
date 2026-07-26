@@ -123,6 +123,7 @@ void apply_timeout_action(Axis& axis, uint32_t reason) {
     st.last_timeout_reason = reason;
     st.flags |= FLAG_COMM_TIMEOUT;
     st.flags |= (reason == 2) ? FLAG_HEARTBEAT_EXPIRED : FLAG_CMD_WATCHDOG_EXPIRED;
+    controller.reset_sta();
 
     if (controller.config_.input_mode == Controller::INPUT_MODE_MIT) {
         controller.mit_kp_ = 0.0f;
