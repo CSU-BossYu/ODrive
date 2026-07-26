@@ -18,27 +18,38 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
 <template>
   <div class="app-root">
     <header class="app-header">
-      <span class="app-name">ODrive CAN</span>
-      <StatusBar />
+      <div class="brand">
+        <span class="brand-mark">FOC</span>
+        <span class="brand-copy">
+          <strong>Motion Console</strong>
+          <small>ODrive · CAN 调试工作台</small>
+        </span>
+      </div>
+      <div class="status-wrap">
+        <StatusBar />
+      </div>
     </header>
-    <div class="workspace">
-      <div class="left-col">
+    <main class="workspace">
+      <section class="left-col workspace-column" aria-label="运动控制">
+        <div class="column-label"><span>01</span> 运动控制</div>
         <ControlPanel />
         <CalibrationPanel />
-      </div>
-      <div class="center-col">
+      </section>
+      <section class="center-col workspace-column" aria-label="实时监控">
+        <div class="column-label"><span>02</span> 实时监控</div>
         <div class="waveform-wrap">
           <WaveformPanel v-model:visible="visibleChannels" />
         </div>
         <div class="log-wrap">
           <LogConsole />
         </div>
-      </div>
-      <div class="right-col">
+      </section>
+      <aside class="right-col workspace-column" aria-label="参数与诊断">
+        <div class="column-label"><span>03</span> 参数与诊断</div>
         <ParamPanel />
         <OverspeedPanel />
-      </div>
-    </div>
+      </aside>
+    </main>
   </div>
 </template>
 
@@ -48,58 +59,172 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  background:
+    radial-gradient(circle at 48% -20%, rgba(45, 212, 191, 0.08), transparent 38%),
+    var(--bg);
 }
 .app-header {
   display: flex;
-  align-items: stretch;
-  gap: 12px;
-  background: #020617;
-  border-bottom: 1px solid var(--border);
+  align-items: center;
+  min-height: 64px;
+  padding: 0 14px;
+  gap: 16px;
+  background: rgba(8, 13, 22, 0.94);
+  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
   flex: 0 0 auto;
+  position: relative;
+  z-index: 5;
 }
-.app-name {
+.brand {
   display: flex;
   align-items: center;
-  padding: 0 14px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--accent-2);
-  border-right: 1px solid var(--border);
+  gap: 10px;
+  padding-right: 16px;
+  border-right: 1px solid var(--border-subtle);
   white-space: nowrap;
-  letter-spacing: 0.05em;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  border-radius: 11px;
+  background: linear-gradient(145deg, rgba(45, 212, 191, 0.18), rgba(20, 184, 166, 0.04));
+  color: var(--accent-2);
+  font: 800 11px/1 var(--mono);
+  letter-spacing: 0.08em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 22px rgba(45, 212, 191, 0.08);
+}
+.brand-copy {
+  display: grid;
+  gap: 2px;
+}
+.brand-copy strong {
+  color: var(--fg-strong);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+.brand-copy small {
+  color: var(--fg-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.status-wrap {
+  min-width: 0;
+  flex: 1;
 }
 .app-header :deep(.status-bar) {
-  border-bottom: none;
-  flex: 1;
+  background: transparent;
+  padding: 8px 0;
 }
 .workspace {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(520px, 1fr) minmax(260px, 300px);
-  gap: 10px;
-  padding: 10px;
+  grid-template-columns: minmax(330px, 370px) minmax(500px, 1fr) minmax(280px, 320px);
+  gap: 12px;
+  padding: 12px;
   min-height: 0;
+}
+.workspace-column {
+  position: relative;
+  padding-top: 27px;
+  min-width: 0;
+}
+.column-label {
+  position: absolute;
+  inset: 0 2px auto 2px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 21px;
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.column-label span {
+  color: var(--accent-2);
+  font-family: var(--mono);
+  letter-spacing: 0;
 }
 .left-col, .right-col {
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  gap: 8px;
+  gap: 10px;
+}
+.left-col :deep(.control-panel) { flex: 1 1 auto; }
+.left-col :deep(.calibration-panel) { max-height: 44%; }
+.right-col :deep(.param-panel),
+.right-col :deep(.overspeed-panel) {
+  flex: 1 1 0;
+  min-height: 0;
 }
 .center-col {
   display: grid;
-  grid-template-rows: minmax(300px, 1.45fr) minmax(150px, 0.85fr);
-  gap: 10px;
+  grid-template-rows: 27px minmax(300px, 1.55fr) minmax(160px, 0.75fr);
+  gap: 0;
   min-height: 0;
 }
+.center-col .column-label { position: static; }
+.center-col .waveform-wrap { margin-bottom: 10px; }
 .waveform-wrap, .log-wrap { min-height: 0; min-width: 0; }
 
-@media (max-width: 1280px) {
-  .workspace { grid-template-columns: 300px 1fr 260px; }
+@media (max-width: 1360px) {
+  .workspace { grid-template-columns: 310px minmax(430px, 1fr) 280px; }
+  .brand-copy { display: none; }
 }
-@media (max-width: 1024px) {
-  .workspace { grid-template-columns: 220px 1fr; }
-  .right-col { grid-column: 1 / 3; max-height: 180px; }
+@media (max-width: 1080px) {
+  .app-root {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+  .app-header {
+    align-items: flex-start;
+    position: sticky;
+    top: 0;
+  }
+  .brand { padding-top: 9px; }
+  .workspace {
+    grid-template-columns: minmax(300px, 0.78fr) minmax(460px, 1.22fr);
+    align-items: start;
+  }
+  .left-col, .right-col { overflow: visible; }
+  .left-col :deep(.calibration-panel) { max-height: none; }
+  .right-col :deep(.param-panel),
+  .right-col :deep(.overspeed-panel) { min-height: 520px; }
+  .center-col { min-height: 720px; }
+  .right-col {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding-top: 30px;
+  }
+}
+@media (max-width: 760px) {
+  .app-header { padding: 0 10px; gap: 8px; }
+  .brand { display: none; }
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+  }
+  .workspace-column {
+    width: 100%;
+    overflow: visible;
+  }
+  .center-col {
+    display: grid;
+    grid-template-rows: 27px minmax(420px, 60vh) minmax(300px, 42vh);
+    min-height: 780px;
+  }
+  .right-col { display: flex; }
+  .right-col :deep(.param-panel),
+  .right-col :deep(.overspeed-panel) { min-height: 480px; }
 }
 </style>

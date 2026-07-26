@@ -16,6 +16,13 @@ const selectedChannel = ref('PCAN_USBBUS1')
 const nodeId = ref(0)
 const canConnecting = ref(false)
 const canErrorMsg = ref('')
+const canFormValid = computed(() =>
+  selectedInterface.value.trim().length > 0
+  && selectedChannel.value.trim().length > 0
+  && Number.isInteger(nodeId.value)
+  && nodeId.value >= 0
+  && nodeId.value <= 63
+)
 
 async function refreshInterfaces() {
   try {
@@ -31,6 +38,7 @@ async function refreshInterfaces() {
 }
 
 async function canConnect() {
+  if (!canFormValid.value || canConnecting.value) return
   canConnecting.value = true
   canErrorMsg.value = ''
   try {
@@ -56,7 +64,16 @@ async function canConnect() {
 }
 
 async function canDisconnect() {
-  await fetch('/api/can/disconnect', { method: 'POST' })
+  canErrorMsg.value = ''
+  try {
+    const r = await fetch('/api/can/disconnect', { method: 'POST' })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({ error: r.statusText }))
+      canErrorMsg.value = j.error || `HTTP ${r.status}`
+    }
+  } catch (e) {
+    canErrorMsg.value = String(e)
+  }
 }
 
 onMounted(refreshInterfaces)
@@ -141,13 +158,14 @@ function fmt(v: number, digits = 2): string {
 <template>
   <div class="status-bar">
     <div class="cell conn">
+      <span class="section-kicker">CAN</span>
       <select v-model="selectedInterface" :disabled="transportConnected" class="iface-select">
         <option v-for="i in canInterfaces" :key="i.interface" :value="i.interface">{{ i.interface }}</option>
       </select>
       <input v-model="selectedChannel" :disabled="transportConnected" class="ch-input" placeholder="PCAN_USBBUS1" />
       <label class="node-label">N<input type="number" v-model.number="nodeId" :disabled="transportConnected" min="0" max="63" class="node-input" /></label>
       <button @click="refreshInterfaces" :disabled="transportConnected" title="刷新接口" class="icon-btn">刷新</button>
-      <button v-if="!transportConnected" @click="canConnect" :disabled="canConnecting" class="primary">
+      <button v-if="!transportConnected" @click="canConnect" :disabled="canConnecting || !canFormValid" class="primary">
         {{ canConnecting ? '连接中...' : '连接' }}
       </button>
       <button v-else @click="canDisconnect" class="danger">断开</button>
@@ -188,8 +206,8 @@ function fmt(v: number, digits = 2): string {
 .status-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
+  gap: 9px;
+  padding: 7px 12px;
   background: var(--bg-2);
   flex-wrap: nowrap;
   overflow-x: auto;
@@ -197,6 +215,12 @@ function fmt(v: number, digits = 2): string {
 }
 .cell { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .conn { flex: 0 0 auto; flex-wrap: wrap; }
+.section-kicker {
+  margin-right: 2px;
+  color: var(--accent-2);
+  font: 750 9px/1 var(--mono);
+  letter-spacing: .12em;
+}
 .conn-error {
   font-size: 10px;
   color: var(--err);
@@ -208,19 +232,19 @@ function fmt(v: number, digits = 2): string {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.iface-select { width: 80px; }
-.ch-input { width: 118px; font-size: 11px; font-family: var(--mono); padding: 2px 4px; }
+.iface-select { width: 82px; }
+.ch-input { width: 124px; font-size: 11px; font-family: var(--mono); padding: 4px 7px; }
 .node-label { font-size: 10px; color: var(--fg-dim); display: flex; align-items: center; gap: 2px; }
 .node-input { width: 36px; font-size: 11px; text-align: center; }
-.icon-btn { padding: 4px 8px; }
+.icon-btn { padding: 6px 8px; }
 .divider {
   width: 1px;
   align-self: stretch;
-  background: var(--border);
+  background: var(--border-subtle);
   margin: 2px 2px;
   flex: 0 0 auto;
 }
-.system-pill { min-width: 78px; text-align: center; font-weight: 700; }
+.system-pill { min-width: 78px; text-align: center; font-weight: 750; }
 .cfg-default-pill {
   background: rgba(245, 158, 11, 0.16);
   color: var(--warn);
@@ -230,10 +254,10 @@ function fmt(v: number, digits = 2): string {
   padding: 1px 5px;
   white-space: nowrap;
 }
-.readings { display: flex; gap: 14px; }
+.readings { display: flex; gap: 13px; }
 .reading { display: flex; align-items: baseline; gap: 3px; white-space: nowrap; font-family: var(--mono); }
-.reading .k { font-size: 10px; color: var(--fg-dim); }
-.reading .v { font-size: 13px; color: var(--fg); font-weight: 600; min-width: 3ch; }
+.reading .k { font-size: 9px; color: var(--fg-muted); text-transform: uppercase; }
+.reading .v { font-size: 13px; color: var(--fg-strong); font-weight: 650; min-width: 3ch; }
 .reading .u { font-size: 9px; color: var(--fg-dim); }
 .reading .v.err-val { color: var(--err); }
 .runtime-pills { display: flex; gap: 3px; }
@@ -247,6 +271,7 @@ function fmt(v: number, digits = 2): string {
   align-items: center;
   gap: 5px;
   font-size: 11px;
+  min-height: 31px;
 }
 .rec-off { color: var(--fg-dim); }
 .rec-on { background: var(--err); border-color: var(--err); color: white; }
@@ -258,4 +283,9 @@ function fmt(v: number, digits = 2): string {
 }
 .rec-on .rec-dot { background: white; animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: 0.4; } }
+
+@media (max-width: 760px) {
+  .status-bar { padding: 7px 0; }
+  .readings { display: none; }
+}
 </style>

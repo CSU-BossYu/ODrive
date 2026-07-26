@@ -110,6 +110,13 @@ const QUICK: { label: string; action: () => void }[] = [
   { label: 'Dev Info',  action: () => oSocket.extCmd(0x05, 0x01) },
   { label: 'Reboot',    action: () => oSocket.reboot() },
 ]
+
+function runQuick(label: string, action: () => void) {
+  if (!oSocket.ready.value) return
+  if (label === 'Save Cfg' && !confirm('确认将当前配置保存到 Flash？')) return
+  if (label === 'Reboot' && !confirm('确认重启控制器？当前运动将立即停止。')) return
+  action()
+}
 </script>
 
 <template>
@@ -169,7 +176,13 @@ const QUICK: { label: string; action: () => void }[] = [
     </div>
 
     <div class="quick-row">
-      <button v-for="q in QUICK" :key="q.label" class="quick" @click="q.action()">{{ q.label }}</button>
+      <button
+        v-for="q in QUICK"
+        :key="q.label"
+        class="quick"
+        :disabled="!oSocket.ready.value"
+        @click="runQuick(q.label, q.action)"
+      >{{ q.label }}</button>
     </div>
   </div>
 </template>

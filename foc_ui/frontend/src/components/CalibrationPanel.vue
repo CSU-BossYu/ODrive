@@ -200,7 +200,7 @@ onBeforeUnmount(stopPolling)
 </template>
 
 <style scoped>
-.calibration-panel { flex: 0 0 auto; padding: 12px; overflow: visible; }
+.calibration-panel { flex: 0 0 auto; padding: 12px; overflow-y: auto; }
 .panel-head, .progress-meta, .session-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .panel-title { margin: 0; }
 .subtitle { margin-top: 3px; color: var(--fg-dim); font-size: 11px; }

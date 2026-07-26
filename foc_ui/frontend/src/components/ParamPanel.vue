@@ -2,10 +2,11 @@
 // Parameter tuning panel for ODrive CAN mode.
 // Gains, limits, poll rate, and config management.
 
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useOdriveSocket } from '../composables/useOdriveSocket'
 
 const oSocket = useOdriveSocket()
+const isIdle = computed(() => (oSocket.heartbeat.value?.axis_state ?? 0) === 1)
 const EXT_FLOAT32 = 1
 const EXT_UINT32 = 3
 const SUB_GET_BASIC = 0x06
@@ -238,6 +239,7 @@ watch(() => oSocket.extSeq.value, () => {
 })
 
 function apply(p: ParamDef) {
+  if (!oSocket.ready.value) return
   const v = values.value[p.key]
   // Guard NaN/empty-string before the range check: v-model.number on a
   // cleared input yields '' (looseToNumber), and '' < min coerces to 0 and
@@ -273,6 +275,7 @@ function apply(p: ParamDef) {
 }
 
 function readConfig() {
+  if (!oSocket.ready.value) return
   PARAMS.forEach((p) => {
     if (p.item !== undefined && p.readSubCmd !== undefined) {
       oSocket.extCmd(p.readSubCmd, p.item)
@@ -281,14 +284,17 @@ function readConfig() {
 }
 
 function readControlConfig() {
+  if (!oSocket.ready.value) return
   oSocket.getControlConfig()
 }
 
 function readMotorModel() {
+  if (!oSocket.ready.value) return
   MOTOR_MODEL_PARAMS.forEach((p) => oSocket.extCmd(0x06, p.item))
 }
 
 function applyControl(p: ControlParamDef) {
+  if (!oSocket.ready.value) return
   if (p.readonly) {
     readControlConfig()
     return
@@ -307,12 +313,14 @@ function applyControl(p: ControlParamDef) {
 }
 
 function saveConfig() {
-  if (confirm('Save configuration to Flash? The axis must be IDLE.')) {
+  if (!oSocket.ready.value || !isIdle.value) return
+  if (confirm('确认将当前配置保存到 Flash？')) {
     oSocket.extCmd(0x03, 0x00, 3, 0, 3.0)  // SAVE_CONFIGURATION
   }
 }
 
 function deviceInfo() {
+  if (!oSocket.ready.value) return
   oSocket.extCmd(0x05, 0x01)  // GET_DEVICE_INFO
 }
 </script>
@@ -321,14 +329,14 @@ function deviceInfo() {
   <div class="panel param-panel">
     <div class="row">
       <h3 class="panel-title grow">参数</h3>
-      <button @click="readConfig" title="Read config from device">Read</button>
-      <button @click="saveConfig" title="Save config to flash" class="warn">Save</button>
-      <button @click="deviceInfo" title="Get device info">Info</button>
+      <button @click="readConfig" title="从设备读取参数" :disabled="!oSocket.ready.value">读取</button>
+      <button @click="saveConfig" title="轴处于 IDLE 时才可保存" class="warn" :disabled="!oSocket.ready.value || !isIdle">保存</button>
+      <button @click="deviceInfo" title="读取设备信息" :disabled="!oSocket.ready.value">信息</button>
     </div>
     <div class="param-list">
       <div class="section-heading">
         <span>电机型号 (只读)</span>
-        <button @click="readMotorModel">读取</button>
+        <button @click="readMotorModel" :disabled="!oSocket.ready.value">读取</button>
       </div>
       <div v-for="p in MOTOR_MODEL_PARAMS" :key="p.key" class="param-row motor-model-row">
         <label>{{ p.label }}</label>
@@ -345,9 +353,10 @@ function deviceInfo() {
             type="number" :step="p.step" :min="p.min" :max="p.max"
             v-model.number="values[p.key]"
             @keyup.enter="apply(p)"
+            :disabled="!oSocket.ready.value"
           />
           <span class="unit">{{ p.unit }}</span>
-          <button @click="apply(p)">set</button>
+          <button @click="apply(p)" :disabled="!oSocket.ready.value">设置</button>
         </div>
         <div v-if="lastResult[p.key]" class="result"
           :class="{ ok: lastResult[p.key]?.ok, err: !lastResult[p.key]?.ok }">
@@ -357,7 +366,7 @@ function deviceInfo() {
 
       <div class="section-heading">
         <span>控制配置</span>
-        <button @click="readControlConfig">读取</button>
+        <button @click="readControlConfig" :disabled="!oSocket.ready.value">读取</button>
       </div>
       <div v-for="p in CONTROL_PARAMS" :key="p.key" class="param-row">
         <label :title="`${p.min}..${p.max}`">{{ p.label }}</label>
@@ -365,11 +374,11 @@ function deviceInfo() {
           <input
             type="number" :step="p.step" :min="p.min" :max="p.max"
             v-model.number="controlValues[p.key]"
-            :disabled="p.readonly"
+            :disabled="p.readonly || !oSocket.ready.value"
             @keyup.enter="applyControl(p)"
           />
           <span class="unit">{{ p.unit }}</span>
-          <button @click="applyControl(p)">{{ p.readonly ? '读取' : '设置' }}</button>
+          <button @click="applyControl(p)" :disabled="!oSocket.ready.value">{{ p.readonly ? '读取' : '设置' }}</button>
         </div>
         <div v-if="controlResult[p.key]" class="result"
           :class="{ ok: controlResult[p.key]?.ok, err: !controlResult[p.key]?.ok }">
@@ -381,11 +390,11 @@ function deviceInfo() {
 </template>
 
 <style scoped>
-.param-panel { display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
-.param-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.param-panel { display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+.param-list { overflow-y: auto; display: flex; flex-direction: column; gap: 7px; padding-right: 3px; }
 .param-row {
   display: flex; flex-direction: column; gap: 2px;
-  padding-bottom: 4px; border-bottom: 1px solid var(--border);
+  padding: 2px 0 7px; border-bottom: 1px solid var(--border-subtle);
 }
 .motor-model-value {
   font-family: var(--mono);
@@ -393,9 +402,12 @@ function deviceInfo() {
   color: var(--fg);
   flex: 1;
   padding: 2px 4px;
-  background: var(--bg-2);
-  border-radius: 3px;
-  min-height: 16px;
+  background: rgba(5, 10, 18, 0.5);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  min-height: 29px;
+  display: flex;
+  align-items: center;
 }
 .unit { font-size: 10px; color: var(--fg-dim); min-width: 36px; text-align: right; }
 .section-heading {
