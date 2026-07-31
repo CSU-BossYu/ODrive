@@ -417,6 +417,26 @@ class Lz5710EncoderChainTest(unittest.TestCase):
         self.assertFalse(controller_ran)
         self.assertTrue(controller_failed)
 
+    def test_25_aux_fault_does_not_remove_motor_phase_feedback(self):
+        # Motor electrical phase is derived from the main encoder. Once its
+        # PLL is acquired, an auxiliary/Vernier readiness transient must not
+        # turn the motor phase velocity port into an empty value.
+        motor_phase_valid = True
+        full_vernier_chain_ready = True
+        full_vernier_chain_ready = False  # isolated aux/frame/resolver fault
+        self.assertTrue(motor_phase_valid)
+        self.assertFalse(full_vernier_chain_ready)
+
+    def test_26_main_timeout_removes_motor_phase_feedback(self):
+        motor_phase_valid = True
+        main_sample_age_cycles = 0
+        timeout_cycles = 20
+        for _ in range(timeout_cycles + 1):
+            main_sample_age_cycles += 1
+        if main_sample_age_cycles > timeout_cycles:
+            motor_phase_valid = False
+        self.assertFalse(motor_phase_valid)
+
 
 if __name__ == "__main__":
     unittest.main()

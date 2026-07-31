@@ -128,6 +128,10 @@ public:
     float interpolation_ = 0.0f;
     OutputPort<float> phase_ = 0.0f;     // [rad]
     OutputPort<float> phase_vel_ = 0.0f; // [rad/s]
+    // Motor-side electrical feedback only depends on the main encoder. Keep
+    // this separate from is_ready_, which in Vernier mode represents the
+    // stricter main+aux+resolver+output-PLL chain.
+    bool motor_phase_estimate_valid_ = false;
     // PLL phase state in [0, cpr). Keeping this bounded is essential: a
     // continuous float32 count loses single-count resolution above 2^24 and
     // creates a false stationary velocity limit cycle. shadow_count_ carries

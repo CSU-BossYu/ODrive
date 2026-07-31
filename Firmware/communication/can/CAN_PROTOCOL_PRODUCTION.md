@@ -381,7 +381,9 @@ Selected diagnostic items include:
 - `0x7F`: uint32 LUT enabled/valid flags
 - `0x80`: float32 continuous output PLL error [rad]
 - `0x81`: float32 active output-geometry LUT correction [rad]
-- `0x82`: uint32 readiness flags
+- `0x82`: uint32 readiness flags (bit0 main, bit1 aux, bit2 resolver lock,
+  bit3 tracker, bit4 output PLL, bit5 direction, bit6 full chain ready,
+  bit7 motor electrical phase ready)
 - `0x2C`: output_pair_vel_estimate, load-side velocity in rpm from accepted Vernier pair samples
 - `0x2D`: output_last_aux_correction, last low-frequency auxiliary position correction in radians
 - `0x30`: FOC_BAD_TIMING

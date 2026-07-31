@@ -669,7 +669,7 @@ Selected items:
 | 0x7F | uint32 | lut_flags | bit0 enabled, bit1 valid |
 | 0x80 | float32 | pll_error_rad | Continuous-position PLL error, rad |
 | 0x81 | float32 | lut_correction_rad | Active output-geometry correction, rad |
-| 0x82 | uint32 | readiness_flags | Main/aux/resolver/tracker/PLL/direction/ready bits |
+| 0x82 | uint32 | readiness_flags | bit0 main, bit1 aux, bit2 resolver locked, bit3 tracker, bit4 output PLL, bit5 direction, bit6 full chain ready, bit7 motor electrical phase ready |
 | 0x30 | uint32 | FOC_BAD_TIMING | Timing diagnostic |
 | 0x34 | uint32 | ADC_PRE | ADC timing diagnostic |
 | 0x35 | uint32 | ADC_POST | ADC timing diagnostic |

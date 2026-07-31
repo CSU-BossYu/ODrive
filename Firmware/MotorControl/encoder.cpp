@@ -85,6 +85,7 @@ void Encoder::setup() {
 void Encoder::set_error(Error error) {
     vel_estimate_valid_ = false;
     pos_estimate_valid_ = false;
+    motor_phase_estimate_valid_ = false;
     error_ |= error;
     axis_->error_ |= Axis::ERROR_ENCODER_FAILED;
 }
@@ -511,6 +512,7 @@ void Encoder::apply_vernier_resolver_config() {
     aux_sample_age_control_cycles_ = 0;
     encoder_chain_fault_ = CHAIN_FAULT_NONE;
     is_ready_ = false;
+    motor_phase_estimate_valid_ = false;
     vernier_output_estimate_valid_ = false;
     vernier_main_continuous_valid_ = false;
     vernier_output_sample_dt_ = 0.0f;
@@ -1183,7 +1185,8 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
         (lz5710_position_tracker_.valid() ? 8u : 0u) |
         (lz5710_output_pll_.valid() ? 16u : 0u) |
         (config_.direction == 1 || config_.direction == -1 ? 32u : 0u) |
-        (is_ready_ ? 64u : 0u);
+        (is_ready_ ? 64u : 0u) |
+        (motor_phase_estimate_valid_ ? 128u : 0u);
     out->lut_enabled = config_.vernier_geometry_correction_enabled;
     out->lut_valid = vernier_geometry_lut_valid();
     cpu_exit_critical(prim);
@@ -1603,6 +1606,14 @@ bool Encoder::update() {
                 pos_abs_latched = main_sample.angle;
                 main_sample_age_control_cycles_ = 0;
                 ++consecutive_valid_main_samples_;
+                if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER &&
+                    consecutive_valid_main_samples_ >= 3u &&
+                    (config_.direction == 1 || config_.direction == -1)) {
+                    // Once acquired, the motor-side phase PLL can safely bridge
+                    // isolated invalid or missing SPI frames. A real timeout
+                    // calls set_error() above and clears this latch.
+                    motor_phase_estimate_valid_ = true;
+                }
             }
 
             abs_spi_pos_updated_ = false;
@@ -1734,7 +1745,11 @@ bool Encoder::update() {
     float elec_rad_per_enc = axis_->motor_.config_.pole_pairs * 2 * M_PI * (1.0f / (float)(config_.cpr));
     float ph = elec_rad_per_enc * (interpolated_enc - config_.phase_offset_float);
     
-    if (is_ready_) {
+    const bool electrical_feedback_ready =
+        mode_ == MODE_SPI_ABS_MT6826S_VERNIER
+            ? motor_phase_estimate_valid_
+            : is_ready_;
+    if (electrical_feedback_ready) {
         const float electrical_velocity = (2*M_PI) * motor_vel_estimate_turns *
             axis_->motor_.config_.pole_pairs * config_.direction;
         phase_ = wrap_pm_pi(wrap_pm_pi(ph) * config_.direction +
