@@ -212,6 +212,7 @@ public:
     lz5710::ContinuousPositionPll lz5710_output_pll_;
     uint32_t consumed_main_sample_sequence_ = 0;
     uint32_t main_sample_age_control_cycles_ = 0;
+    uint32_t main_sample_age_max_control_cycles_ = 0;
     uint32_t aux_sample_age_control_cycles_ = 0;
     uint32_t consecutive_valid_main_samples_ = 0;
     uint32_t consecutive_valid_aux_samples_ = 0;

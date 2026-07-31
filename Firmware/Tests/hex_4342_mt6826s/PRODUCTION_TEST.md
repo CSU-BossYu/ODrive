@@ -103,6 +103,25 @@ Run with a current-limited 24 V bus supply.
    python Firmware\Tests\hex_4342_mt6826s\read_mt6826s_pair.py --bitrate 1000000 --period 1 --samples 1 --show-status
    ```
 
+### Dual-encoder motion quality
+
+With the `foc_ui` backend running and the shaft unloaded, run a conservative
+forward/stop/reverse test at 3 rpm:
+
+```powershell
+python Firmware\Tests\hex_4342_mt6826s\run_dual_encoder_motion_quality.py --rpm 3 --clear-at-start --csv Firmware\Tests\hex_4342_mt6826s\dual_encoder_motion.csv
+```
+
+The script uses the backend WebSocket, so the UI may remain open and must keep
+exclusive ownership of the PCAN adapter. It does not alter gains, limits,
+calibration values, or NVM. It always requests 0 rpm and IDLE on normal exit,
+fault, or Ctrl+C.
+
+Review the final main/aux CRC, fixed-bit, and DMA rates; Vernier residual and
+margin; readiness loss; chain-fault mask; and maximum main-sample age. At the
+10 kHz control rate, 20 sample-age cycles equal 2 ms and are the boundary at
+which sustained main-encoder loss can invalidate motor electrical feedback.
+
 Position mode is not part of this gate until the vernier false-wrap issue is
 closed.
 

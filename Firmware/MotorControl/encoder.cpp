@@ -509,6 +509,7 @@ void Encoder::apply_vernier_resolver_config() {
     consumed_vernier_pair_sequence_ = mt6826s_pair_sequence_;
     consumed_main_sample_sequence_ = mt6826s_main_sample_.sequence;
     main_sample_age_control_cycles_ = 0;
+    main_sample_age_max_control_cycles_ = 0;
     aux_sample_age_control_cycles_ = 0;
     encoder_chain_fault_ = CHAIN_FAULT_NONE;
     is_ready_ = false;
@@ -1143,8 +1144,9 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
     VernierResolver::Result resolver_result = vernier_result_;
     out->pair_count = mt6826s_pair_sequence_;
     out->pair_valid = mt6826s_pair_valid_;
-    out->main_sample_age_cycles = 0;
-    out->max_main_sample_age_cycles = 0;
+    out->main_sample_age_cycles = main_sample_age_control_cycles_;
+    out->max_main_sample_age_cycles =
+        main_sample_age_max_control_cycles_;
     out->pll_phase_error_counts = delta_pos_cpr_counts_;
     out->pll_velocity_counts_per_s = vel_estimate_counts_;
     out->pll_position_counts = pos_estimate_counts_;
@@ -1582,6 +1584,9 @@ bool Encoder::update() {
         case MODE_SPI_ABS_MT6826S_VERNIER: {
             if (!has_new_main_sample) {
                 ++main_sample_age_control_cycles_;
+                main_sample_age_max_control_cycles_ = std::max(
+                    main_sample_age_max_control_cycles_,
+                    main_sample_age_control_cycles_);
                 if (main_sample_age_control_cycles_ >
                     kMainEncoderTimeoutControlCycles) {
                     consecutive_valid_main_samples_ = 0;
@@ -1593,6 +1598,9 @@ bool Encoder::update() {
                 spi_error_rate_ +=
                     current_meas_period * (1.0f - spi_error_rate_);
                 ++main_sample_age_control_cycles_;
+                main_sample_age_max_control_cycles_ = std::max(
+                    main_sample_age_max_control_cycles_,
+                    main_sample_age_control_cycles_);
                 consecutive_valid_main_samples_ = 0;
                 if (main_sample_age_control_cycles_ >
                     kMainEncoderTimeoutControlCycles) {
