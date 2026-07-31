@@ -77,6 +77,7 @@ set(FIRMWARE_SOURCES
     Drivers/STM32/stm32_spi_arbiter.cpp
     Drivers/MT6826S/mt6826s_spi.cpp
     Drivers/MT6826S/vernier_resolver.cpp
+    Drivers/MT6826S/lz5710_position_estimator.cpp
     MotorControl/debug_counters.cpp
     communication/can/can_simple.cpp
     communication/can/odrive_can.cpp
