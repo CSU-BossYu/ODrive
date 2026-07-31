@@ -108,32 +108,30 @@ def main():
     parser.add_argument("--aux-cs", type=int, default=4)
     parser.add_argument("--virtual-cpr", type=int, default=32768)
     parser.add_argument(
-        "--main-ratio", type=float, default=42.0,
-        help="main encoder turns per output turn (NOT tooth count). For two meshing "
-             "gears the speed ratio is the inverse of the tooth count, so a 41-tooth "
-             "main gear meshing with a 42-tooth aux gear gives main_ratio=42.",
+        "--main-ratio", type=float, default=10.0,
+        help="main encoder turns per output turn (LZ5710: 10, not a tooth count)",
     )
     parser.add_argument(
-        "--aux-ratio", type=float, default=41.0,
+        "--aux-ratio", type=float, default=220.0 / 21.0,
         help="aux encoder turns per output turn (NOT tooth count). See --main-ratio.",
     )
-    parser.add_argument("--main-offset", type=float)
-    parser.add_argument("--aux-offset", type=float)
+    parser.add_argument("--main-offset", type=float, help="main phase offset [rad]")
+    parser.add_argument("--aux-offset", type=float, help="auxiliary phase offset [rad]")
     parser.add_argument(
-        "--main-reversed", type=int, choices=[0, 1], default=1,
-        help="reverse the main sensor into the output-positive coordinate (default: 1)",
+        "--main-reversed", type=int, choices=[0, 1], default=0,
+        help="reverse the main sensor into the output-positive coordinate (default: 0)",
     )
     parser.add_argument(
-        "--aux-reversed", type=int, choices=[0, 1], default=0,
-        help="reverse the auxiliary sensor into the output-positive coordinate (default: 0)",
+        "--aux-reversed", type=int, choices=[0, 1], default=1,
+        help="reverse the auxiliary sensor into the output-positive coordinate (default: 1)",
     )
     parser.add_argument(
         "--output-reversed", type=int, choices=[0, 1], default=0,
         help="reverse the final resolved output coordinate (default: 0)",
     )
     parser.add_argument(
-        "--use-phase-difference", type=int, choices=[0, 1], default=1,
-        help="use direct Vernier phase-difference startup resolver independent of output reversal (default: 1)",
+        "--use-phase-difference", type=int, choices=[0, 1], default=0,
+        help="LZ5710 uses the 21-branch search because the phase-rate delta is 10/21",
     )
     parser.add_argument("--spi-mode", type=int, choices=[0, 1, 2, 3], default=3)
     parser.add_argument("--spi-prescaler", type=int, choices=[2, 4, 8, 16, 32, 64, 128, 256], default=8)

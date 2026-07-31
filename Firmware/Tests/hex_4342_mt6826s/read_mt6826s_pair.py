@@ -35,7 +35,7 @@ ITEM_PAIR_SEQUENCE = 0x04
 ITEM_PAIR_VALID = 0x05
 ITEM_RESOLVER_RESIDUAL = 0x06
 ITEM_VERNIER_VIRTUAL_COUNT = 0x07
-ITEM_VERNIER_POSITION_TURNS = 0x08
+ITEM_VERNIER_POSITION_RAD = 0x08
 ITEM_MAIN_ERROR_COUNT = 0x09
 ITEM_AUX_ERROR_COUNT = 0x0A
 ITEM_RESOLVER_STATE = 0x0B
@@ -73,6 +73,21 @@ ITEM_CONTROL_LOOP_OVER_85 = 0x3B
 ITEM_CYCLE_COUNTER_HZ = 0x3C
 ITEM_MAIN_SAMPLE_AGE_CYCLES = 0x3D
 ITEM_MAIN_SAMPLE_AGE_MAX_CYCLES = 0x3E
+ITEM_PLL_ERROR_RAD = 0x80
+ITEM_LUT_CORRECTION_RAD = 0x81
+ITEM_READINESS_FLAGS = 0x82
+ITEM_CHAIN_FAULT = 0x74
+ITEM_VERNIER_BRANCH = 0x75
+ITEM_RUNTIME_UNIQUE_RANGE = 0x76
+ITEM_RAW_MAIN_PHASE_RAD = 0x77
+ITEM_RAW_AUX_PHASE_RAD = 0x78
+ITEM_UNIQUE_POSITION_RAD = 0x79
+ITEM_WRAPPED_OUTPUT_PHASE_RAD = 0x7A
+ITEM_OUTPUT_POSITION_RAD = 0x7B
+ITEM_OUTPUT_VELOCITY_RPM = 0x7C
+ITEM_RESOLVER_RESIDUAL_RAD = 0x7D
+ITEM_RESOLVER_MARGIN_RAD = 0x7E
+ITEM_LUT_FLAGS = 0x7F
 
 DEBUG_FIELD_NAMES = {
     "main_raw", "aux_raw", "main_crc", "aux_crc",
@@ -159,15 +174,30 @@ def read_full_pair(bus, args):
         (ITEM_CYCLE_COUNTER_HZ, "cycle_counter_hz"),
         (ITEM_MAIN_SAMPLE_AGE_CYCLES, "main_sample_age_cycles"),
         (ITEM_MAIN_SAMPLE_AGE_MAX_CYCLES, "main_sample_age_max_cycles"),
+        (ITEM_READINESS_FLAGS, "readiness_flags"),
+        (ITEM_CHAIN_FAULT, "chain_fault"),
+        (ITEM_VERNIER_BRANCH, "vernier_branch"),
+        (ITEM_RUNTIME_UNIQUE_RANGE, "runtime_unique_range"),
+        (ITEM_LUT_FLAGS, "lut_flags"),
     ]:
         data[name], _ = read_item_value(bus, args, item_id)
 
     for item_id, name in [
-        (ITEM_RESOLVER_RESIDUAL, "resolver_residual"),
-        (ITEM_VERNIER_POSITION_TURNS, "vernier_position_turns"),
+        (ITEM_RESOLVER_RESIDUAL, "resolver_residual_rad_compat"),
+        (ITEM_VERNIER_POSITION_RAD, "vernier_position_rad"),
         (ITEM_ENCODER_POS_ESTIMATE, "encoder_pos_estimate"),
         (ITEM_ENCODER_VEL_ESTIMATE, "encoder_vel_estimate"),
         (ITEM_ENCODER_POS_CIRCULAR, "encoder_pos_circular"),
+        (ITEM_PLL_ERROR_RAD, "pll_error_rad"),
+        (ITEM_LUT_CORRECTION_RAD, "lut_correction_rad"),
+        (ITEM_RAW_MAIN_PHASE_RAD, "raw_main_phase_rad"),
+        (ITEM_RAW_AUX_PHASE_RAD, "raw_aux_phase_rad"),
+        (ITEM_UNIQUE_POSITION_RAD, "unique_position_rad"),
+        (ITEM_WRAPPED_OUTPUT_PHASE_RAD, "wrapped_output_phase_rad"),
+        (ITEM_OUTPUT_POSITION_RAD, "output_position_rad"),
+        (ITEM_OUTPUT_VELOCITY_RPM, "output_velocity_rpm"),
+        (ITEM_RESOLVER_RESIDUAL_RAD, "resolver_residual_rad"),
+        (ITEM_RESOLVER_MARGIN_RAD, "resolver_margin_rad"),
     ]:
         data[name], _ = read_item_value(bus, args, item_id, want_float=True)
 
@@ -235,11 +265,20 @@ def print_sample(data, cpr):
         f"aux={aux:5d} ({angle_to_turns(aux, cpr):.6f}t {angle_to_deg(aux, cpr):7.3f}deg) "
         f"A{'V' if data['aux_valid'] else 'X'} "
         f"diff={main - aux:+6d} "
-        f"out={data['vernier_position_turns']:.6f}t "
+        f"out={data['vernier_position_rad']:.6f}rad "
         f"vcnt={data['vernier_virtual_count']} "
-        f"res={data['resolver_residual']:+.6f} "
-        f"enc={fmt_float(data.get('encoder_pos_estimate'))}t "
-        f"vel={fmt_float(data.get('encoder_vel_estimate'))}t/s "
+        f"res={data['resolver_residual_rad_compat']:+.6f}rad "
+        f"pos={fmt_float(data.get('output_position_rad'))}rad "
+        f"wrap={fmt_float(data.get('wrapped_output_phase_rad'))}rad "
+        f"vel={fmt_float(data.get('output_velocity_rpm'))}rpm "
+        f"branch={data.get('vernier_branch')} range={data.get('runtime_unique_range')} "
+        f"vres={fmt_float(data.get('resolver_residual_rad'))}rad "
+        f"margin={fmt_float(data.get('resolver_margin_rad'))}rad "
+        f"pllerr={fmt_float(data.get('pll_error_rad'))}rad "
+        f"lut=0x{data.get('lut_flags', 0):02X}/"
+        f"{fmt_float(data.get('lut_correction_rad'))}rad "
+        f"ready=0x{data.get('readiness_flags', 0):02X} "
+        f"chain=0x{data.get('chain_fault', 0):08X} "
         f"state={data['resolver_state']} "
         f"err M={data['main_error_count']} A={data['aux_error_count']} P={data['pair_error_count']} "
         f"rawM=[{fmt_raw(data['main_raw'])}] crcM={fmt_crc(data['main_crc'])} "
@@ -346,8 +385,13 @@ def main():
                 "timestamp", "pair_sequence", "pair_valid",
                 "main_angle", "main_valid", "aux_angle", "aux_valid",
                 "main_turns", "aux_turns", "diff_counts",
-                "output_turns", "virtual_count", "resolver_residual", "resolver_state",
-                "encoder_pos_estimate", "encoder_vel_estimate", "encoder_pos_circular",
+                "vernier_position_rad", "virtual_count", "resolver_residual_rad", "resolver_state",
+                "encoder_pos_rad", "encoder_velocity_rpm", "encoder_pos_circular_rad",
+                "raw_main_phase_rad", "raw_aux_phase_rad", "unique_position_rad",
+                "wrapped_output_phase_rad", "output_position_rad", "output_velocity_rpm",
+                "vernier_branch", "runtime_unique_range", "resolver_residual_rad",
+                "resolver_margin_rad", "pll_error_rad", "lut_correction_rad",
+                "readiness_flags", "chain_fault", "lut_flags",
                 "main_error_count", "aux_error_count", "pair_error_count",
                 "main_raw", "aux_raw", "main_crc", "aux_crc",
                 "main_dma_error_count", "main_crc_error_count",
@@ -380,10 +424,17 @@ def main():
                     angle_to_turns(data["main_angle"], args.cpr),
                     angle_to_turns(data["aux_angle"], args.cpr),
                     data["main_angle"] - data["aux_angle"],
-                    data["vernier_position_turns"], data["vernier_virtual_count"],
-                    data["resolver_residual"], data["resolver_state"],
+                    data["vernier_position_rad"], data["vernier_virtual_count"],
+                    data["resolver_residual_rad_compat"], data["resolver_state"],
                     data["encoder_pos_estimate"], data["encoder_vel_estimate"],
                     data["encoder_pos_circular"],
+                    data["raw_main_phase_rad"], data["raw_aux_phase_rad"],
+                    data["unique_position_rad"], data["wrapped_output_phase_rad"],
+                    data["output_position_rad"], data["output_velocity_rpm"],
+                    data["vernier_branch"], data["runtime_unique_range"],
+                    data["resolver_residual_rad"], data["resolver_margin_rad"],
+                    data["pll_error_rad"], data["lut_correction_rad"],
+                    data["readiness_flags"], data["chain_fault"], data["lut_flags"],
                     data["main_error_count"], data["aux_error_count"],
                     data["pair_error_count"],
                     fmt_hex(data["main_raw"], 8), fmt_hex(data["aux_raw"], 8),

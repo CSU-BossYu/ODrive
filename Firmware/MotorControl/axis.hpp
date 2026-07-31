@@ -183,7 +183,9 @@ public:
 private:
     void service_calibration_session_start();
     bool run_calibration_geometry_scan();
+    bool run_calibration_flux_scan();
     bool run_calibration_encoder_alignment();
+    bool finalize_vernier_offset_candidate();
     bool run_calibration_mechanical_scan();
     bool run_calibration_delay_scan();
     bool validate_calibration_candidate() const;

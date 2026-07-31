@@ -204,12 +204,13 @@ DLC: 8
 
 | Byte | Type | Name | Unit |
 | ---: | --- | --- | --- |
-| 0..3 | float32 | pos_estimate | turn |
-| 4..7 | float32 | vel_estimate | turn/s |
+| 0..3 | float32 | pos_estimate | rad |
+| 4..7 | float32 | vel_estimate | rpm |
 
-For the production joint controller, `pos_estimate` is the linear mechanical
-output-joint coordinate in turns. Commands are bounded to `[0, 1]`, but the
-reported feedback remains continuous so boundary overshoot is visible.
+For the LZ5710 production joint controller, `pos_estimate` is the continuous
+linear mechanical output coordinate in radians and is never reduced modulo
+`2*pi`. `vel_estimate` is output speed in rpm. Command interpretation is
+unchanged in this firmware stage.
 `Get_Encoder_Count` remains available when motor-side count telemetry is
 required.
 
@@ -541,8 +542,8 @@ controller gains are exceptions.
 | 0x20 | uint32 | RO | encoder_mode | Baked encoder mode |
 | 0x21 | int32 | RO | encoder_cpr | counts/rev |
 | 0x23 | float32 | RW | encoder_bandwidth | rad/s |
-| 0x28 | float32 | RW | vernier_main_offset | turn |
-| 0x29 | float32 | RW | vernier_aux_offset | turn |
+| 0x28 | float32 | RW | vernier_main_offset | rad |
+| 0x29 | float32 | RW | vernier_aux_offset | rad |
 | 0x30 | float32 | RW live | pos_gain | (turn/s)/turn |
 | 0x31 | float32 | RW live | vel_gain | Nm/(turn/s) |
 | 0x32 | float32 | RW live | vel_integrator_gain | Nm/(turn/s)/s |
@@ -634,10 +635,10 @@ Selected items:
 | Item | Type | Name | Description |
 | ---: | --- | --- | --- |
 | 0x27 | uint32 | output_estimate_valid | Output estimate valid flag |
-| 0x28 | float32 | output_pos_estimate | Output-shaft position, turn |
-| 0x29 | float32 | output_vel_estimate | Output-shaft velocity, turn/s |
-| 0x2C | float32 | output_pair_vel_estimate | Pair-sample velocity estimate |
-| 0x2D | float32 | output_last_aux_correction | Last aux correction, turn |
+| 0x28 | float32 | output_pos_estimate | Continuous output position, rad |
+| 0x29 | float32 | output_vel_estimate | Output velocity, rpm |
+| 0x2C | float32 | output_pair_vel_estimate | Pair-sample velocity, rpm |
+| 0x2D | float32 | output_last_aux_correction | Last aux correction, rad |
 | 0x60 | float32 | pll_phase_error_counts | Live PLL phase error, main count |
 | 0x61 | float32 | pll_velocity_counts_per_s | Live raw PLL speed, count/s |
 | 0x62 | float32 | pll_position_counts | Live bounded PLL phase, modulo CPR count |
@@ -654,6 +655,21 @@ Selected items:
 | 0x6D | float32 | held_motor_torque | Held motor torque command, motor Nm |
 | 0x6E | float32 | input_vel | Commanded velocity feed-forward, output turn/s |
 | 0x6F | uint32 | trajectory_done | Trajectory complete flag |
+| 0x74 | uint32 | chain_fault | Independent LZ5710 chain fault bits |
+| 0x75 | int32 | vernier_branch_index | Absolute branch, 0 through 20 |
+| 0x76 | int32 | runtime_unique_range_index | Runtime 2.1-output-turn range index |
+| 0x77 | float32 | raw_main_phase_rad | Corrected main single-turn phase, rad |
+| 0x78 | float32 | raw_aux_phase_rad | Corrected auxiliary single-turn phase, rad |
+| 0x79 | float32 | unique_position_rad | Absolute position within unique range, rad |
+| 0x7A | float32 | wrapped_output_phase_rad | Wrapped output phase, rad |
+| 0x7B | float32 | output_position_rad | Continuous multi-turn output position, rad |
+| 0x7C | float32 | output_velocity_rpm | Output velocity, rpm |
+| 0x7D | float32 | resolver_residual_rad | Selected-branch residual, rad |
+| 0x7E | float32 | resolver_margin_rad | Second-best residual margin, rad |
+| 0x7F | uint32 | lut_flags | bit0 enabled, bit1 valid |
+| 0x80 | float32 | pll_error_rad | Continuous-position PLL error, rad |
+| 0x81 | float32 | lut_correction_rad | Active output-geometry correction, rad |
+| 0x82 | uint32 | readiness_flags | Main/aux/resolver/tracker/PLL/direction/ready bits |
 | 0x30 | uint32 | FOC_BAD_TIMING | Timing diagnostic |
 | 0x34 | uint32 | ADC_PRE | ADC timing diagnostic |
 | 0x35 | uint32 | ADC_POST | ADC timing diagnostic |
@@ -671,7 +687,7 @@ offset calibration.
 | ---: | --- | --- | --- |
 | 0x00 | any | uint32 | Reset captured points |
 | 0x01 | any | uint32 | Capture latest valid static point |
-| 0x02 | float32 optional | float32 | Fit aux offset; request is search radius in turns |
+| 0x02 | float32 optional | float32 | Fit aux offset; request and score are radians |
 | 0x03 | any | uint32 | Apply pending fit to RAM config |
 | 0x04 | any | uint32 | Captured point count |
 | 0x05 | any | uint32 | Pending fit valid flag |

@@ -8,6 +8,14 @@
 #include "utils.hpp"
 #include "communication/interface_can.hpp"
 
+namespace {
+
+// TEMPORARY: exclude reducer geometry, mechanical and delay identification.
+// Motor flux linkage/Kt is still identified by an independent electrical scan.
+constexpr bool kEnableReducerIdentification = false;
+
+}  // namespace
+
 Axis::Axis(int axis_num,
            osPriority thread_priority,
            Encoder& encoder,
@@ -80,9 +88,17 @@ bool Axis::start_calibration_session(uint32_t request_options) {
     // A calibration owns the axis. Do not splice it into a legacy state-chain
     // or replace live parameters while another operation is in progress.
     if (current_state_ != AXIS_STATE_IDLE ||
-        requested_state_ != AXIS_STATE_UNDEFINED || motor_.is_armed_) {
+        requested_state_ != AXIS_STATE_UNDEFINED || motor_.is_armed_ ||
+        calibration_session_.active()) {
         return false;
     }
+
+    // A failed identification stage can leave component and axis errors
+    // latched after the power stage has already been disarmed. Starting a new
+    // explicit calibration is also an acknowledgement of those stale errors.
+    // Persistent hardware faults are detected again by the normal checks or
+    // the subsequent arm request.
+    odrv.clear_errors();
 
     bool started = false;
     CRITICAL_SECTION() {
@@ -234,6 +250,10 @@ bool Axis::capture_calibration_full_sample(CalibrationSampleV1* captured) {
     sample.position_turns = encoder_.pos_estimate_.any().value_or(0.0f);
     sample.velocity_turns_per_s =
         encoder_.vel_estimate_.any().value_or(0.0f);
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        sample.position_turns /= 2.0f * M_PI;
+        sample.velocity_turns_per_s /= 60.0f;
+    }
     sample.electrical_phase =
         motor_.current_control_.phase_.value_or(0.0f);
     sample.electrical_velocity =
@@ -300,6 +320,194 @@ bool Axis::run_calibration_encoder_alignment() {
     motor_.is_calibrated_ = active_motor_calibrated;
     motor_.update_current_controller_gains();
     return success;
+}
+
+bool Axis::run_calibration_flux_scan() {
+    const uint32_t required =
+        CalibrationPendingResult::VALID_PHASE_RESISTANCE |
+        CalibrationPendingResult::VALID_PHASE_INDUCTANCE |
+        CalibrationPendingResult::VALID_POLE_PAIRS;
+    if ((calibration_pending_result_.validity & required) != required) {
+        return false;
+    }
+
+    const float active_resistance = motor_.config_.phase_resistance;
+    const float active_inductance = motor_.config_.phase_inductance;
+    const bool active_calibrated = motor_.is_calibrated_;
+    const int32_t active_pole_pairs = motor_.config_.pole_pairs;
+    motor_.config_.phase_resistance =
+        calibration_pending_result_.phase_resistance;
+    motor_.config_.phase_inductance =
+        calibration_pending_result_.phase_inductance;
+    motor_.config_.pole_pairs = calibration_pending_result_.pole_pairs;
+    motor_.is_calibrated_ = true;
+    motor_.update_current_controller_gains();
+
+    bool success = calibration_flux_fitter_.init(
+        calibration_pending_result_.phase_resistance,
+        calibration_pending_result_.phase_inductance,
+        motor_.config_.pole_pairs);
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        encoder_.reset_vernier_calibration();
+    }
+
+    // This excitation is expressed entirely in electrical radians. It does not
+    // use the reducer ratio, Vernier branch, output position, or geometry LUT.
+    // Ten electrical revolutions per direction provide ample steady samples
+    // while moving the rotor by less than one mechanical revolution for LZ5710.
+    constexpr float kElectricalVelocityRadPerSecond = 40.0f;
+    constexpr float kElectricalDistanceRad = 10.0f * 2.0f * M_PI;
+    constexpr uint32_t kSettlingSamples = 100u;
+
+    for (uint32_t segment = 0; success && segment < 2u; ++segment) {
+        const int direction = segment == 0u ? 1 : -1;
+        LockinConfig_t scan = default_calibration();
+        scan.current = motor_.config_.calibration_current;
+        scan.ramp_time = 0.5f;
+        scan.accel = 2.0f * kElectricalVelocityRadPerSecond;
+        scan.vel = direction * kElectricalVelocityRadPerSecond;
+        scan.finish_distance = direction * kElectricalDistanceRad;
+        scan.finish_on_vel = false;
+        scan.finish_on_distance = true;
+
+        uint32_t steady_samples = 0u;
+        const uint32_t vernier_target_points = (segment + 1u) * 8u;
+        const uint32_t progress_start = 250u + segment * 300u;
+        success = run_lockin_spin(scan, false, [&](bool reached_target_vel) {
+            if (reached_target_vel) {
+                if (++steady_samples > kSettlingSamples) {
+                    CalibrationSampleV1 sample = {};
+                    // Flux fitting needs dq current, applied voltage and the
+                    // commanded electrical velocity only. Encoder validity is
+                    // recorded for diagnostics but does not gate this fit.
+                    capture_calibration_full_sample(&sample);
+                    calibration_flux_fitter_.add_sample(sample);
+                    if (encoder_.mode_ ==
+                            Encoder::MODE_SPI_ABS_MT6826S_VERNIER &&
+                        encoder_.get_vernier_calibration_point_count() <
+                            vernier_target_points) {
+                        // 1/64 sensor revolution prevents a fast loop from
+                        // filling the fit with nearly identical observations.
+                        // Each scan direction contributes up to eight points.
+                        encoder_.capture_vernier_calibration_point(
+                            static_cast<uint16_t>(
+                                std::max<int32_t>(
+                                    1, encoder_.config_.cpr / 64)));
+                    }
+                }
+            } else {
+                steady_samples = 0u;
+            }
+
+            const float traveled = std::abs(
+                open_loop_controller_.total_distance_.any().value_or(0.0f));
+            const float fraction = std::clamp(
+                traveled / kElectricalDistanceRad, 0.0f, 1.0f);
+            calibration_session_.set_progress(
+                progress_start + static_cast<uint32_t>(300.0f * fraction));
+            return calibration_session_.active();
+        });
+        if (success) {
+            osDelay(250);
+        }
+    }
+
+    CalibrationFluxFitter::Result flux = {};
+    success = success && calibration_flux_fitter_.finish(&flux);
+    calibration_pending_result_.flux_linkage = flux.flux_linkage;
+    calibration_pending_result_.torque_constant = flux.torque_constant;
+    calibration_pending_result_.flux_sample_stddev = flux.sample_stddev;
+    calibration_pending_result_.flux_mean_std_error = flux.mean_std_error;
+    calibration_pending_result_.flux_used_samples = flux.used_samples;
+    if (success) {
+        calibration_pending_result_.validity |=
+            CalibrationPendingResult::VALID_FLUX_LINKAGE;
+    } else if (calibration_session_.active()) {
+        uint32_t failure =
+            CalibrationSession::FAILURE_FLUX_NONPHYSICAL_MEAN;
+        if (calibration_flux_fitter_.failure_reason() ==
+            CalibrationFluxFitter::FAILURE_INSUFFICIENT_BLOCKS) {
+            failure =
+                CalibrationSession::FAILURE_FLUX_INSUFFICIENT_SAMPLES;
+        } else if (calibration_flux_fitter_.failure_reason() ==
+                   CalibrationFluxFitter::FAILURE_EXCESSIVE_DISPERSION) {
+            failure =
+                CalibrationSession::FAILURE_FLUX_EXCESSIVE_DISPERSION;
+        }
+        calibration_session_.fail(failure);
+    }
+
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        const bool vernier_success = finalize_vernier_offset_candidate();
+        success = success && vernier_success;
+    }
+
+    motor_.disarm();
+    motor_.config_.phase_resistance = active_resistance;
+    motor_.config_.phase_inductance = active_inductance;
+    motor_.config_.pole_pairs = active_pole_pairs;
+    motor_.is_calibrated_ = active_calibrated;
+    motor_.update_current_controller_gains();
+    return success;
+}
+
+bool Axis::finalize_vernier_offset_candidate() {
+    constexpr uint32_t kMinimumPoints = 12u;
+    const uint32_t point_count =
+        encoder_.get_vernier_calibration_point_count();
+    calibration_pending_result_.vernier_used_samples = point_count;
+    if (point_count < kMinimumPoints) {
+        if (calibration_session_.active()) {
+            calibration_session_.fail(
+                CalibrationSession::FAILURE_VERNIER_INSUFFICIENT_SAMPLES);
+        }
+        return false;
+    }
+
+    // 0.05 sensor turns exceeds one 2*pi/21 equivalence interval, so a
+    // first-time unit with arbitrary assembly phase always has a canonical
+    // equivalent solution near the current persisted value.
+    if (!encoder_.fit_vernier_aux_offset(0.05f * 2.0f * M_PI)) {
+        if (calibration_session_.active()) {
+            calibration_session_.fail(
+                CalibrationSession::FAILURE_VERNIER_FIT);
+        }
+        return false;
+    }
+
+    auto& result = calibration_pending_result_;
+    result.vernier_main_offset_rad =
+        encoder_.get_vernier_calibration_fitted_main_offset();
+    result.vernier_aux_offset_rad =
+        encoder_.get_vernier_calibration_fitted_aux_offset();
+    result.vernier_fit_rms_rad =
+        encoder_.get_vernier_calibration_fit_score();
+    result.vernier_worst_residual_rad =
+        encoder_.get_vernier_calibration_worst_residual();
+    result.vernier_minimum_margin_rad =
+        encoder_.get_vernier_calibration_minimum_margin();
+
+    if (!std::isfinite(result.vernier_fit_rms_rad) ||
+        !std::isfinite(result.vernier_worst_residual_rad) ||
+        result.vernier_worst_residual_rad >
+            encoder_.config_.vernier_err_accept) {
+        if (calibration_session_.active()) {
+            calibration_session_.fail(
+                CalibrationSession::FAILURE_VERNIER_RESIDUAL);
+        }
+        return false;
+    }
+    if (!std::isfinite(result.vernier_minimum_margin_rad) ||
+        result.vernier_minimum_margin_rad < 0.04f) {
+        if (calibration_session_.active()) {
+            calibration_session_.fail(
+                CalibrationSession::FAILURE_VERNIER_AMBIGUOUS);
+        }
+        return false;
+    }
+
+    result.validity |= CalibrationPendingResult::VALID_VERNIER_OFFSETS;
+    return true;
 }
 
 bool Axis::run_calibration_geometry_scan() {
@@ -443,6 +651,8 @@ bool Axis::run_calibration_geometry_scan() {
         calibration_pending_result_.flux_linkage = flux_result.flux_linkage;
         calibration_pending_result_.torque_constant = flux_result.torque_constant;
         calibration_pending_result_.flux_sample_stddev = flux_result.sample_stddev;
+        calibration_pending_result_.flux_mean_std_error =
+            flux_result.mean_std_error;
         calibration_pending_result_.flux_used_samples = flux_result.used_samples;
     }
     if (flux_success) {
@@ -581,7 +791,11 @@ bool Axis::run_calibration_mechanical_scan() {
                 if (capture_calibration_full_sample(&sample)) {
                     calibration_mechanical_fitter_.add_sample(sample);
                 }
-                const float velocity = encoder_.vel_estimate_.any().value_or(0.0f);
+                float velocity = encoder_.vel_estimate_.any().value_or(0.0f);
+                if (encoder_.mode_ ==
+                    Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+                    velocity /= 60.0f;
+                }
                 if (!std::isfinite(velocity) || std::abs(velocity) > 0.20f) {
                     success = false;
                     motion_fault = true;
@@ -609,7 +823,11 @@ bool Axis::run_calibration_mechanical_scan() {
                 if (capture_calibration_full_sample(&sample)) {
                     calibration_mechanical_fitter_.add_sample(sample);
                 }
-                const float velocity = encoder_.vel_estimate_.any().value_or(0.0f);
+                float velocity = encoder_.vel_estimate_.any().value_or(0.0f);
+                if (encoder_.mode_ ==
+                    Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+                    velocity /= 60.0f;
+                }
                 if (!std::isfinite(velocity) || std::abs(velocity) > 0.20f) {
                     success = false;
                     motion_fault = true;
@@ -804,8 +1022,12 @@ bool Axis::run_calibration_delay_scan() {
                     success = false;
                     break;
                 }
-                const float velocity =
+                float velocity =
                     encoder_.vel_estimate_.any().value_or(0.0f);
+                if (encoder_.mode_ ==
+                    Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+                    velocity /= 60.0f;
+                }
                 if (!std::isfinite(velocity) || std::abs(velocity) > 0.20f) {
                     success = false;
                     break;
@@ -891,18 +1113,18 @@ bool Axis::run_calibration_delay_scan() {
 }
 
 bool Axis::validate_calibration_candidate() const {
-    constexpr uint32_t kRequired =
+    uint32_t required =
         CalibrationPendingResult::VALID_PHASE_RESISTANCE |
         CalibrationPendingResult::VALID_PHASE_INDUCTANCE |
         CalibrationPendingResult::VALID_ENCODER_DIRECTION |
         CalibrationPendingResult::VALID_ELECTRICAL_OFFSET |
-        CalibrationPendingResult::VALID_GEOMETRY_MODEL |
         CalibrationPendingResult::VALID_FLUX_LINKAGE |
-        CalibrationPendingResult::VALID_POLE_PAIRS |
-        CalibrationPendingResult::VALID_MECHANICAL_MODEL |
-        CalibrationPendingResult::VALID_ELECTRICAL_DELAY;
+        CalibrationPendingResult::VALID_POLE_PAIRS;
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        required |= CalibrationPendingResult::VALID_VERNIER_OFFSETS;
+    }
     const auto& result = calibration_pending_result_;
-    if ((result.validity & kRequired) != kRequired ||
+    if ((result.validity & required) != required ||
         result.session_id != calibration_session_.session_id()) {
         return false;
     }
@@ -916,92 +1138,126 @@ bool Axis::validate_calibration_candidate() const {
         result.pole_pairs < 1 || result.pole_pairs > 128) {
         return false;
     }
-    if (!std::isfinite(result.effective_ratio_scale) ||
-        result.effective_ratio_scale < 0.8f ||
-        result.effective_ratio_scale > 1.2f ||
-        !std::isfinite(result.geometry_raw_rms) ||
-        !std::isfinite(result.geometry_corrected_rms) ||
-        result.geometry_corrected_rms > result.geometry_raw_rms * 1.05f ||
-        result.geometry_used_samples <
-            4u * CalibrationGeometryFitter::kBins) {
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER &&
+        (!std::isfinite(result.vernier_main_offset_rad) ||
+         !std::isfinite(result.vernier_aux_offset_rad) ||
+         std::abs(result.vernier_main_offset_rad) > M_PI ||
+         std::abs(result.vernier_aux_offset_rad) > M_PI ||
+         !std::isfinite(result.vernier_fit_rms_rad) ||
+         !std::isfinite(result.vernier_worst_residual_rad) ||
+         result.vernier_fit_rms_rad < 0.0f ||
+         result.vernier_worst_residual_rad < 0.0f ||
+         result.vernier_worst_residual_rad >
+             encoder_.config_.vernier_err_accept ||
+         !std::isfinite(result.vernier_minimum_margin_rad) ||
+         result.vernier_minimum_margin_rad < 0.04f ||
+         result.vernier_used_samples < 12u)) {
         return false;
     }
-    for (size_t i = 0; i < CalibrationGeometryFitter::kBins; ++i) {
-        const float common = result.common_geometry_correction[i];
-        const float directional = result.direction_geometry_correction[i];
-        if (!std::isfinite(common) || !std::isfinite(directional) ||
-            std::abs(common) > 0.05f || std::abs(directional) > 0.05f) {
+    if (result.validity & CalibrationPendingResult::VALID_GEOMETRY_MODEL) {
+        if (!std::isfinite(result.effective_ratio_scale) ||
+            result.effective_ratio_scale < 0.8f ||
+            result.effective_ratio_scale > 1.2f ||
+            !std::isfinite(result.geometry_raw_rms) ||
+            !std::isfinite(result.geometry_corrected_rms) ||
+            result.geometry_corrected_rms > result.geometry_raw_rms * 1.05f ||
+            result.geometry_used_samples <
+                4u * CalibrationGeometryFitter::kBins) {
             return false;
         }
-        const size_t next = (i + 1u) % CalibrationGeometryFitter::kBins;
-        const float common_slope =
-            (result.common_geometry_correction[next] - common) *
-            CalibrationGeometryFitter::kBins;
-        const float directional_slope =
-            (result.direction_geometry_correction[next] - directional) *
-            CalibrationGeometryFitter::kBins;
-        // Both directional branches must remain monotonic. This also bounds
-        // the LUT-derived velocity correction used at runtime.
-        const float forward_slope = 1.0f + common_slope + directional_slope;
-        const float reverse_slope = 1.0f + common_slope - directional_slope;
-        if (!std::isfinite(forward_slope) || !std::isfinite(reverse_slope) ||
-            forward_slope < 0.25f || forward_slope > 4.0f ||
-            reverse_slope < 0.25f || reverse_slope > 4.0f) {
+        for (size_t i = 0; i < CalibrationGeometryFitter::kBins; ++i) {
+            const float common = result.common_geometry_correction[i];
+            const float directional = result.direction_geometry_correction[i];
+            if (!std::isfinite(common) || !std::isfinite(directional) ||
+                std::abs(common) > 0.05f || std::abs(directional) > 0.05f) {
+                return false;
+            }
+            const size_t next = (i + 1u) % CalibrationGeometryFitter::kBins;
+            const float common_slope =
+                (result.common_geometry_correction[next] - common) *
+                CalibrationGeometryFitter::kBins;
+            const float directional_slope =
+                (result.direction_geometry_correction[next] - directional) *
+                CalibrationGeometryFitter::kBins;
+            // Both directional branches must remain monotonic. This also
+            // bounds the LUT-derived velocity correction used at runtime.
+            const float forward_slope =
+                1.0f + common_slope + directional_slope;
+            const float reverse_slope =
+                1.0f + common_slope - directional_slope;
+            if (!std::isfinite(forward_slope) ||
+                !std::isfinite(reverse_slope) ||
+                forward_slope < 0.25f || forward_slope > 4.0f ||
+                reverse_slope < 0.25f || reverse_slope > 4.0f) {
+                return false;
+            }
+        }
+    }
+    if (result.validity & CalibrationPendingResult::VALID_FLUX_LINKAGE) {
+        const float derived_kt =
+            1.5f * result.pole_pairs * result.flux_linkage;
+        if (!std::isfinite(result.flux_linkage) ||
+            result.flux_linkage <= 1.0e-6f ||
+            result.flux_linkage > 1.0f ||
+            !std::isfinite(result.torque_constant) ||
+            result.torque_constant <= 0.0f ||
+            std::abs(result.torque_constant - derived_kt) /
+                result.torque_constant > 1.0e-3f ||
+            !std::isfinite(result.flux_sample_stddev) ||
+            result.flux_sample_stddev > result.flux_linkage ||
+            !std::isfinite(result.flux_mean_std_error) ||
+            result.flux_mean_std_error > result.flux_linkage * 0.05f ||
+            result.flux_used_samples < 256u) {
             return false;
         }
     }
-    const float derived_kt = 1.5f * result.pole_pairs * result.flux_linkage;
-    if (!std::isfinite(result.flux_linkage) || result.flux_linkage <= 1.0e-6f ||
-        result.flux_linkage > 1.0f ||
-        !std::isfinite(result.torque_constant) || result.torque_constant <= 0.0f ||
-        std::abs(result.torque_constant - derived_kt) /
-            result.torque_constant > 1.0e-3f ||
-        !std::isfinite(result.flux_sample_stddev) ||
-        result.flux_sample_stddev > result.flux_linkage * 0.25f ||
-        result.flux_used_samples < 256u) {
-        return false;
+    if (result.validity & CalibrationPendingResult::VALID_MECHANICAL_MODEL) {
+        const float mean_coulomb = 0.5f *
+            (result.friction_coulomb_pos + result.friction_coulomb_neg);
+        const float max_coulomb = std::max(result.friction_coulomb_pos,
+                                           result.friction_coulomb_neg);
+        const float max_viscous = std::max(result.friction_viscous_pos,
+                                          result.friction_viscous_neg);
+        constexpr float kCalibrationMaxVelocity = 0.20f;
+        constexpr float kCalibrationAcceleration = 0.20f;
+        const float predicted_peak_torque =
+            result.output_inertia * kCalibrationAcceleration + max_coulomb +
+            max_viscous * kCalibrationMaxVelocity;
+        const float available_output_torque = result.torque_constant *
+            motor_.config_.current_lim *
+            std::abs(encoder_.config_.vernier_main_ratio);
+        if (!std::isfinite(result.output_inertia) ||
+            result.output_inertia < 0.0f ||
+            !std::isfinite(result.friction_coulomb_pos) ||
+            !std::isfinite(result.friction_coulomb_neg) ||
+            !std::isfinite(result.friction_viscous_pos) ||
+            !std::isfinite(result.friction_viscous_neg) ||
+            result.friction_coulomb_pos < 0.0f ||
+            result.friction_coulomb_neg < 0.0f ||
+            result.friction_viscous_pos < 0.0f ||
+            result.friction_viscous_neg < 0.0f ||
+            !std::isfinite(predicted_peak_torque) ||
+            !std::isfinite(available_output_torque) ||
+            available_output_torque <= 0.0f ||
+            predicted_peak_torque > 0.8f * available_output_torque ||
+            !std::isfinite(result.mechanical_residual_rms_torque) ||
+            result.mechanical_residual_rms_torque >
+                std::max(0.05f, mean_coulomb) ||
+            result.mechanical_used_samples < 1000u) {
+            return false;
+        }
     }
-    const float mean_coulomb = 0.5f *
-        (result.friction_coulomb_pos + result.friction_coulomb_neg);
-    const float max_coulomb = std::max(result.friction_coulomb_pos,
-                                       result.friction_coulomb_neg);
-    const float max_viscous = std::max(result.friction_viscous_pos,
-                                      result.friction_viscous_neg);
-    constexpr float kCalibrationMaxVelocity = 0.20f;
-    constexpr float kCalibrationAcceleration = 0.20f;
-    const float predicted_peak_torque =
-        result.output_inertia * kCalibrationAcceleration + max_coulomb +
-        max_viscous * kCalibrationMaxVelocity;
-    const float available_output_torque = result.torque_constant *
-        motor_.config_.current_lim *
-        std::abs(encoder_.config_.vernier_main_ratio);
-    if (!std::isfinite(result.output_inertia) || result.output_inertia < 0.0f ||
-        !std::isfinite(result.friction_coulomb_pos) ||
-        !std::isfinite(result.friction_coulomb_neg) ||
-        !std::isfinite(result.friction_viscous_pos) ||
-        !std::isfinite(result.friction_viscous_neg) ||
-        result.friction_coulomb_pos < 0.0f ||
-        result.friction_coulomb_neg < 0.0f ||
-        result.friction_viscous_pos < 0.0f ||
-        result.friction_viscous_neg < 0.0f ||
-        !std::isfinite(predicted_peak_torque) ||
-        !std::isfinite(available_output_torque) ||
-        available_output_torque <= 0.0f ||
-        predicted_peak_torque > 0.8f * available_output_torque ||
-        !std::isfinite(result.mechanical_residual_rms_torque) ||
-        result.mechanical_residual_rms_torque >
-            std::max(0.05f, mean_coulomb) ||
-        result.mechanical_used_samples < 1000u) {
-        return false;
-    }
-    if (!std::isfinite(result.electrical_delay) ||
-        result.electrical_delay < 0.0f || result.electrical_delay > 500.0e-6f ||
-        !std::isfinite(result.delay_residual_phase_offset) ||
-        std::abs(result.delay_residual_phase_offset) > 0.20f ||
-        !std::isfinite(result.delay_residual_rms) ||
-        result.delay_residual_rms > 0.10f ||
-        result.delay_used_samples < 1000u) {
-        return false;
+    if (result.validity & CalibrationPendingResult::VALID_ELECTRICAL_DELAY) {
+        if (!std::isfinite(result.electrical_delay) ||
+            result.electrical_delay < 0.0f ||
+            result.electrical_delay > 500.0e-6f ||
+            !std::isfinite(result.delay_residual_phase_offset) ||
+            std::abs(result.delay_residual_phase_offset) > 0.20f ||
+            !std::isfinite(result.delay_residual_rms) ||
+            result.delay_residual_rms > 0.10f ||
+            result.delay_used_samples < 1000u) {
+            return false;
+        }
     }
     return true;
 }
@@ -1022,43 +1278,101 @@ bool Axis::commit_calibration_candidate() {
         motor_.config_.phase_resistance = result.phase_resistance;
         motor_.config_.phase_inductance = result.phase_inductance;
         motor_.config_.pole_pairs = result.pole_pairs;
-        motor_.config_.flux_linkage = result.flux_linkage;
-        motor_.config_.torque_constant = result.torque_constant;
+        if (result.validity & CalibrationPendingResult::VALID_FLUX_LINKAGE) {
+            motor_.config_.flux_linkage = result.flux_linkage;
+            motor_.config_.torque_constant = result.torque_constant;
+        }
         motor_.config_.pre_calibrated = true;
         motor_.is_calibrated_ = true;
 
         encoder_.config_.direction = result.encoder_direction;
         encoder_.config_.phase_offset = result.phase_offset;
         encoder_.config_.phase_offset_float = result.phase_offset_float;
-        encoder_.config_.electrical_phase_delay = result.electrical_delay;
-        encoder_.config_.vernier_effective_ratio_scale =
-            result.effective_ratio_scale;
-        std::copy(result.common_geometry_correction.begin(),
-                  result.common_geometry_correction.end(),
-                  std::begin(encoder_.config_.vernier_common_correction));
-        std::copy(result.direction_geometry_correction.begin(),
-                  result.direction_geometry_correction.end(),
-                  std::begin(encoder_.config_.vernier_direction_correction));
-        encoder_.config_.vernier_geometry_correction_enabled = true;
+        if (result.validity &
+            CalibrationPendingResult::VALID_VERNIER_OFFSETS) {
+            encoder_.config_.vernier_main_offset =
+                result.vernier_main_offset_rad;
+            encoder_.config_.vernier_aux_offset =
+                result.vernier_aux_offset_rad;
+        }
+        if (result.validity & CalibrationPendingResult::VALID_ELECTRICAL_DELAY) {
+            encoder_.config_.electrical_phase_delay = result.electrical_delay;
+        }
+        if (result.validity & CalibrationPendingResult::VALID_GEOMETRY_MODEL) {
+            encoder_.config_.vernier_effective_ratio_scale =
+                result.effective_ratio_scale;
+            std::copy(result.common_geometry_correction.begin(),
+                      result.common_geometry_correction.end(),
+                      std::begin(encoder_.config_.vernier_common_correction));
+            std::copy(
+                result.direction_geometry_correction.begin(),
+                result.direction_geometry_correction.end(),
+                std::begin(encoder_.config_.vernier_direction_correction));
+            encoder_.config_.vernier_geometry_correction_enabled = true;
+        }
         encoder_.config_.pre_calibrated = true;
-        encoder_.is_ready_ = true;
+        encoder_.is_ready_ =
+            encoder_.mode_ != Encoder::MODE_SPI_ABS_MT6826S_VERNIER;
 
-        controller_.config_.inertia = result.output_inertia;
-        controller_.config_.friction_static_pos = result.friction_coulomb_pos;
-        controller_.config_.friction_static_neg = result.friction_coulomb_neg;
-        controller_.config_.friction_coulomb_pos = result.friction_coulomb_pos;
-        controller_.config_.friction_coulomb_neg = result.friction_coulomb_neg;
-        controller_.config_.friction_viscous_pos = result.friction_viscous_pos;
-        controller_.config_.friction_viscous_neg = result.friction_viscous_neg;
-        // Keep the robust PI speed loop after calibration. STA requires an
-        // explicit runtime enable after its gains are identified for this
-        // output-axis plant.
-        controller_.config_.enable_sta = false;
+        if (result.validity & CalibrationPendingResult::VALID_MECHANICAL_MODEL) {
+            controller_.config_.inertia = result.output_inertia;
+            controller_.config_.friction_static_pos =
+                result.friction_coulomb_pos;
+            controller_.config_.friction_static_neg =
+                result.friction_coulomb_neg;
+            controller_.config_.friction_coulomb_pos =
+                result.friction_coulomb_pos;
+            controller_.config_.friction_coulomb_neg =
+                result.friction_coulomb_neg;
+            controller_.config_.friction_viscous_pos =
+                result.friction_viscous_pos;
+            controller_.config_.friction_viscous_neg =
+                result.friction_viscous_neg;
+            // Keep the robust PI speed loop after calibration. STA requires an
+            // explicit runtime enable after its gains are identified.
+            controller_.config_.enable_sta = false;
+        }
     }
 
     motor_.update_current_controller_gains();
-    encoder_.reset_vernier_output_velocity_estimate();
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        encoder_.apply_vernier_resolver_config();
+    }
     controller_.reset_sta();
+
+    // A committed calibration must satisfy the same live chain used by the
+    // closed-loop gate. Do not persist a merely plausible offline fit.
+    bool encoder_ready = encoder_.controller_feedback_ready();
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        for (uint32_t elapsed_ms = 0;
+             !encoder_ready && elapsed_ms < 500u;
+             ++elapsed_ms) {
+            osDelay(1);
+            encoder_ready = encoder_.controller_feedback_ready();
+        }
+    }
+    if (!encoder_ready) {
+        CRITICAL_SECTION() {
+            motor_.config_ = motor_snapshot;
+            encoder_.config_ = encoder_snapshot;
+            controller_.config_ = controller_snapshot;
+            motor_.is_calibrated_ = motor_calibrated_snapshot;
+            encoder_.is_ready_ = encoder_ready_snapshot;
+            motor_.config_.parent = &motor_;
+            encoder_.config_.parent = &encoder_;
+            controller_.config_.parent = &controller_;
+        }
+        motor_.update_current_controller_gains();
+        if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+            encoder_.apply_vernier_resolver_config();
+        }
+        controller_.reset_sta();
+        if (calibration_session_.active()) {
+            calibration_session_.fail(
+                CalibrationSession::FAILURE_VERNIER_READY_TIMEOUT);
+        }
+        return false;
+    }
 
     if (odrv.save_configuration()) {
         return true;
@@ -1075,7 +1389,10 @@ bool Axis::commit_calibration_candidate() {
         controller_.config_.parent = &controller_;
     }
     motor_.update_current_controller_gains();
-    encoder_.reset_vernier_output_velocity_estimate();
+    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        encoder_.apply_vernier_resolver_config();
+    }
+    controller_.reset_sta();
     return false;
 }
 
@@ -1356,8 +1673,11 @@ void Axis::run_state_machine_loop() {
                         if (!status) {
                             calibration_session_.fail(
                                 CalibrationSession::FAILURE_MOTOR_CALIBRATION);
-                        } else if (calibration_session_.profile() ==
-                                   CalibrationSession::PROFILE_FULL) {
+                        } else if (
+                            calibration_session_.profile() ==
+                                CalibrationSession::PROFILE_FULL ||
+                            calibration_session_.profile() ==
+                                CalibrationSession::PROFILE_ELECTRICAL) {
                             calibration_session_.set_stage(
                                 CalibrationSession::STAGE_ENCODER_GEOMETRY);
                             calibration_session_.set_progress(200);
@@ -1367,10 +1687,19 @@ void Axis::run_state_machine_loop() {
                                     CalibrationSession::FAILURE_ENCODER_CALIBRATION);
                             }
                             if (status && calibration_session_.active()) {
-                                calibration_session_.set_progress(250);
-                                status = run_calibration_geometry_scan();
+                                if (kEnableReducerIdentification) {
+                                    calibration_session_.set_progress(250);
+                                    status = run_calibration_geometry_scan();
+                                } else {
+                                    calibration_session_.set_stage(
+                                        CalibrationSession::
+                                            STAGE_ELECTRICAL_CAPTURE);
+                                    calibration_session_.set_progress(250);
+                                    status = run_calibration_flux_scan();
+                                }
                             }
-                            if (status && calibration_session_.active()) {
+                            if (kEnableReducerIdentification &&
+                                status && calibration_session_.active()) {
                                 calibration_session_.set_stage(
                                     CalibrationSession::STAGE_MECHANICAL_CAPTURE);
                                 calibration_session_.set_progress(650);
@@ -1380,7 +1709,8 @@ void Axis::run_state_machine_loop() {
                                         CalibrationSession::FAILURE_MECHANICAL_SCAN);
                                 }
                             }
-                            if (status && calibration_session_.active()) {
+                            if (kEnableReducerIdentification &&
+                                status && calibration_session_.active()) {
                                 calibration_session_.set_stage(
                                     CalibrationSession::STAGE_ELECTRICAL_DELAY);
                                 calibration_session_.set_progress(850);

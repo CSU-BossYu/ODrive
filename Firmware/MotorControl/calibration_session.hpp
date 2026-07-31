@@ -9,7 +9,7 @@
 // configuration remains authoritative.
 class CalibrationSession {
 public:
-    static constexpr uint32_t kSchemaVersion = 1;
+    static constexpr uint32_t kSchemaVersion = 2;
 
     enum Profile : uint32_t {
         PROFILE_FULL = 0,
@@ -85,6 +85,11 @@ public:
         FAILURE_DELAY_INSUFFICIENT_SAMPLES = 23,
         FAILURE_DELAY_UNOBSERVABLE_SPEED = 24,
         FAILURE_DELAY_NONPHYSICAL_RESULT = 25,
+        FAILURE_VERNIER_INSUFFICIENT_SAMPLES = 26,
+        FAILURE_VERNIER_FIT = 27,
+        FAILURE_VERNIER_AMBIGUOUS = 28,
+        FAILURE_VERNIER_RESIDUAL = 29,
+        FAILURE_VERNIER_READY_TIMEOUT = 30,
     };
 
     bool begin(uint32_t request_options) {

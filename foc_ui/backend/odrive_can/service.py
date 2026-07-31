@@ -728,6 +728,18 @@ class ODriveService:
             ('delay_rejected_phase', CalibrationSessionItem.DELAY_REJECTED_PHASE),
             ('delay_max_abs_electrical_speed',
              CalibrationSessionItem.DELAY_MAX_ABS_ELECTRICAL_SPEED),
+            ('vernier_main_offset_rad',
+             CalibrationSessionItem.VERNIER_MAIN_OFFSET_RAD),
+            ('vernier_aux_offset_rad',
+             CalibrationSessionItem.VERNIER_AUX_OFFSET_RAD),
+            ('vernier_fit_rms_rad',
+             CalibrationSessionItem.VERNIER_FIT_RMS_RAD),
+            ('vernier_worst_residual_rad',
+             CalibrationSessionItem.VERNIER_WORST_RESIDUAL_RAD),
+            ('vernier_minimum_margin_rad',
+             CalibrationSessionItem.VERNIER_MINIMUM_MARGIN_RAD),
+            ('vernier_used_samples',
+             CalibrationSessionItem.VERNIER_USED_SAMPLES),
         )
         result: dict[str, Any] = {}
         for name, item in fields:

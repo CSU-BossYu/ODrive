@@ -417,10 +417,10 @@ def main():
     parser.add_argument("--extended-id", action="store_true")
     parser.add_argument("--timeout", type=float, default=1.0)
     parser.add_argument("--cpr", type=int, default=MT6826S_CPR)
-    parser.add_argument("--main-ratio", type=float, default=42.0)
-    parser.add_argument("--aux-ratio", type=float, default=41.0)
-    parser.add_argument("--main-reversed", type=int, choices=[0, 1], default=1)
-    parser.add_argument("--aux-reversed", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--main-ratio", type=float, default=10.0)
+    parser.add_argument("--aux-ratio", type=float, default=220.0 / 21.0)
+    parser.add_argument("--main-reversed", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--aux-reversed", type=int, choices=[0, 1], default=1)
     parser.add_argument("--output-reversed", type=int, choices=[0, 1], default=0)
     parser.add_argument("--points", type=int, default=5)
     parser.add_argument("--samples-per-point", type=int, default=20)
@@ -437,7 +437,7 @@ def main():
     parser.add_argument("--grid-steps", type=int, default=1024)
     parser.add_argument(
         "--search-radius", type=float, default=0.05,
-        help="Circular offset search radius around current offsets. Use 0.5 for full-range search.",
+        help="Circular search radius in sensor turns for host math; converted to radians for --firmware-fit.",
     )
     parser.add_argument("--current-main-offset", type=float)
     parser.add_argument("--current-aux-offset", type=float)
@@ -492,22 +492,24 @@ def main():
 
             current_main_offset = read_basic_float(
                 bus, args, PARAM_MAIN_OFFSET, 0.0, "current vernier_main_offset"
-            )
+            ) / (2.0 * math.pi)
             current_aux_offset = read_basic_float(
                 bus, args, PARAM_AUX_OFFSET, 0.0, "current vernier_aux_offset"
-            )
+            ) / (2.0 * math.pi)
             if args.current_main_offset is not None:
                 current_main_offset = args.current_main_offset
                 print(f"override current vernier_main_offset: {current_main_offset:.9g}")
             if args.current_aux_offset is not None:
                 current_aux_offset = args.current_aux_offset
                 print(f"override current vernier_aux_offset: {current_aux_offset:.9g}")
-            err_accept = read_basic_float(
+            err_accept_rad = read_basic_float(
                 bus, args, PARAM_ERR_ACCEPT, 0.020, "current vernier_err_accept"
             )
-            err_reject = read_basic_float(
+            err_reject_rad = read_basic_float(
                 bus, args, PARAM_ERR_REJECT, 0.080, "current vernier_err_reject"
             )
+            err_accept = err_accept_rad / (2.0 * math.pi)
+            err_reject = err_reject_rad / (2.0 * math.pi)
 
             if args.firmware_fit:
                 print()
@@ -549,7 +551,7 @@ def main():
                 fit_resp = vernier_calib_request(
                     bus, args, 0x02,
                     req_type=EXT_TYPE_FLOAT32,
-                    value_float=args.search_radius,
+                    value_float=args.search_radius * 2.0 * math.pi,
                 )
                 if not print_calib_response(fit_resp, "firmware fit aux offset"):
                     return 1
@@ -569,16 +571,16 @@ def main():
                     f"main={fitted_main:.9g} aux={fitted_aux:.9g} "
                     f"score={fit_score:.6f} worst={worst:.6f}"
                 )
-                if worst is not None and worst > err_reject:
+                if worst is not None and worst > err_reject_rad:
                     print(
                         f"WARNING: worst residual {worst:.6f} exceeds "
-                        f"vernier_err_reject {err_reject:.6f}; offsets alone do not "
+                        f"vernier_err_reject {err_reject_rad:.6f}; offsets alone do not "
                         "explain these points well."
                     )
-                elif worst is not None and worst > err_accept:
+                elif worst is not None and worst > err_accept_rad:
                     print(
                         f"NOTE: worst residual {worst:.6f} is above "
-                        f"vernier_err_accept {err_accept:.6f}."
+                        f"vernier_err_accept {err_accept_rad:.6f}."
                     )
 
                 if args.apply:
@@ -669,13 +671,15 @@ def main():
                 aux_write = offset_for_print(aux_offset)
                 if args.fit_main_offset:
                     ok &= set_basic_float(
-                        bus, args, PARAM_MAIN_OFFSET, main_write,
+                        bus, args, PARAM_MAIN_OFFSET,
+                        main_write * 2.0 * math.pi,
                         "encoder.vernier_main_offset",
                     )
                 else:
                     print("Keeping encoder.vernier_main_offset unchanged")
                 ok &= set_basic_float(
-                    bus, args, PARAM_AUX_OFFSET, aux_write,
+                    bus, args, PARAM_AUX_OFFSET,
+                    aux_write * 2.0 * math.pi,
                     "encoder.vernier_aux_offset",
                 )
                 if args.save:

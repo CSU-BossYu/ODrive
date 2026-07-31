@@ -879,6 +879,45 @@ bool CANSimple::handle_calibration_session(Axis& axis, const can_Message_t& msg,
                     &axis.calibration_pending_result_.delay_max_abs_electrical_speed,
                     sizeof(value));
             } break;
+            case 0x48: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.vernier_main_offset_rad,
+                    sizeof(value));
+            } break;
+            case 0x49: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.vernier_aux_offset_rad,
+                    sizeof(value));
+            } break;
+            case 0x4A: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.vernier_fit_rms_rad,
+                    sizeof(value));
+            } break;
+            case 0x4B: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.vernier_worst_residual_rad,
+                    sizeof(value));
+            } break;
+            case 0x4C: {
+                response_type = EXT_TYPE_FLOAT32;
+                std::memcpy(
+                    &value,
+                    &axis.calibration_pending_result_.vernier_minimum_margin_rad,
+                    sizeof(value));
+            } break;
+            case 0x4D:
+                value =
+                    axis.calibration_pending_result_.vernier_used_samples;
+                break;
             case 0x10: ok = axis.start_calibration_session(request_value); break;
             case 0x11: ok = axis.abort_calibration_session(); break;
             default: status = EXT_STATUS_UNKNOWN; ok = false; break;
@@ -931,7 +970,15 @@ bool CANSimple::handle_set_precalibrated(Axis& axis, const can_Message_t& msg, c
 
     if (status == EXT_STATUS_OK) {
         if (flags & (1 << 0)) { axis.motor_.config_.pre_calibrated = true;  axis.motor_.is_calibrated_ = true; }
-        if (flags & (1 << 1)) { axis.encoder_.config_.pre_calibrated = true; axis.encoder_.is_ready_ = true; }
+        if (flags & (1 << 1)) {
+            axis.encoder_.config_.pre_calibrated = true;
+            if (axis.encoder_.mode_ ==
+                Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+                axis.encoder_.apply_vernier_resolver_config();
+            } else {
+                axis.encoder_.is_ready_ = true;
+            }
+        }
         if (flags & (1 << 4)) { axis.motor_.config_.pre_calibrated = false; axis.motor_.is_calibrated_ = false; }
         if (flags & (1 << 5)) { axis.encoder_.config_.pre_calibrated = false; axis.encoder_.is_ready_ = false; }
     }
@@ -1559,17 +1606,17 @@ static bool fill_fault_snapshot_item(const Controller::OverspeedSnapshot& oversp
         case 0x4F: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_locked, 32, 32, true); return true;
         case 0x50: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_accepted_aux, 32, 32, true); return true;
         case 0x51: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.resolver_degraded, 32, 32, true); return true;
-        case 0x52: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.resolver_position_turns, 32, 32, true); return true;
-        case 0x53: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.resolver_residual, 32, 32, true); return true;
-        case 0x54: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.encoder_vel_estimate, 32, 32, true); return true;
+        case 0x52: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.resolver_position_rad, 32, 32, true); return true;
+        case 0x53: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.resolver_residual_rad, 32, 32, true); return true;
+        case 0x54: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.encoder_vel_estimate_rpm, 32, 32, true); return true;
         case 0x55: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.pair_sequence, 32, 32, true); return true;
         case 0x56: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.pair_valid, 32, 32, true); return true;
         case 0x57: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.output_estimate_valid, 32, 32, true); return true;
-        case 0x58: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_pos_estimate, 32, 32, true); return true;
-        case 0x59: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_vel_estimate, 32, 32, true); return true;
+        case 0x58: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_position_rad, 32, 32, true); return true;
+        case 0x59: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_velocity_rpm, 32, 32, true); return true;
         case 0x5A: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.output_sample_dt, 32, 32, true); return true;
         case 0x5B: type = EXT_TYPE_UINT32;  can_setSignal<uint32_t>(txmsg, overspeed.output_pair_sequence, 32, 32, true); return true;
-        case 0x5C: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.encoder_pos_estimate, 32, 32, true); return true;
+        case 0x5C: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.encoder_pos_estimate_rad, 32, 32, true); return true;
         case 0x5D: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.pos_estimate_circular, 32, 32, true); return true;
         case 0x5E: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.torque_setpoint, 32, 32, true); return true;
         case 0x5F: type = EXT_TYPE_FLOAT32; can_setSignal<float>(txmsg, overspeed.input_torque, 32, 32, true); return true;
@@ -1613,9 +1660,9 @@ bool CANSimple::handle_get_fault_snapshot(Axis& axis, const can_Message_t& msg, 
 // item 0x03: aux_valid (uint32/bool)
 // item 0x04: pair_sequence (uint32)
 // item 0x05: pair_valid / resolver_locked placeholder (uint32/bool)
-// item 0x06: resolver_residual placeholder (float32)
+// item 0x06: selected Vernier residual rad (float32)
 // item 0x07: vernier_virtual_count placeholder (int32)
-// item 0x08: vernier_position_turns placeholder (float32)
+// item 0x08: Vernier unique-range position rad (float32)
 // item 0x09: main_error_count (uint32)
 // item 0x0A: aux_error_count (uint32)
 // item 0x0B: resolver_state placeholder (uint32)
@@ -1640,8 +1687,8 @@ bool CANSimple::handle_get_fault_snapshot(Axis& axis, const can_Message_t& msg, 
 // item 0x20: encoder_pos_estimate (float32)
 // item 0x21: encoder_vel_estimate (float32)
 // item 0x22: encoder_pos_circular (float32)
-// item 0x2C: output_pair_vel_estimate (float32)
-// item 0x2D: output_last_aux_correction (float32)
+// item 0x2C: output_pair_vel_estimate_rpm (float32)
+// item 0x2D: output_last_aux_correction_rad (float32)
 // item 0x2E: pair request-to-publish latency, CPU cycles (uint32)
 // item 0x2F: maximum pair request-to-publish latency, CPU cycles (uint32)
 // item 0x31..0x33: complete control-loop last/max/count (uint32)
@@ -1651,6 +1698,7 @@ bool CANSimple::handle_get_fault_snapshot(Axis& axis, const can_Message_t& msg, 
 // item 0x40..0x5F: controller OVERSPEED snapshot captured at fault time
 // item 0x60..0x65: live encoder PLL internals for stationary-noise diagnosis
 // item 0x66..0x73: live position/velocity cascade and trajectory state
+// item 0x74..0x7F: LZ5710 rad/rpm resolver, PLL and LUT diagnostics
 // =====================================================================
 static uint32_t pack_mt6826s_raw(const Mt6826sSpi::Sample& sample) {
     return static_cast<uint32_t>(sample.raw[0])
@@ -1702,7 +1750,7 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
             break;
         case 0x06:
             type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, snapshot.residual, 32, 32, true);
+            can_setSignal<float>(txmsg, snapshot.residual_rad, 32, 32, true);
             break;
         case 0x07:
             type = EXT_TYPE_INT32;
@@ -1710,7 +1758,7 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
             break;
         case 0x08:
             type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, snapshot.position_turns, 32, 32, true);
+            can_setSignal<float>(txmsg, snapshot.position_rad, 32, 32, true);
             break;
         case 0x09:
             type = EXT_TYPE_UINT32;
@@ -1826,11 +1874,11 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
             break;
         case 0x28:
             type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, snapshot.output_pos_estimate, 32, 32, true);
+            can_setSignal<float>(txmsg, snapshot.output_pos_estimate_rad, 32, 32, true);
             break;
         case 0x29:
             type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, snapshot.output_vel_estimate, 32, 32, true);
+            can_setSignal<float>(txmsg, snapshot.output_vel_estimate_rpm, 32, 32, true);
             break;
         case 0x2A:
             type = EXT_TYPE_FLOAT32;
@@ -1842,11 +1890,11 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
             break;
         case 0x2C:
             type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, snapshot.output_pair_vel_estimate, 32, 32, true);
+            can_setSignal<float>(txmsg, snapshot.output_pair_vel_estimate_rpm, 32, 32, true);
             break;
         case 0x2D:
             type = EXT_TYPE_FLOAT32;
-            can_setSignal<float>(txmsg, snapshot.output_last_aux_correction, 32, 32, true);
+            can_setSignal<float>(txmsg, snapshot.output_last_aux_correction_rad, 32, 32, true);
             break;
         case 0x60:
             type = EXT_TYPE_FLOAT32;
@@ -1859,6 +1907,70 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
         case 0x62:
             type = EXT_TYPE_FLOAT32;
             can_setSignal<float>(txmsg, snapshot.pll_position_counts, 32, 32, true);
+            break;
+        case 0x80:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.pll_error_rad, 32, 32, true);
+            break;
+        case 0x81:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.lut_correction_rad, 32, 32, true);
+            break;
+        case 0x82:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.readiness_flags, 32, 32, true);
+            break;
+        case 0x74:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(txmsg, snapshot.chain_fault, 32, 32, true);
+            break;
+        case 0x75:
+            type = EXT_TYPE_INT32;
+            can_setSignal<int32_t>(txmsg, snapshot.vernier_branch_index, 32, 32, true);
+            break;
+        case 0x76:
+            type = EXT_TYPE_INT32;
+            can_setSignal<int32_t>(txmsg, snapshot.runtime_unique_range_index, 32, 32, true);
+            break;
+        case 0x77:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.raw_main_phase_rad, 32, 32, true);
+            break;
+        case 0x78:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.raw_aux_phase_rad, 32, 32, true);
+            break;
+        case 0x79:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.unique_position_rad, 32, 32, true);
+            break;
+        case 0x7A:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.wrapped_output_phase_rad, 32, 32, true);
+            break;
+        case 0x7B:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.output_position_rad, 32, 32, true);
+            break;
+        case 0x7C:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.output_velocity_rpm, 32, 32, true);
+            break;
+        case 0x7D:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.resolver_residual_rad, 32, 32, true);
+            break;
+        case 0x7E:
+            type = EXT_TYPE_FLOAT32;
+            can_setSignal<float>(txmsg, snapshot.resolver_margin_rad, 32, 32, true);
+            break;
+        case 0x7F:
+            type = EXT_TYPE_UINT32;
+            can_setSignal<uint32_t>(
+                txmsg,
+                (snapshot.lut_enabled ? 1u : 0u) |
+                (snapshot.lut_valid ? 2u : 0u),
+                32, 32, true);
             break;
         case 0x63:
             type = EXT_TYPE_FLOAT32;
@@ -2057,7 +2169,7 @@ bool CANSimple::handle_get_vernier_diagnostics(Axis& axis, const can_Message_t& 
 //
 // item 0x00: reset captured points (uint32 response: point_count)
 // item 0x01: capture latest valid main/aux static point (uint32: point_count)
-// item 0x02: fit aux offset, value=float32 search_radius turns (float32: score)
+// item 0x02: fit aux offset, value=float32 search_radius rad (float32: score rad)
 // item 0x03: apply pending fit to RAM config (uint32: 1 on success)
 // item 0x04: point_count (uint32)
 // item 0x05: fit_valid (uint32/bool)
@@ -2103,7 +2215,7 @@ bool CANSimple::handle_vernier_calibration(Axis& axis, const can_Message_t& msg,
             break;
         case 0x02: {
             type = EXT_TYPE_FLOAT32;
-            float search_radius = 0.05f;
+            float search_radius = 0.05f * 2.0f * M_PI;
             if (req_type == EXT_TYPE_FLOAT32) {
                 search_radius = can_getSignal<float>(msg, 32, 32, true);
             } else if (req_type != 0) {

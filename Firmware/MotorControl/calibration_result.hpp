@@ -17,6 +17,7 @@ struct CalibrationPendingResult {
         VALID_POLE_PAIRS = 1u << 6,
         VALID_MECHANICAL_MODEL = 1u << 7,
         VALID_ELECTRICAL_DELAY = 1u << 8,
+        VALID_VERNIER_OFFSETS = 1u << 9,
     };
 
     uint32_t session_id = 0;
@@ -26,6 +27,12 @@ struct CalibrationPendingResult {
     int32_t encoder_direction = 0;
     int32_t phase_offset = 0;
     float phase_offset_float = 0.0f;
+    float vernier_main_offset_rad = 0.0f;
+    float vernier_aux_offset_rad = 0.0f;
+    float vernier_fit_rms_rad = 0.0f;
+    float vernier_worst_residual_rad = 0.0f;
+    float vernier_minimum_margin_rad = 0.0f;
+    uint32_t vernier_used_samples = 0;
     float effective_ratio_scale = 1.0f;
     std::array<float, 64> common_geometry_correction = {};
     std::array<float, 64> direction_geometry_correction = {};
@@ -36,6 +43,7 @@ struct CalibrationPendingResult {
     float flux_linkage = 0.0f;
     float torque_constant = 0.0f;
     float flux_sample_stddev = 0.0f;
+    float flux_mean_std_error = 0.0f;
     uint32_t flux_used_samples = 0;
     int32_t pole_pairs = 0;
     float output_inertia = 0.0f;

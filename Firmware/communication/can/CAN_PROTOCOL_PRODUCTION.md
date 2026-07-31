@@ -270,8 +270,8 @@ controller gains (`0x30`-`0x32`, `0x35`) which are live-tunable.
 | `0x21` | int32 | encoder cpr (GET-only, baked) |
 | `0x14` | float32 | motor current_lim [A] (customer-tunable per load) |
 | `0x23` | float32 | encoder bandwidth [rad/s] |
-| `0x28` | float32 | vernier_main_offset [turn] (per-unit calibration) |
-| `0x29` | float32 | vernier_aux_offset [turn] (per-unit calibration) |
+| `0x28` | float32 | vernier_main_offset [rad] (per-unit calibration) |
+| `0x29` | float32 | vernier_aux_offset [rad] (per-unit calibration) |
 | `0x30` | float32 | pos_gain [(turn/s)/turn] (live-tunable) |
 | `0x31` | float32 | vel_gain [Nm/(turn/s)] (live-tunable) |
 | `0x32` | float32 | vel_integrator_gain [Nm/(turn/s)/s] (live-tunable) |
@@ -369,8 +369,21 @@ Subcommand `0x0A` is diagnostic and may grow, but existing item IDs are frozen.
 
 Selected diagnostic items include:
 
-- `0x2C`: output_pair_vel_estimate, load-side velocity estimated from accepted Vernier pair samples
-- `0x2D`: output_last_aux_correction, last low-frequency auxiliary position correction in output turns
+- `0x74`: uint32 independent encoder-chain fault mask
+- `0x75`: int32 Vernier branch index [0, 20]
+- `0x76`: int32 runtime unique-range index
+- `0x77`/`0x78`: float32 corrected main/aux single-turn phase [rad]
+- `0x79`: float32 unique-range absolute position [rad]
+- `0x7A`: float32 wrapped output phase [rad]
+- `0x7B`: float32 continuous output position [rad]
+- `0x7C`: float32 output velocity [rpm]
+- `0x7D`/`0x7E`: float32 Vernier residual/margin [rad]
+- `0x7F`: uint32 LUT enabled/valid flags
+- `0x80`: float32 continuous output PLL error [rad]
+- `0x81`: float32 active output-geometry LUT correction [rad]
+- `0x82`: uint32 readiness flags
+- `0x2C`: output_pair_vel_estimate, load-side velocity in rpm from accepted Vernier pair samples
+- `0x2D`: output_last_aux_correction, last low-frequency auxiliary position correction in radians
 - `0x30`: FOC_BAD_TIMING
 - `0x34`: ADC_PRE
 - `0x35`: ADC_POST
@@ -469,7 +482,7 @@ changes.
 | `0x0F` | read | uint32 | transport polling intervals spent disconnected |
 | `0x10` | uint32 | uint32 | START; profiles: 0=full, 1=electrical, 2=mechanical, 3=validate-only; remaining bits are option flags |
 | `0x11` | any | uint32 | ABORT the active calibration |
-| `0x20` | read | uint32 | pending-result validity bits: R, L, direction, electrical offset, geometry model |
+| `0x20` | read | uint32 | pending-result validity bits: bit0 R, bit1 L, bit2 direction, bit3 electrical offset, bit4 reducer geometry, bit5 flux/Kt, bit6 pole pairs, bit7 mechanical model, bit8 electrical delay, bit9 Vernier offsets |
 | `0x21` | read | float32 | candidate phase resistance [ohm], not active until commit |
 | `0x22` | read | float32 | candidate phase inductance [H], not active until commit |
 | `0x23` | read | int32 | candidate encoder direction |
@@ -509,10 +522,16 @@ changes.
 | `0x45` | read | uint32 | delay samples rejected for insufficient back-EMF |
 | `0x46` | read | uint32 | delay samples rejected for implausible phase error |
 | `0x47` | read | float32 | maximum measured electrical speed [rad/s] |
-| `0x48`-`0x7F` | read | typed | reserved for additional result fields and metadata |
+| `0x48` | read | float32 | candidate main encoder mechanical phase offset [rad] |
+| `0x49` | read | float32 | candidate auxiliary encoder mechanical phase offset [rad] |
+| `0x4A` | read | float32 | Vernier offset fit RMS residual [rad] |
+| `0x4B` | read | float32 | Vernier offset fit worst residual [rad] |
+| `0x4C` | read | float32 | minimum best-to-second-best candidate margin [rad] |
+| `0x4D` | read | uint32 | coherent main/aux samples used by the Vernier fit |
+| `0x4E`-`0x7F` | read | typed | reserved for additional result fields and metadata |
 
 Coarse stage IDs are firmware-owned and stable for monitoring: `0` none, `1`
-precheck, `10` electrical capture, `20` encoder geometry, `30` mechanical
+precheck, `10` electrical capture, `20` encoder alignment/Vernier offset, `30` mechanical
 capture, `35` electrical delay, `40` fitting, `50` validation, and `60` commit. Experiment-specific
 substeps are deliberately not part of the CAN contract.
 
@@ -569,6 +588,11 @@ depends on whether a debug probe enabled the counter.
 Failure codes `22` through `25` distinguish delay-stage closed-loop startup,
 insufficient bidirectional samples, unobservable speed regression, and a fitted
 delay/intercept/RMS outside physical quality limits.
+Failure codes `26` through `30` distinguish insufficient coherent dual-encoder
+samples, an unsolved Vernier offset fit, ambiguous branch candidates, excessive
+Vernier residual, and failure of the live resolver/tracker/PLL chain to become
+ready after applying the candidate offsets. None of these failures is committed
+or saved.
 
 ## Compatibility rule
 

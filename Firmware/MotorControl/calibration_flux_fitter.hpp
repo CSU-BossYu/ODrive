@@ -20,6 +20,7 @@ public:
         float flux_linkage = 0.0f;       // [V/(electrical rad/s)]
         float torque_constant = 0.0f;    // [motor Nm/Aq]
         float sample_stddev = 0.0f;
+        float mean_std_error = 0.0f;
         uint32_t used_samples = 0;
     };
 
@@ -78,25 +79,35 @@ public:
         }
         const float mean = 0.5f * (positive_.mean + negative_.mean);
         const uint32_t count = positive_.count + negative_.count;
-        // Include both within-direction noise and the separation between the
-        // forward/reverse means. The latter exposes current-polarity dependent
-        // inverter voltage errors that a pooled within-group variance hides.
-        const float positive_delta = positive_.mean - mean;
-        const float negative_delta = negative_.mean - mean;
-        const float total_m2 = positive_.m2 + negative_.m2 +
-            positive_delta * positive_delta * positive_.count +
-            negative_delta * negative_delta * negative_.count;
-        const float variance = total_m2 /
-            static_cast<float>(std::max<uint32_t>(count - 1, 1));
+        // A direction-independent inverter/dead-time voltage offset produces
+        // opposite flux-estimate offsets after division by signed speed. The
+        // bidirectional mean cancels that systematic term. Do not count the
+        // separation of the two direction means again as random dispersion.
+        const float variance = (positive_.m2 + negative_.m2) /
+            static_cast<float>(std::max<uint32_t>(count - 2, 1));
         const float stddev = std::sqrt(std::max(variance, 0.0f));
+        const float positive_variance = positive_.m2 /
+            static_cast<float>(std::max<uint32_t>(positive_.count - 1, 1));
+        const float negative_variance = negative_.m2 /
+            static_cast<float>(std::max<uint32_t>(negative_.count - 1, 1));
+        const float mean_std_error = 0.5f * std::sqrt(std::max(
+            positive_variance / static_cast<float>(positive_.count) +
+            negative_variance / static_cast<float>(negative_.count),
+            0.0f));
         result->flux_linkage = mean;
         result->torque_constant = 1.5f * pole_pairs_ * mean;
         result->sample_stddev = stddev;
+        result->mean_std_error = mean_std_error;
         if (!std::isfinite(mean) || mean <= 1.0e-6f) {
             failure_reason_ = FAILURE_NONPHYSICAL_MEAN;
             return false;
         }
-        if (!std::isfinite(stddev) || stddev > mean * 0.25f) {
+        // Block ripple may be appreciable while its bidirectional mean is
+        // precise. Reject pathological ripple and an uncertain mean
+        // independently.
+        if (!std::isfinite(stddev) || stddev > mean ||
+            !std::isfinite(mean_std_error) ||
+            mean_std_error > mean * 0.05f) {
             failure_reason_ = FAILURE_EXCESSIVE_DISPERSION;
             return false;
         }

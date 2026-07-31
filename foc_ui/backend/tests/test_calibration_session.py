@@ -27,7 +27,7 @@ class ReadHarness:
     async def ext_command(self, sub_cmd, item, ext_type=0, value=0,
                           timeout=1.0):
         values = {
-            CalibrationSessionItem.SCHEMA_VERSION: 1,
+            CalibrationSessionItem.SCHEMA_VERSION: 2,
             CalibrationSessionItem.SESSION_ID: 42,
             CalibrationSessionItem.STATE:
                 int(CalibrationSessionState.VALIDATED),
@@ -84,6 +84,12 @@ class ReadHarness:
             CalibrationSessionItem.DELAY_REJECTED_EMF: 10,
             CalibrationSessionItem.DELAY_REJECTED_PHASE: 5,
             CalibrationSessionItem.DELAY_MAX_ABS_ELECTRICAL_SPEED: 443.0,
+            CalibrationSessionItem.VERNIER_MAIN_OFFSET_RAD: 0.0,
+            CalibrationSessionItem.VERNIER_AUX_OFFSET_RAD: -0.1311,
+            CalibrationSessionItem.VERNIER_FIT_RMS_RAD: 0.0002,
+            CalibrationSessionItem.VERNIER_WORST_RESIDUAL_RAD: 0.0004,
+            CalibrationSessionItem.VERNIER_MINIMUM_MARGIN_RAD: 0.298,
+            CalibrationSessionItem.VERNIER_USED_SAMPLES: 16,
         }
         return {'status': ExtStatus.OK, 'value': values[item]}
 

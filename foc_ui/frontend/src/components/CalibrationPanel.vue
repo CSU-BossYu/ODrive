@@ -12,7 +12,7 @@ const stateNames: Record<number, string> = {
   10: '已中止', 11: '结果过期',
 }
 const stageNames: Record<number, string> = {
-  0: '无', 1: '安全预检', 10: '电气参数', 20: '编码器与减速器几何',
+  0: '无', 1: '安全预检', 10: '电气参数', 20: '编码器对齐与游标偏移',
   30: '磁链与机械模型', 35: '电角度动态延迟', 40: '参数拟合',
   50: '交叉验证', 60: '原子保存',
 }
@@ -37,6 +37,11 @@ const failureNames: Record<number, string> = {
   23: '电角度延迟标定失败：正反向有效样本不足',
   24: '电角度延迟标定失败：电角速度激励不可观测',
   25: '电角度延迟标定失败：延迟、截距或残差超出物理门限',
+  26: '游标偏移标定失败：同步双编码器样本不足',
+  27: '游标偏移标定失败：偏移拟合无解',
+  28: '游标偏移标定失败：候选分支存在歧义',
+  29: '游标偏移标定失败：双编码器残差超限',
+  30: '游标偏移标定失败：提交后编码器链路未 ready',
 }
 
 const resultDefs = [
@@ -46,6 +51,8 @@ const resultDefs = [
   ['encoder_direction', '编码器方向', '', 0, 4],
   ['phase_offset', '电角度整数偏移', 'count', 0, 8],
   ['phase_offset_float', '电角度小数偏移', 'count', 4, 8],
+  ['vernier_main_offset_rad', '主编码器机械相位偏移', 'rad', 6, 512],
+  ['vernier_aux_offset_rad', '旁路编码器机械相位偏移', 'rad', 6, 512],
   ['effective_ratio_scale', '减速比修正系数', '', 7, 16],
   ['flux_linkage', '磁链', 'V·s/rad', 7, 32],
   ['torque_constant', '转矩常数 Kt', 'Nm/Aq', 6, 32],
@@ -64,6 +71,10 @@ const qualityDefs = [
   ['geometry_used_samples', '几何有效样本', '', 0],
   ['flux_sample_stddev', '磁链标准差', 'V·s/rad', 7],
   ['flux_used_samples', '磁链有效样本', '', 0],
+  ['vernier_fit_rms_rad', '游标偏移拟合 RMS', 'rad', 7],
+  ['vernier_worst_residual_rad', '游标最坏残差', 'rad', 7],
+  ['vernier_minimum_margin_rad', '游标最小候选裕量', 'rad', 7],
+  ['vernier_used_samples', '游标有效同步样本', '', 0],
   ['mechanical_residual_rms_torque', '机械拟合 RMS', 'Nm', 6],
   ['mechanical_used_samples', '机械有效样本', '', 0],
   ['mechanical_attempted_samples', '机械尝试样本', '', 0],
