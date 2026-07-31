@@ -26,7 +26,10 @@
 
 // IMPORTANT: if you change, reorder or otherwise modify any of the fields in
 // the config structs without changing its total length, make sure to increment this number:
-static constexpr uint16_t config_version = 0x0011;
+// LZ5710 offset and Vernier residual config values changed from turns to
+// radians in version 0x0012. Reject older blobs instead of silently loading
+// persisted calibration with the wrong unit.
+static constexpr uint16_t config_version = 0x0012;
 
 /* Private variables ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/

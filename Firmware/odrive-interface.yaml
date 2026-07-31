@@ -986,8 +986,8 @@ interfaces:
       pos_estimate: 
         type: readonly float32
         c_getter: pos_estimate_.any().value_or(0.0f)
-        unit: turns
-        doc: Linear position estimate of the encoder, in turns.  Also known as "multi-turn" position.
+        unit: rad
+        doc: Continuous multi-turn output position in radians. This value is never reduced modulo 2*pi.
       pos_estimate_counts:
         type: readonly float32
         unit: counts
@@ -995,13 +995,13 @@ interfaces:
       pos_circular: 
         type: readonly float32
         c_getter: pos_circular_.any().value_or(0.0f)
-        unit: turns
-        doc: Circular position estimate of the encoder, as a decimal from [0, 1).  Also known as "single-turn" position.
+        unit: rad
+        doc: Wrapped output phase in radians on [0, 2*pi).
       joint_pos_rad:
         type: readonly float32
         c_getter: joint_pos_rad_.any().value_or(0.0f)
         unit: rad
-        doc: Output/joint position wrapped to the half-open interval [0, 2*pi). The continuous multi-turn estimate remains available as pos_estimate.
+        doc: Continuous multi-turn output position in radians, identical to pos_estimate.
       pos_cpr_counts:
         type: readonly float32
         unit: counts
@@ -1013,8 +1013,8 @@ interfaces:
       vel_estimate: 
         type: readonly float32
         c_getter: vel_estimate_.any().value_or(0.0f)
-        unit: turn/s
-        doc: Estimate of the linear velocity of an axis in turn/s
+        unit: rpm
+        doc: Output-shaft velocity estimate in revolutions per minute.
       vel_estimate_counts: 
         type: readonly float32
         unit: counts/sec
@@ -1031,11 +1031,13 @@ interfaces:
           vernier_main_offset:
             type: float32
             c_setter: set_vernier_main_offset
-            doc: Main encoder phase offset in turns.
+            unit: rad
+            doc: Main encoder single-turn phase offset in radians.
           vernier_aux_offset:
             type: float32
             c_setter: set_vernier_aux_offset
-            doc: Auxiliary encoder phase offset in turns.
+            unit: rad
+            doc: Auxiliary encoder single-turn phase offset in radians.
           phase_offset: int32
           phase_offset_float: float32
           electrical_phase_delay:

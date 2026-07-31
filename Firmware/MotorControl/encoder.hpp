@@ -7,6 +7,7 @@ class Encoder;
 #include <Drivers/STM32/stm32_spi_arbiter.hpp>
 #include <Drivers/MT6826S/mt6826s_spi.hpp>
 #include <Drivers/MT6826S/vernier_resolver.hpp>
+#include <Drivers/MT6826S/lz5710_position_estimator.hpp>
 #include "utils.hpp"
 #include <autogen/interfaces.hpp>
 #include "component.hpp"
@@ -15,6 +16,19 @@ class Encoder;
 class Encoder : public ODriveIntf::EncoderIntf {
 public:
     static constexpr size_t kVernierGeometryCorrectionBins = 64;
+    enum ChainFault : uint32_t {
+        CHAIN_FAULT_NONE = 0,
+        CHAIN_FAULT_MAIN_COMMUNICATION = 1u << 0,
+        CHAIN_FAULT_AUX_COMMUNICATION = 1u << 1,
+        CHAIN_FAULT_FRAME_CHECK = 1u << 2,
+        CHAIN_FAULT_LUT_INVALID = 1u << 3,
+        CHAIN_FAULT_VERNIER_NO_SOLUTION = 1u << 4,
+        CHAIN_FAULT_VERNIER_AMBIGUOUS = 1u << 5,
+        CHAIN_FAULT_VERNIER_RESIDUAL = 1u << 6,
+        CHAIN_FAULT_POSITION_JUMP = 1u << 7,
+        CHAIN_FAULT_PLL_TIMEOUT = 1u << 8,
+        CHAIN_FAULT_DIRECTION_INVALID = 1u << 9,
+    };
 
     struct Config_t {
         Mode mode = MODE_SPI_ABS_MT6826S_VERNIER;
@@ -36,15 +50,15 @@ public:
         uint16_t abs_spi_aux_cs_gpio_pin = ODRIVE_PRODUCTION_ABS_SPI_AUX_CS_GPIO_PIN;
         float vernier_main_ratio = ODRIVE_PRODUCTION_VERNIER_MAIN_RATIO;
         float vernier_aux_ratio = ODRIVE_PRODUCTION_VERNIER_AUX_RATIO;
-        float vernier_main_offset = 0.0f;
-        float vernier_aux_offset = 0.0f;
+        float vernier_main_offset = 0.0f; // [rad], sensor phase zero
+        float vernier_aux_offset = 0.0f;  // [rad], sensor phase zero
         bool vernier_main_reversed = ODRIVE_PRODUCTION_VERNIER_MAIN_REVERSED;
         bool vernier_aux_reversed = ODRIVE_PRODUCTION_VERNIER_AUX_REVERSED;
         bool vernier_use_phase_difference = ODRIVE_PRODUCTION_VERNIER_USE_PHASE_DIFFERENCE;
         bool vernier_output_reversed = ODRIVE_PRODUCTION_VERNIER_OUTPUT_REVERSED;
         int32_t vernier_virtual_cpr = ODRIVE_PRODUCTION_VERNIER_VIRTUAL_CPR;
-        float vernier_err_accept = ODRIVE_PRODUCTION_VERNIER_ERR_ACCEPT;
-        float vernier_err_reject = ODRIVE_PRODUCTION_VERNIER_ERR_REJECT;
+        float vernier_err_accept = ODRIVE_PRODUCTION_VERNIER_ERR_ACCEPT; // [rad]
+        float vernier_err_reject = ODRIVE_PRODUCTION_VERNIER_ERR_REJECT; // [rad]
         uint16_t mt6826s_spi_mode = ODRIVE_PRODUCTION_MT6826S_SPI_MODE;
         uint16_t mt6826s_spi_prescaler = ODRIVE_PRODUCTION_MT6826S_SPI_PRESCALER;
         float vernier_aux_correction_bandwidth = 0.0f;
@@ -134,10 +148,10 @@ public:
     int32_t pos_abs_ = 0;
     float spi_error_rate_ = 0.0f;
 
-    OutputPort<float> pos_estimate_ = 0.0f; // [turn]
-    OutputPort<float> vel_estimate_ = 0.0f; // [turn/s]
-    OutputPort<float> pos_circular_ = 0.0f; // [turn]
-    OutputPort<float> joint_pos_rad_ = 0.0f; // [rad], linear mechanical coordinate
+    OutputPort<float> pos_estimate_ = 0.0f; // [rad], continuous output position
+    OutputPort<float> vel_estimate_ = 0.0f; // [rpm], output velocity
+    OutputPort<float> pos_circular_ = 0.0f; // [rad], wrapped to [0, 2*pi)
+    OutputPort<float> joint_pos_rad_ = 0.0f; // [rad], same as pos_estimate_
 
     bool pos_estimate_valid_ = false;
     bool vel_estimate_valid_ = false;
@@ -152,6 +166,7 @@ public:
     void apply_mt6826s_spi_config();
     VernierResolver::Config make_vernier_resolver_config() const;
     void apply_vernier_resolver_config();
+    void clear_lz5710_faults();
     float controller_to_motor_direction() const;
     float controller_torque_to_motor_torque_scale() const;
     bool controller_feedback_ready() const;
@@ -169,7 +184,11 @@ public:
     float align_vernier_output_position(float position_turns, float reference_turns) const;
     float normalized_main_phase_from_raw_phase(float raw_phase) const;
     float normalized_main_velocity_from_raw_velocity(float raw_velocity) const;
-    void publish_vernier_output_estimate(float dt, float motor_vel_estimate_turns);
+    // Legacy implementation retained only for compatibility diagnostics.
+    // The LZ5710 runtime path publishes exclusively through
+    // publish_lz5710_estimate().
+    void publish_vernier_output_estimate(float dt,
+                                         float motor_velocity_turns_per_s);
     void reset_vernier_output_velocity_estimate();
     float filter_controller_velocity(float raw_velocity);
     void reset_controller_velocity_filter();
@@ -183,6 +202,17 @@ public:
     Mt6826sSpi mt6826s_aux_spi_;
     Mt6826sSpiPair mt6826s_spi_pair_;
     VernierResolver vernier_resolver_;
+    lz5710::Resolver lz5710_resolver_;
+    lz5710::ResolverResult lz5710_resolver_result_;
+    lz5710::ContinuousPositionTracker lz5710_position_tracker_;
+    lz5710::ContinuousPositionPll lz5710_output_pll_;
+    uint32_t consumed_main_sample_sequence_ = 0;
+    uint32_t main_sample_age_control_cycles_ = 0;
+    uint32_t aux_sample_age_control_cycles_ = 0;
+    uint32_t consecutive_valid_main_samples_ = 0;
+    uint32_t consecutive_valid_aux_samples_ = 0;
+    uint32_t consumed_vernier_pair_sequence_ = 0;
+    uint32_t encoder_chain_fault_ = 0;
 
     struct VernierDiagnosticsSnapshot {
         Mt6826sSpi::Sample main_sample = {};
@@ -190,8 +220,8 @@ public:
         uint32_t pair_count = 0;
         bool pair_valid = false;
         int32_t virtual_count = 0;
-        float position_turns = 0.0f;
-        float residual = 0.0f;
+        float position_rad = 0.0f;
+        float residual_rad = 0.0f;
         float encoder_pos_estimate = 0.0f;
         float encoder_vel_estimate = 0.0f;
         float encoder_pos_circular = 0.0f;
@@ -201,12 +231,12 @@ public:
         bool resolver_accepted_aux = false;
         bool resolver_degraded = false;
         bool output_estimate_valid = false;
-        float output_pos_estimate = 0.0f;
-        float output_vel_estimate = 0.0f;
+        float output_pos_estimate_rad = 0.0f;
+        float output_vel_estimate_rpm = 0.0f;
         float output_sample_dt = 0.0f;
         uint32_t output_pair_sequence = 0;
-        float output_pair_vel_estimate = 0.0f;
-        float output_last_aux_correction = 0.0f;
+        float output_pair_vel_estimate_rpm = 0.0f;
+        float output_last_aux_correction_rad = 0.0f;
         uint32_t main_error_count = 0;
         uint32_t aux_error_count = 0;
         uint32_t pair_error_count = 0;
@@ -230,10 +260,31 @@ public:
         float controller_motor_velocity_turns_per_s = 0.0f;
         int32_t shadow_count = 0;
         int32_t count_in_cpr = 0;
+        int32_t vernier_branch_index = -1;
+        int32_t runtime_unique_range_index = 0;
+        float raw_main_phase_rad = 0.0f;
+        float raw_aux_phase_rad = 0.0f;
+        float unique_position_rad = 0.0f;
+        float wrapped_output_phase_rad = 0.0f;
+        float output_position_rad = 0.0f;
+        float output_velocity_rpm = 0.0f;
+        float resolver_residual_rad = 0.0f;
+        float resolver_margin_rad = 0.0f;
+        float pll_error_rad = 0.0f;
+        float lut_correction_rad = 0.0f;
+        uint32_t chain_fault = 0;
+        uint32_t readiness_flags = 0;
+        bool lut_enabled = false;
+        bool lut_valid = false;
     };
     void get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out);
+    bool vernier_geometry_lut_valid() const;
+    void publish_lz5710_estimate(bool has_new_valid_main_sample,
+                                 uint16_t main_count,
+                                 float observation_dt);
     void reset_vernier_calibration();
-    bool capture_vernier_calibration_point();
+    bool capture_vernier_calibration_point(
+        uint16_t minimum_main_delta_counts = 0);
     bool fit_vernier_aux_offset(float search_radius);
     bool apply_vernier_calibration_fit();
     uint32_t get_vernier_calibration_point_count() const { return vernier_calibration_point_count_; }
@@ -242,6 +293,9 @@ public:
     float get_vernier_calibration_fitted_aux_offset() const { return vernier_calibration_fitted_aux_offset_; }
     float get_vernier_calibration_fit_score() const { return vernier_calibration_fit_score_; }
     float get_vernier_calibration_worst_residual() const { return vernier_calibration_worst_residual_; }
+    float get_vernier_calibration_minimum_margin() const {
+        return vernier_calibration_minimum_margin_;
+    }
     int32_t get_calibration_estimated_pole_pairs() const {
         return calibration_estimated_pole_pairs_;
     }
@@ -284,11 +338,15 @@ public:
     static constexpr uint32_t kVernierCalibrationMaxPoints = 16;
     VernierCalibrationPoint vernier_calibration_points_[kVernierCalibrationMaxPoints] = {};
     uint32_t vernier_calibration_point_count_ = 0;
+    uint32_t vernier_calibration_last_pair_sequence_ = 0;
+    uint16_t vernier_calibration_last_main_angle_ = 0;
+    bool vernier_calibration_last_main_angle_valid_ = false;
     bool vernier_calibration_fit_valid_ = false;
     float vernier_calibration_fitted_main_offset_ = 0.0f;
     float vernier_calibration_fitted_aux_offset_ = 0.0f;
     float vernier_calibration_fit_score_ = 0.0f;
     float vernier_calibration_worst_residual_ = 0.0f;
+    float vernier_calibration_minimum_margin_ = 0.0f;
 
 };
 

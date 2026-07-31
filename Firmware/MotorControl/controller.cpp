@@ -103,16 +103,21 @@ void Controller::capture_overspeed_snapshot(float vel_estimate,
     overspeed_snapshot_.resolver_locked = vernier.resolver_locked ? 1u : 0u;
     overspeed_snapshot_.resolver_accepted_aux = vernier.resolver_accepted_aux ? 1u : 0u;
     overspeed_snapshot_.resolver_degraded = vernier.resolver_degraded ? 1u : 0u;
-    overspeed_snapshot_.resolver_position_turns = vernier.position_turns;
-    overspeed_snapshot_.resolver_residual = vernier.residual;
-    overspeed_snapshot_.encoder_pos_estimate = vernier.encoder_pos_estimate;
-    overspeed_snapshot_.encoder_vel_estimate = vernier.encoder_vel_estimate;
-    overspeed_snapshot_.encoder_pos_circular = vernier.encoder_pos_circular;
+    overspeed_snapshot_.resolver_position_rad = vernier.position_rad;
+    overspeed_snapshot_.resolver_residual_rad = vernier.residual_rad;
+    overspeed_snapshot_.encoder_pos_estimate_rad =
+        vernier.encoder_pos_estimate;
+    overspeed_snapshot_.encoder_vel_estimate_rpm =
+        vernier.encoder_vel_estimate;
+    overspeed_snapshot_.encoder_pos_circular_rad =
+        vernier.encoder_pos_circular;
     overspeed_snapshot_.pair_sequence = vernier.pair_count;
     overspeed_snapshot_.pair_valid = vernier.pair_valid ? 1u : 0u;
     overspeed_snapshot_.output_estimate_valid = vernier.output_estimate_valid ? 1u : 0u;
-    overspeed_snapshot_.output_pos_estimate = vernier.output_pos_estimate;
-    overspeed_snapshot_.output_vel_estimate = vernier.output_vel_estimate;
+    overspeed_snapshot_.output_position_rad =
+        vernier.output_pos_estimate_rad;
+    overspeed_snapshot_.output_velocity_rpm =
+        vernier.output_vel_estimate_rpm;
     overspeed_snapshot_.output_sample_dt = vernier.output_sample_dt;
     overspeed_snapshot_.output_pair_sequence = vernier.output_pair_sequence;
 }
@@ -200,8 +205,12 @@ bool Controller::control_mode_updated() {
             return false;
         }
 
-        pos_setpoint_ = *estimate;
-        set_input_pos_and_steps(*estimate);
+        const float estimate_turns =
+            axis_->encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER
+                ? *estimate / (2.0f * M_PI)
+                : *estimate;
+        pos_setpoint_ = estimate_turns;
+        set_input_pos_and_steps(estimate_turns);
     }
     return true;
 }
@@ -368,6 +377,14 @@ bool Controller::update(float update_period, bool run_position_step,
     std::optional<float> pos_estimate_circular = pos_estimate_circular_src_.present();
     std::optional<float> pos_wrap = pos_wrap_src_.present();
     std::optional<float> vel_estimate = vel_estimate_src_.present();
+    if (axis_->encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
+        if (pos_estimate_linear)
+            *pos_estimate_linear /= 2.0f * M_PI;
+        if (pos_estimate_circular)
+            *pos_estimate_circular /= 2.0f * M_PI;
+        if (vel_estimate)
+            *vel_estimate /= 60.0f;
+    }
 
     // Update inputs
     switch (config_.input_mode) {

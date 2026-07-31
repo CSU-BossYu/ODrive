@@ -232,6 +232,7 @@ void ODrive::clear_errors() {
         ControlTimeout::feed_command(axis);
         axis.encoder_.error_ = Encoder::ERROR_NONE;
         axis.encoder_.spi_error_rate_ = 0.0f;
+        axis.encoder_.clear_lz5710_faults();
         axis.error_ = Axis::ERROR_NONE;
     }
     error_ = ERROR_NONE;

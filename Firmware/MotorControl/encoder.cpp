@@ -5,6 +5,15 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+
+// At 10 kHz this is a 2 ms hard timeout. Vernier mode deliberately spends
+// every 25th request on a coherent main+aux pair, so "no new main frame this
+// control cycle" is not itself a communication failure.
+constexpr uint32_t kMainEncoderTimeoutControlCycles = 20u;
+
+}  // namespace
+
 Encoder::Encoder(Stm32SpiArbiter* spi_arbiter) :
         spi_arbiter_(spi_arbiter)
 {
@@ -69,7 +78,7 @@ void Encoder::setup() {
         abs_spi_aux_cs_pin_init();
         mt6826s_aux_spi_.init(spi_arbiter_, abs_spi_aux_cs_gpio_, mt6826s_config);
         mt6826s_spi_pair_.init(&mt6826s_spi_, &mt6826s_aux_spi_);
-        vernier_resolver_.init(make_vernier_resolver_config());
+        apply_vernier_resolver_config();
     }
 }
 
@@ -296,9 +305,9 @@ void Encoder::sample_now() {
             // Lock with coherent pairs, then sample the main encoder at 10 kHz
             // and refresh/check the auxiliary absolute branch at 400 Hz.
             constexpr uint32_t kAuxSampleDivider = 25u;
-            VernierResolver::Result result = {};
+            lz5710::ResolverResult result = {};
             uint32_t prim = cpu_enter_critical();
-            result = vernier_result_;
+            result = lz5710_resolver_result_;
             cpu_exit_critical(prim);
             const bool need_pair = !result.valid || !result.locked ||
                 ((mt6826s_vernier_sample_counter_ % kAuxSampleDivider) == 0u);
@@ -332,9 +341,8 @@ void Encoder::handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool succe
     pos_abs_ = sample.angle;
     abs_spi_pos_updated_ = true;
 
-    if (config_.pre_calibrated) {
-        is_ready_ = true;
-    }
+    // A valid main frame alone is not sufficient for encoder ready. The
+    // control-loop publisher evaluates the complete dual-sensor chain.
 }
 
 bool Encoder::start_mt6826s_main_sample() {
@@ -379,10 +387,14 @@ void Encoder::handle_mt6826s_spi_pair_cb(const Mt6826sSpiPair::PairSample& sampl
         sample.aux.angle,
         sample.aux.valid
     );
+    lz5710::ResolverResult lz5710_result = lz5710_resolver_.update(
+        sample.main.angle, sample.main.valid,
+        sample.aux.angle, sample.aux.valid);
 
     uint32_t prim = cpu_enter_critical();
     mt6826s_pair_valid_ = success && sample.valid;
     vernier_result_ = resolver_result;
+    lz5710_resolver_result_ = lz5710_result;
     if (sample.main.sequence != 0) {
         mt6826s_main_sample_ = sample.main;
     }
@@ -451,13 +463,13 @@ VernierResolver::Config Encoder::make_vernier_resolver_config() const {
     vernier_config.angle_counts_per_rev = Mt6826sSpi::kCountsPerRev;
     vernier_config.main_ratio = config_.vernier_main_ratio;
     vernier_config.aux_ratio = config_.vernier_aux_ratio;
-    vernier_config.main_offset = config_.vernier_main_offset;
-    vernier_config.aux_offset = config_.vernier_aux_offset;
+    vernier_config.main_offset = config_.vernier_main_offset / (2.0f * M_PI);
+    vernier_config.aux_offset = config_.vernier_aux_offset / (2.0f * M_PI);
     vernier_config.main_reversed = config_.vernier_main_reversed;
     vernier_config.aux_reversed = config_.vernier_aux_reversed;
     vernier_config.output_reversed = config_.vernier_output_reversed;
-    vernier_config.err_accept = config_.vernier_err_accept;
-    vernier_config.err_reject = config_.vernier_err_reject;
+    vernier_config.err_accept = config_.vernier_err_accept / (2.0f * M_PI);
+    vernier_config.err_reject = config_.vernier_err_reject / (2.0f * M_PI);
     vernier_config.max_main_cycle_index = 64;
     vernier_config.use_phase_difference = config_.vernier_use_phase_difference;
     return vernier_config;
@@ -465,10 +477,51 @@ VernierResolver::Config Encoder::make_vernier_resolver_config() const {
 
 void Encoder::apply_vernier_resolver_config() {
     vernier_resolver_.init(make_vernier_resolver_config());
+    lz5710::ResolverConfig resolver_config = {};
+    resolver_config.counts_per_rev = Mt6826sSpi::kCountsPerRev;
+    resolver_config.main_ratio = config_.vernier_main_ratio;
+    resolver_config.aux_ratio = config_.vernier_aux_ratio;
+    resolver_config.main_offset_rad = config_.vernier_main_offset;
+    resolver_config.aux_offset_rad = config_.vernier_aux_offset;
+    resolver_config.main_reversed = config_.vernier_main_reversed;
+    resolver_config.aux_reversed = config_.vernier_aux_reversed;
+    resolver_config.output_reversed = config_.vernier_output_reversed;
+    resolver_config.residual_accept_rad = config_.vernier_err_accept;
+    resolver_config.residual_reject_rad = config_.vernier_err_reject;
+    lz5710_resolver_.init(resolver_config);
+    lz5710::TrackerConfig tracker_config = {};
+    tracker_config.counts_per_rev = Mt6826sSpi::kCountsPerRev;
+    tracker_config.main_ratio = config_.vernier_main_ratio;
+    tracker_config.main_reversed = config_.vernier_main_reversed;
+    tracker_config.output_reversed = config_.vernier_output_reversed;
+    tracker_config.maximum_output_speed_rpm = 300.0f;
+    tracker_config.maximum_sample_interval_s = 0.002f;
+    lz5710_position_tracker_.init(tracker_config);
+    lz5710::PllConfig pll_config = {};
+    pll_config.bandwidth_rad_per_s = 120.0f;
+    pll_config.maximum_sample_interval_s = 0.002f;
+    pll_config.maximum_position_step_rad = 0.25f;
+    lz5710_output_pll_.init(pll_config);
+    lz5710_resolver_result_ = {};
+    consecutive_valid_main_samples_ = 0;
+    consecutive_valid_aux_samples_ = 0;
+    consumed_vernier_pair_sequence_ = mt6826s_pair_sequence_;
+    consumed_main_sample_sequence_ = mt6826s_main_sample_.sequence;
+    main_sample_age_control_cycles_ = 0;
+    aux_sample_age_control_cycles_ = 0;
+    encoder_chain_fault_ = CHAIN_FAULT_NONE;
+    is_ready_ = false;
     vernier_output_estimate_valid_ = false;
     vernier_main_continuous_valid_ = false;
     vernier_output_sample_dt_ = 0.0f;
     vernier_output_pair_sequence_ = 0;
+}
+
+void Encoder::clear_lz5710_faults() {
+    mt6826s_spi_.clear_error();
+    mt6826s_aux_spi_.clear_error();
+    mt6826s_spi_pair_.clear_error();
+    apply_vernier_resolver_config();
 }
 
 float Encoder::vernier_motor_turns_per_output_turn() const {
@@ -629,7 +682,8 @@ float Encoder::normalized_main_phase_from_raw_phase(float raw_phase) const {
     if (config_.vernier_main_reversed) {
         phase = VernierResolver::wrap01(-phase);
     }
-    return VernierResolver::wrap01(phase - config_.vernier_main_offset);
+    return VernierResolver::wrap01(
+        phase - config_.vernier_main_offset / (2.0f * M_PI));
 }
 
 float Encoder::normalized_main_velocity_from_raw_velocity(float raw_velocity) const {
@@ -666,9 +720,10 @@ bool Encoder::controller_feedback_ready() const {
 
     return is_ready_ &&
            vernier_output_estimate_valid_ &&
-           vernier_main_continuous_valid_ &&
-           vernier_result_.valid &&
-           vernier_result_.locked;
+           lz5710_position_tracker_.valid() &&
+           lz5710_output_pll_.valid() &&
+           lz5710_resolver_result_.valid &&
+           lz5710_resolver_result_.locked;
 }
 
 void Encoder::reset_controller_velocity_filter() {
@@ -719,53 +774,43 @@ void Encoder::reset_vernier_output_velocity_estimate() {
     }
 
     reset_controller_velocity_filter();
-
-    VernierResolver::Result result = {};
-    uint32_t pair_sequence = 0;
-    int64_t shadow_count = 0;
+    lz5710::ResolverResult resolver = {};
+    Mt6826sSpi::Sample main_sample = {};
     uint32_t prim = cpu_enter_critical();
-    result = vernier_result_;
-    pair_sequence = mt6826s_pair_sequence_;
-    shadow_count = shadow_count64_;
+    resolver = lz5710_resolver_result_;
+    main_sample = mt6826s_main_sample_;
     cpu_exit_critical(prim);
 
-    // Use the auxiliary encoder only to determine the initial main-encoder
-    // unwrap branch. Runtime position follows exact main-encoder increments.
-    if (result.valid) {
-        vernier_main_continuous_pos_ = result.main_unwrapped;
-        vernier_main_anchor_pos_ = result.main_unwrapped;
-        vernier_anchor_shadow_count_ = shadow_count;
-        vernier_anchor_valid_ = true;
-        vernier_last_main_phase_corr_ = result.main_phase_corr;
-        vernier_main_continuous_valid_ = true;
-        vernier_last_shadow_count_ = shadow_count;
-        vernier_last_shadow_count_valid_ = true;
-        const float raw_output_position =
-            vernier_output_position_from_main(vernier_main_continuous_pos_);
-        initialize_vernier_circular_position(raw_output_position);
-        vernier_output_pos_estimate_ =
-            apply_vernier_geometry_compensation(raw_output_position, 0.0f);
-        pos_estimate_ = vernier_output_pos_estimate_;
-        pos_circular_ = vernier_output_circular_pos_;
-        joint_pos_rad_ = vernier_output_pos_estimate_ * 2.0f * M_PI;
-        vernier_output_estimate_valid_ = true;
-    } else {
-        vernier_output_estimate_valid_ = false;
-        vernier_main_continuous_valid_ = false;
-        vernier_anchor_valid_ = false;
-        vernier_last_shadow_count_valid_ = false;
-        vernier_output_circular_valid_ = false;
+    const bool was_ready = is_ready_;
+    lz5710_position_tracker_.reset();
+    lz5710_output_pll_.reset();
+    vernier_output_estimate_valid_ = false;
+    vernier_output_sample_dt_ = 0.0f;
+    vel_estimate_ = 0.0f;
+    if (!main_sample.valid || !resolver.valid || !resolver.locked ||
+        !lz5710_position_tracker_.initialize(main_sample.angle, resolver)) {
+        is_ready_ = false;
+        return;
     }
 
+    const float raw_output_turns =
+        lz5710_position_tracker_.output_position_rad() / (2.0f * M_PI);
+    const float corrected_output_rad =
+        apply_vernier_geometry_compensation(raw_output_turns, 0.0f) *
+        2.0f * M_PI;
+    if (!lz5710_output_pll_.update(corrected_output_rad,
+                                   current_meas_period)) {
+        is_ready_ = false;
+        return;
+    }
+    pos_estimate_ = corrected_output_rad;
+    pos_circular_ = lz5710::wrap_0_2pi(corrected_output_rad);
+    joint_pos_rad_ = corrected_output_rad;
+    vernier_output_pos_estimate_ =
+        corrected_output_rad / (2.0f * M_PI);
     vernier_output_vel_estimate_ = 0.0f;
-    vernier_pair_vel_estimate_ = 0.0f;
-    vernier_last_aux_correction_ = 0.0f;
-    vernier_pair_vel_estimate_valid_ = result.valid;
-    vernier_last_pair_position_valid_ = result.valid;
-    vernier_last_pair_position_ = vernier_output_pos_estimate_;
-    vernier_output_sample_dt_ = 0.0f;
-    vernier_output_pair_sequence_ = pair_sequence;
-    vel_estimate_ = 0.0f;
+    vernier_output_estimate_valid_ = true;
+    is_ready_ = was_ready;
 }
 
 void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate_turns) {
@@ -896,6 +941,195 @@ void Encoder::publish_vernier_output_estimate(float dt, float motor_vel_estimate
     joint_pos_rad_ = vernier_output_pos_estimate_ * 2.0f * M_PI;
 }
 
+bool Encoder::vernier_geometry_lut_valid() const {
+    if (!config_.vernier_geometry_correction_enabled) return true;
+    if (!std::isfinite(config_.vernier_effective_ratio_scale) ||
+        std::abs(config_.vernier_effective_ratio_scale) < 1.0e-6f) {
+        return false;
+    }
+    for (size_t i = 0; i < kVernierGeometryCorrectionBins; ++i) {
+        if (!std::isfinite(config_.vernier_common_correction[i]) ||
+            !std::isfinite(config_.vernier_direction_correction[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Encoder::publish_lz5710_estimate(bool has_new_valid_main_sample,
+                                      uint16_t main_count,
+                                      float observation_dt) {
+    lz5710::ResolverResult resolver = {};
+    uint32_t pair_sequence = 0;
+    uint32_t prim = cpu_enter_critical();
+    resolver = lz5710_resolver_result_;
+    pair_sequence = mt6826s_pair_sequence_;
+    cpu_exit_critical(prim);
+
+    uint32_t chain_fault = CHAIN_FAULT_NONE;
+    uint32_t error_prim = cpu_enter_critical();
+    const uint32_t main_spi_error = mt6826s_spi_.error();
+    const uint32_t aux_spi_error = mt6826s_aux_spi_.error();
+    const uint32_t pair_error = mt6826s_spi_pair_.error();
+    // These driver flags describe faults observed since the previous control
+    // update. Preserve lifetime counters for diagnostics, but consume the
+    // flags so one recovered frame error does not permanently suppress ready.
+    mt6826s_spi_.clear_error();
+    mt6826s_aux_spi_.clear_error();
+    mt6826s_spi_pair_.clear_error();
+    cpu_exit_critical(error_prim);
+    constexpr uint32_t kFrameCheckErrors =
+        Mt6826sSpi::ERROR_CRC_MISMATCH | Mt6826sSpi::ERROR_FIXED_BITS;
+    constexpr uint32_t kCommunicationErrors =
+        Mt6826sSpi::ERROR_NOT_INITIALIZED | Mt6826sSpi::ERROR_DMA_FAILED;
+    if ((main_spi_error & kCommunicationErrors) != 0u ||
+        (pair_error & (Mt6826sSpiPair::ERROR_MAIN_START_FAIL |
+                       Mt6826sSpiPair::ERROR_MAIN_READ_FAIL)) != 0u) {
+        chain_fault |= CHAIN_FAULT_MAIN_COMMUNICATION;
+    }
+    if ((aux_spi_error & kCommunicationErrors) != 0u ||
+        (pair_error & (Mt6826sSpiPair::ERROR_AUX_START_FAIL |
+                       Mt6826sSpiPair::ERROR_AUX_READ_FAIL)) != 0u) {
+        chain_fault |= CHAIN_FAULT_AUX_COMMUNICATION;
+    }
+    if (((main_spi_error | aux_spi_error) & kFrameCheckErrors) != 0u) {
+        chain_fault |= CHAIN_FAULT_FRAME_CHECK;
+    }
+    if (main_sample_age_control_cycles_ >
+        kMainEncoderTimeoutControlCycles) {
+        chain_fault |= CHAIN_FAULT_MAIN_COMMUNICATION;
+    }
+
+    const bool has_new_pair =
+        pair_sequence != 0u &&
+        pair_sequence != consumed_vernier_pair_sequence_;
+    if (has_new_pair) {
+        aux_sample_age_control_cycles_ = 0;
+        consumed_vernier_pair_sequence_ = pair_sequence;
+    } else if (aux_sample_age_control_cycles_ < UINT32_MAX) {
+        ++aux_sample_age_control_cycles_;
+    }
+    constexpr uint32_t kAuxiliaryTimeoutControlCycles = 100u;
+    if (aux_sample_age_control_cycles_ >
+        kAuxiliaryTimeoutControlCycles) {
+        chain_fault |= CHAIN_FAULT_AUX_COMMUNICATION;
+        consecutive_valid_aux_samples_ = 0;
+    }
+
+    if (resolver.fault & lz5710::RESOLVER_FAULT_AUX_INVALID) {
+        chain_fault |= CHAIN_FAULT_AUX_COMMUNICATION;
+        consecutive_valid_aux_samples_ = 0;
+    } else if (resolver.locked && has_new_pair) {
+        ++consecutive_valid_aux_samples_;
+    }
+    if (resolver.fault & lz5710::RESOLVER_FAULT_NO_SOLUTION)
+        chain_fault |= CHAIN_FAULT_VERNIER_NO_SOLUTION;
+    if (resolver.fault & lz5710::RESOLVER_FAULT_AMBIGUOUS)
+        chain_fault |= CHAIN_FAULT_VERNIER_AMBIGUOUS;
+    if (resolver.fault & lz5710::RESOLVER_FAULT_RESIDUAL)
+        chain_fault |= CHAIN_FAULT_VERNIER_RESIDUAL;
+    if (resolver.fault & lz5710::RESOLVER_FAULT_BRANCH_JUMP)
+        chain_fault |= CHAIN_FAULT_POSITION_JUMP;
+    if (!vernier_geometry_lut_valid())
+        chain_fault |= CHAIN_FAULT_LUT_INVALID;
+    if (config_.direction != 1 && config_.direction != -1)
+        chain_fault |= CHAIN_FAULT_DIRECTION_INVALID;
+
+    if (!has_new_valid_main_sample) {
+        lz5710_output_pll_.note_missing_sample(current_meas_period);
+    } else {
+        const bool tracker_was_valid = lz5710_position_tracker_.valid();
+        const float previous_tracker_position_rad =
+            lz5710_position_tracker_.output_position_rad();
+        if (!lz5710_position_tracker_.valid()) {
+            if (resolver.valid && resolver.locked)
+                lz5710_position_tracker_.initialize(main_count, resolver);
+        } else if (!lz5710_position_tracker_.update(main_count,
+                                                     observation_dt)) {
+            chain_fault |= CHAIN_FAULT_POSITION_JUMP;
+        }
+
+        if (has_new_pair) {
+            if (lz5710_position_tracker_.valid() &&
+                resolver.valid && resolver.locked &&
+                !lz5710_position_tracker_.check_vernier(
+                    resolver, 0.02f)) {
+                chain_fault |= CHAIN_FAULT_POSITION_JUMP;
+            }
+        }
+
+        if (tracker_was_valid && lz5710_position_tracker_.valid()) {
+            const float tracker_delta_rad =
+                lz5710_position_tracker_.output_position_rad() -
+                previous_tracker_position_rad;
+            if (tracker_delta_rad > 0.0f) {
+                vernier_geometry_direction_ = 1;
+            } else if (tracker_delta_rad < 0.0f) {
+                vernier_geometry_direction_ = -1;
+            }
+        }
+
+        if (lz5710_position_tracker_.valid() &&
+            lz5710_position_tracker_.fault() ==
+                lz5710::TRACKER_FAULT_NONE) {
+            const float raw_output_turns =
+                lz5710_position_tracker_.output_position_rad() /
+                (2.0f * M_PI);
+            const float corrected_output_rad =
+                apply_vernier_geometry_compensation(
+                    raw_output_turns, 0.0f) * 2.0f * M_PI;
+            vernier_raw_output_phase_ =
+                VernierResolver::wrap01(raw_output_turns);
+            vernier_last_geometry_correction_ =
+                vernier_geometry_position_correction(raw_output_turns);
+            if (!lz5710_output_pll_.update(corrected_output_rad,
+                                           observation_dt))
+                chain_fault |= CHAIN_FAULT_POSITION_JUMP;
+        }
+    }
+
+    if (lz5710_output_pll_.fault() & lz5710::PLL_FAULT_TIMEOUT)
+        chain_fault |= CHAIN_FAULT_PLL_TIMEOUT;
+    if (lz5710_output_pll_.fault() & lz5710::PLL_FAULT_POSITION_JUMP)
+        chain_fault |= CHAIN_FAULT_POSITION_JUMP;
+    if (lz5710_position_tracker_.fault() !=
+        lz5710::TRACKER_FAULT_NONE) {
+        chain_fault |= CHAIN_FAULT_POSITION_JUMP;
+    }
+    encoder_chain_fault_ = chain_fault;
+
+    const bool direction_ready =
+        config_.direction == 1 || config_.direction == -1;
+    is_ready_ = consecutive_valid_main_samples_ >= 3u &&
+                consecutive_valid_aux_samples_ >= 3u &&
+                resolver.valid && resolver.locked &&
+                lz5710_position_tracker_.valid() &&
+                lz5710_output_pll_.valid() &&
+                vernier_geometry_lut_valid() && direction_ready &&
+                aux_sample_age_control_cycles_ <=
+                    kAuxiliaryTimeoutControlCycles &&
+                chain_fault == CHAIN_FAULT_NONE;
+
+    if (!lz5710_output_pll_.valid()) {
+        vernier_output_estimate_valid_ = false;
+        return;
+    }
+    const float output_position_rad =
+        lz5710_output_pll_.position_estimate_rad();
+    const float output_velocity_rpm =
+        lz5710_output_pll_.velocity_estimate_rpm();
+    pos_estimate_ = output_position_rad;
+    vel_estimate_ = output_velocity_rpm;
+    pos_circular_ = lz5710::wrap_0_2pi(output_position_rad);
+    joint_pos_rad_ = output_position_rad;
+    vernier_output_pos_estimate_ =
+        output_position_rad / (2.0f * M_PI);
+    vernier_output_vel_estimate_ = output_velocity_rpm / 60.0f;
+    vernier_output_estimate_valid_ = true;
+    vernier_output_pair_sequence_ = pair_sequence;
+    vernier_output_sample_dt_ = observation_dt;
+}
+
 void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) {
     if (!out) {
         return;
@@ -917,6 +1151,41 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
             ? controller_velocity_filter_y1_ : 0.0f;
     out->shadow_count = shadow_count_;
     out->count_in_cpr = count_in_cpr_;
+    out->vernier_branch_index =
+        lz5710_resolver_result_.vernier_branch_index;
+    out->runtime_unique_range_index =
+        lz5710_position_tracker_.runtime_unique_range_index();
+    out->raw_main_phase_rad =
+        lz5710_resolver_result_.raw_main_phase_rad;
+    out->raw_aux_phase_rad =
+        lz5710_resolver_result_.raw_aux_phase_rad;
+    out->unique_position_rad =
+        lz5710_resolver_result_.unique_position_rad;
+    out->wrapped_output_phase_rad =
+        lz5710::wrap_0_2pi(
+            lz5710_output_pll_.position_estimate_rad());
+    out->output_position_rad =
+        lz5710_output_pll_.position_estimate_rad();
+    out->output_velocity_rpm =
+        lz5710_output_pll_.velocity_estimate_rpm();
+    out->resolver_residual_rad =
+        lz5710_resolver_result_.residual_rad;
+    out->resolver_margin_rad =
+        lz5710_resolver_result_.second_best_margin_rad;
+    out->pll_error_rad = lz5710_output_pll_.phase_error_rad();
+    out->lut_correction_rad =
+        vernier_last_geometry_correction_ * 2.0f * M_PI;
+    out->chain_fault = encoder_chain_fault_;
+    out->readiness_flags =
+        (consecutive_valid_main_samples_ >= 3u ? 1u : 0u) |
+        (consecutive_valid_aux_samples_ >= 3u ? 2u : 0u) |
+        (lz5710_resolver_result_.locked ? 4u : 0u) |
+        (lz5710_position_tracker_.valid() ? 8u : 0u) |
+        (lz5710_output_pll_.valid() ? 16u : 0u) |
+        (config_.direction == 1 || config_.direction == -1 ? 32u : 0u) |
+        (is_ready_ ? 64u : 0u);
+    out->lut_enabled = config_.vernier_geometry_correction_enabled;
+    out->lut_valid = vernier_geometry_lut_valid();
     cpu_exit_critical(prim);
 
     Mt6826sSpi::Sample latest_main = {};
@@ -931,8 +1200,8 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
 
     out->virtual_count = 0;
     vernier_resolver_.get_virtual_count(config_.vernier_virtual_cpr, &out->virtual_count);
-    out->position_turns = resolver_result.position_turns;
-    out->residual = resolver_result.residual_turns;
+    out->position_rad = out->unique_position_rad;
+    out->residual_rad = out->resolver_residual_rad;
     out->encoder_pos_estimate = pos_estimate_.any().value_or(0.0f);
     out->encoder_vel_estimate = vel_estimate_.any().value_or(0.0f);
     out->encoder_pos_circular = pos_circular_.any().value_or(0.0f);
@@ -942,12 +1211,14 @@ void Encoder::get_vernier_diagnostics_snapshot(VernierDiagnosticsSnapshot* out) 
     out->resolver_accepted_aux = resolver_result.accepted_aux;
     out->resolver_degraded = resolver_result.degraded;
     out->output_estimate_valid = vernier_output_estimate_valid_;
-    out->output_pos_estimate = vernier_output_pos_estimate_;
-    out->output_vel_estimate = vernier_output_vel_estimate_;
+    out->output_pos_estimate_rad = out->output_position_rad;
+    out->output_vel_estimate_rpm = out->output_velocity_rpm;
     out->output_sample_dt = vernier_output_sample_dt_;
     out->output_pair_sequence = vernier_output_pair_sequence_;
-    out->output_pair_vel_estimate = vernier_pair_vel_estimate_;
-    out->output_last_aux_correction = vernier_last_aux_correction_;
+    out->output_pair_vel_estimate_rpm =
+        vernier_pair_vel_estimate_ * 60.0f;
+    out->output_last_aux_correction_rad =
+        vernier_last_aux_correction_ * 2.0f * M_PI;
     out->pair_transaction_cycles = 0;
     out->max_pair_transaction_cycles = 0;
     out->main_spi_dma_error_count = mt6826s_spi_.spi_dma_error_count();
@@ -980,14 +1251,19 @@ static float circular_vernier_distance(float a, float b) {
 
 void Encoder::reset_vernier_calibration() {
     vernier_calibration_point_count_ = 0;
+    vernier_calibration_last_pair_sequence_ = 0;
+    vernier_calibration_last_main_angle_ = 0;
+    vernier_calibration_last_main_angle_valid_ = false;
     vernier_calibration_fit_valid_ = false;
     vernier_calibration_fitted_main_offset_ = config_.vernier_main_offset;
     vernier_calibration_fitted_aux_offset_ = config_.vernier_aux_offset;
     vernier_calibration_fit_score_ = 0.0f;
     vernier_calibration_worst_residual_ = 0.0f;
+    vernier_calibration_minimum_margin_ = 0.0f;
 }
 
-bool Encoder::capture_vernier_calibration_point() {
+bool Encoder::capture_vernier_calibration_point(
+        uint16_t minimum_main_delta_counts) {
     if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER ||
         vernier_calibration_point_count_ >= kVernierCalibrationMaxPoints) {
         return false;
@@ -996,20 +1272,41 @@ bool Encoder::capture_vernier_calibration_point() {
     Mt6826sSpi::Sample main_sample = {};
     Mt6826sSpi::Sample aux_sample = {};
     bool pair_valid = false;
+    uint32_t pair_sequence = 0;
     uint32_t prim = cpu_enter_critical();
     main_sample = mt6826s_main_sample_;
     aux_sample = mt6826s_aux_sample_;
     pair_valid = mt6826s_pair_valid_;
+    pair_sequence = mt6826s_pair_sequence_;
     cpu_exit_critical(prim);
 
-    if (!pair_valid || !main_sample.valid || !aux_sample.valid) {
+    if (!pair_valid || !main_sample.valid || !aux_sample.valid ||
+        pair_sequence == 0u ||
+        pair_sequence == vernier_calibration_last_pair_sequence_) {
         return false;
+    }
+
+    if (vernier_calibration_last_main_angle_valid_ &&
+        minimum_main_delta_counts > 0u) {
+        int32_t delta = static_cast<int32_t>(main_sample.angle) -
+            static_cast<int32_t>(vernier_calibration_last_main_angle_);
+        delta = mod(delta, config_.cpr);
+        if (delta > config_.cpr / 2) {
+            delta -= config_.cpr;
+        }
+        if (std::abs(delta) <
+            static_cast<int32_t>(minimum_main_delta_counts)) {
+            return false;
+        }
     }
 
     VernierCalibrationPoint& point =
         vernier_calibration_points_[vernier_calibration_point_count_++];
     point.main_angle = main_sample.angle;
     point.aux_angle = aux_sample.angle;
+    vernier_calibration_last_pair_sequence_ = pair_sequence;
+    vernier_calibration_last_main_angle_ = main_sample.angle;
+    vernier_calibration_last_main_angle_valid_ = true;
     vernier_calibration_fit_valid_ = false;
     return true;
 }
@@ -1022,10 +1319,12 @@ static float normalize_vernier_calib_angle(uint16_t angle, bool reversed, uint16
     return phase;
 }
 
-static float vernier_calibration_residual(const Encoder::VernierCalibrationPoint& point,
-                                          const Encoder::Config_t& config,
-                                          float main_offset,
-                                          float aux_offset) {
+static float vernier_calibration_residual(
+        const Encoder::VernierCalibrationPoint& point,
+        const Encoder::Config_t& config,
+        float main_offset,
+        float aux_offset,
+        float* second_best_margin) {
     const float main_phase =
         normalize_vernier_calib_angle(point.main_angle,
                                       config.vernier_main_reversed,
@@ -1036,14 +1335,31 @@ static float vernier_calibration_residual(const Encoder::VernierCalibrationPoint
                                       static_cast<uint16_t>(config.cpr));
     const float main_phase_corr = VernierResolver::wrap01(main_phase - main_offset);
     const float aux_phase_corr = VernierResolver::wrap01(aux_phase - aux_offset);
-    const float ratio_delta = config.vernier_aux_ratio - config.vernier_main_ratio;
-    const float coarse_output_phase =
-        VernierResolver::wrap01(
-            VernierResolver::wrap_pm_half(aux_phase_corr - main_phase_corr)
-            / ratio_delta);
-    const float predicted_main_phase =
-        VernierResolver::wrap01(config.vernier_main_ratio * coarse_output_phase);
-    return VernierResolver::wrap_pm_half(main_phase_corr - predicted_main_phase);
+    float best_abs = INFINITY;
+    float second_abs = INFINITY;
+    float best_residual = 0.0f;
+    for (int32_t branch = 0; branch < lz5710::kBranchCount; ++branch) {
+        const float output_turns =
+            (static_cast<float>(branch) + main_phase_corr) /
+            config.vernier_main_ratio;
+        const float predicted_aux_phase =
+            VernierResolver::wrap01(
+                config.vernier_aux_ratio * output_turns);
+        const float residual = VernierResolver::wrap_pm_half(
+            aux_phase_corr - predicted_aux_phase);
+        const float absolute = std::abs(residual);
+        if (absolute < best_abs) {
+            second_abs = best_abs;
+            best_abs = absolute;
+            best_residual = residual;
+        } else if (absolute < second_abs) {
+            second_abs = absolute;
+        }
+    }
+    if (second_best_margin) {
+        *second_best_margin = second_abs - best_abs;
+    }
+    return best_residual;
 }
 
 static float vernier_calibration_objective(const Encoder::VernierCalibrationPoint* points,
@@ -1051,17 +1367,25 @@ static float vernier_calibration_objective(const Encoder::VernierCalibrationPoin
                                            const Encoder::Config_t& config,
                                            float main_offset,
                                            float aux_offset,
-                                           float* worst_residual) {
+                                           float* worst_residual,
+                                           float* minimum_margin) {
     float sum_sq = 0.0f;
     float worst = 0.0f;
+    float min_margin = INFINITY;
     for (uint32_t i = 0; i < point_count; ++i) {
+        float margin = 0.0f;
         const float residual =
-            vernier_calibration_residual(points[i], config, main_offset, aux_offset);
+            vernier_calibration_residual(points[i], config, main_offset,
+                                         aux_offset, &margin);
         sum_sq += residual * residual;
         worst = std::max(worst, std::abs(residual));
+        min_margin = std::min(min_margin, margin);
     }
     if (worst_residual) {
         *worst_residual = worst;
+    }
+    if (minimum_margin) {
+        *minimum_margin = min_margin;
     }
     return sqrtf(sum_sq / static_cast<float>(point_count));
 }
@@ -1117,9 +1441,11 @@ bool Encoder::fit_vernier_aux_offset(float search_radius) {
     }
 
     if (!std::isfinite(search_radius) || search_radius <= 0.0f) {
-        search_radius = 0.05f;
+        search_radius = 0.05f * 2.0f * M_PI;
     }
-    search_radius = std::min(std::max(search_radius, 0.001f), 0.5f);
+    search_radius = std::min(
+        std::max(search_radius, 0.001f * 2.0f * M_PI),
+        0.5f * 2.0f * M_PI);
 
     const float min_phase_span =
         std::max(8.0f / static_cast<float>(config_.cpr), 1.0e-5f);
@@ -1129,8 +1455,10 @@ bool Encoder::fit_vernier_aux_offset(float search_radius) {
         return false;
     }
 
-    const float main_offset = config_.vernier_main_offset;
-    const float aux_center = config_.vernier_aux_offset;
+    const float main_offset = config_.vernier_main_offset / (2.0f * M_PI);
+    const float aux_center = config_.vernier_aux_offset / (2.0f * M_PI);
+    const float search_radius_normalized =
+        search_radius / (2.0f * M_PI);
     constexpr uint32_t kGridSteps = 1024;
 
     bool has_best = false;
@@ -1143,7 +1471,9 @@ bool Encoder::fit_vernier_aux_offset(float search_radius) {
         const float t = (kGridSteps <= 1) ? 0.0f
             : static_cast<float>(i) / static_cast<float>(kGridSteps - 1);
         const float aux_offset =
-            VernierResolver::wrap01(aux_center - search_radius + 2.0f * search_radius * t);
+            VernierResolver::wrap01(
+                aux_center - search_radius_normalized +
+                2.0f * search_radius_normalized * t);
         float worst = 0.0f;
         const float score =
             vernier_calibration_objective(vernier_calibration_points_,
@@ -1151,7 +1481,8 @@ bool Encoder::fit_vernier_aux_offset(float search_radius) {
                                           config_,
                                           main_offset,
                                           aux_offset,
-                                          &worst);
+                                          &worst,
+                                          nullptr);
         const float distance = circular_vernier_distance(aux_offset, aux_center);
         if (vernier_calibration_score_is_better(score, distance,
                                                 best_score, best_distance,
@@ -1164,14 +1495,15 @@ bool Encoder::fit_vernier_aux_offset(float search_radius) {
         }
     }
 
-    float step = 2.0f * search_radius / static_cast<float>(kGridSteps - 1);
+    float step = 2.0f * search_radius_normalized /
+        static_cast<float>(kGridSteps - 1);
     for (uint32_t iter = 0; iter < 10; ++iter) {
         bool improved = false;
         for (int dir_i = 0; dir_i < 2; ++dir_i) {
             const float dir = dir_i == 0 ? -1.0f : 1.0f;
             const float candidate = VernierResolver::wrap01(best_aux + dir * step);
             const float distance = circular_vernier_distance(candidate, aux_center);
-            if (distance > search_radius + 1.0e-6f) {
+            if (distance > search_radius_normalized + 1.0e-6f) {
                 continue;
             }
             float worst = 0.0f;
@@ -1181,7 +1513,8 @@ bool Encoder::fit_vernier_aux_offset(float search_radius) {
                                               config_,
                                               main_offset,
                                               candidate,
-                                              &worst);
+                                              &worst,
+                                              nullptr);
             if (vernier_calibration_score_is_better(score, distance,
                                                     best_score, best_distance,
                                                     true)) {
@@ -1197,10 +1530,17 @@ bool Encoder::fit_vernier_aux_offset(float search_radius) {
         }
     }
 
-    vernier_calibration_fitted_main_offset_ = centered_vernier_offset(main_offset);
-    vernier_calibration_fitted_aux_offset_ = centered_vernier_offset(best_aux);
-    vernier_calibration_fit_score_ = best_score;
-    vernier_calibration_worst_residual_ = best_worst;
+    vernier_calibration_fitted_main_offset_ =
+        centered_vernier_offset(main_offset) * 2.0f * M_PI;
+    vernier_calibration_fitted_aux_offset_ =
+        centered_vernier_offset(best_aux) * 2.0f * M_PI;
+    vernier_calibration_fit_score_ = best_score * 2.0f * M_PI;
+    vernier_calibration_worst_residual_ = best_worst * 2.0f * M_PI;
+    float minimum_margin = 0.0f;
+    vernier_calibration_objective(
+        vernier_calibration_points_, vernier_calibration_point_count_,
+        config_, main_offset, best_aux, nullptr, &minimum_margin);
+    vernier_calibration_minimum_margin_ = minimum_margin * 2.0f * M_PI;
     vernier_calibration_fit_valid_ = true;
     return true;
 }
@@ -1218,28 +1558,60 @@ bool Encoder::apply_vernier_calibration_fit() {
 bool Encoder::update() {
     // update internal encoder state.
     int32_t delta_enc = 0;
-    int32_t pos_abs_latched = pos_abs_; //LATCH
+    int32_t pos_abs_latched = count_in_cpr_;
+    Mt6826sSpi::Sample main_sample = {};
+    uint32_t sample_prim = cpu_enter_critical();
+    main_sample = mt6826s_main_sample_;
+    cpu_exit_critical(sample_prim);
+    const bool has_new_main_sample =
+        main_sample.sequence != 0u &&
+        main_sample.sequence != consumed_main_sample_sequence_;
+    const bool has_new_valid_main_sample =
+        has_new_main_sample && main_sample.valid;
+    if (has_new_main_sample) {
+        consumed_main_sample_sequence_ = main_sample.sequence;
+    }
+    float observation_dt = current_meas_period *
+        static_cast<float>(main_sample_age_control_cycles_ + 1u);
 
     switch (mode_) {
         case MODE_SPI_ABS_MT6826S:
         case MODE_SPI_ABS_MT6826S_VERNIER: {
-            if (abs_spi_pos_updated_ == false) {
-                // Low pass filter the error
-                spi_error_rate_ += current_meas_period * (1.0f - spi_error_rate_);
-                if (spi_error_rate_ > 0.05f) {
+            if (!has_new_main_sample) {
+                ++main_sample_age_control_cycles_;
+                if (main_sample_age_control_cycles_ >
+                    kMainEncoderTimeoutControlCycles) {
+                    consecutive_valid_main_samples_ = 0;
+                    encoder_chain_fault_ |= CHAIN_FAULT_MAIN_COMMUNICATION;
+                    set_error(ERROR_ABS_SPI_COM_FAIL);
+                    return false;
+                }
+            } else if (!main_sample.valid) {
+                spi_error_rate_ +=
+                    current_meas_period * (1.0f - spi_error_rate_);
+                ++main_sample_age_control_cycles_;
+                consecutive_valid_main_samples_ = 0;
+                if (main_sample_age_control_cycles_ >
+                    kMainEncoderTimeoutControlCycles) {
+                    encoder_chain_fault_ |= CHAIN_FAULT_MAIN_COMMUNICATION;
                     set_error(ERROR_ABS_SPI_COM_FAIL);
                     return false;
                 }
             } else {
                 // Low pass filter the error
                 spi_error_rate_ += current_meas_period * (0.0f - spi_error_rate_);
+                pos_abs_latched = main_sample.angle;
+                main_sample_age_control_cycles_ = 0;
+                ++consecutive_valid_main_samples_;
             }
 
             abs_spi_pos_updated_ = false;
-            delta_enc = pos_abs_latched - count_in_cpr_; //LATCH
-            delta_enc = mod(delta_enc, config_.cpr);
-            if (delta_enc > config_.cpr/2) {
-                delta_enc -= config_.cpr;
+            if (has_new_valid_main_sample) {
+                delta_enc = pos_abs_latched - count_in_cpr_;
+                delta_enc = mod(delta_enc, config_.cpr);
+                if (delta_enc > config_.cpr/2) {
+                    delta_enc -= config_.cpr;
+                }
             }
 
         }break;
@@ -1262,23 +1634,32 @@ bool Encoder::update() {
     count_in_cpr_ += delta_enc;
     count_in_cpr_ = mod(count_in_cpr_, config_.cpr);
 
-    count_in_cpr_ = pos_abs_latched;
+    if (has_new_valid_main_sample) {
+        count_in_cpr_ = pos_abs_latched;
+    }
 
     // Memory for pos_circular
     float pos_cpr_counts_last = pos_cpr_counts_;
 
     //// Tustin PLL in encoder counts, matching SguanFOC's discretization.
-    float delta_pos_cpr_counts = (float)count_in_cpr_ - pos_cpr_counts_;
-    delta_pos_cpr_counts = wrap_pm(delta_pos_cpr_counts, (float)(config_.cpr));
-    delta_pos_cpr_counts_ += 0.1f * (delta_pos_cpr_counts - delta_pos_cpr_counts_); // for debug
-    const float previous_error = pll_previous_error_valid_
-        ? pll_previous_error_counts_ : delta_pos_cpr_counts;
     const float old_velocity = vel_estimate_counts_;
-    vel_estimate_counts_ +=
-        (pll_kp_ + 0.5f * pll_ki_ * current_meas_period) * delta_pos_cpr_counts +
-        (-pll_kp_ + 0.5f * pll_ki_ * current_meas_period) * previous_error;
-    pll_previous_error_counts_ = delta_pos_cpr_counts;
-    pll_previous_error_valid_ = true;
+    if (has_new_valid_main_sample) {
+        float delta_pos_cpr_counts =
+            (float)count_in_cpr_ - pos_cpr_counts_;
+        delta_pos_cpr_counts =
+            wrap_pm(delta_pos_cpr_counts, (float)(config_.cpr));
+        delta_pos_cpr_counts_ +=
+            0.1f * (delta_pos_cpr_counts - delta_pos_cpr_counts_);
+        const float previous_error = pll_previous_error_valid_
+            ? pll_previous_error_counts_ : delta_pos_cpr_counts;
+        vel_estimate_counts_ +=
+            (pll_kp_ + 0.5f * pll_ki_ * observation_dt) *
+                delta_pos_cpr_counts +
+            (-pll_kp_ + 0.5f * pll_ki_ * observation_dt) *
+                previous_error;
+        pll_previous_error_counts_ = delta_pos_cpr_counts;
+        pll_previous_error_valid_ = true;
+    }
     pos_estimate_counts_ += 0.5f * current_meas_period *
                             (old_velocity + vel_estimate_counts_);
     // The PLL estimates phase, not the multi-turn branch. Bounding the state
@@ -1362,8 +1743,9 @@ bool Encoder::update() {
     }
 
     if (mode_ == MODE_SPI_ABS_MT6826S_VERNIER) {
-        publish_vernier_output_estimate(current_meas_period,
-                                        controller_motor_velocity_turns);
+        publish_lz5710_estimate(has_new_valid_main_sample,
+                                static_cast<uint16_t>(pos_abs_latched),
+                                observation_dt);
     }
 
     return true;
