@@ -404,7 +404,9 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
 
     bool controller_update_ok = true;
     MEASURE_TIME(axis.task_times_.controller_update) {
-        if (encoder_update_ok) {
+        const bool controller_feedback_active =
+            axis.controller_feedback_active_;
+        if (controller_feedback_active && encoder_update_ok) {
             // Multi-rate cascade, aligned with SguanFOC v3.0.1:
             //   current/FOC 10 kHz, velocity 2 kHz, position 400 Hz.
             // Torque passthrough remains a true 10 kHz inner-loop command;
@@ -429,16 +431,24 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
             } else {
                 axis.controller_.publish_held_torque();
             }
-        } else {
+        } else if (controller_feedback_active) {
             controller_update_ok = false;
+        } else {
+            // Configuration commands are allowed while idle, before encoder
+            // feedback ports are connected. Holding the previous (zero while
+            // disarmed) torque here prevents a mode write or a transient
+            // encoder reacquisition from being misreported as controller
+            // failure before closed-loop control has actually started.
+            axis.controller_.publish_held_torque();
         }
 
-        if (!controller_update_ok) {
+        if (controller_feedback_active && !controller_update_ok) {
             axis.error_ |= Axis::ERROR_CONTROLLER_FAILED;
         }
     }
 
     const bool closed_loop_pipeline_ok =
+        axis.controller_feedback_active_ &&
         encoder_update_ok && controller_update_ok &&
         axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
     if (axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL &&

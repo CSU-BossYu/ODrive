@@ -161,6 +161,11 @@ public:
     CalibrationDelayFitter calibration_delay_fitter_;
     volatile bool calibration_start_pending_ = false;
     volatile bool calibration_capture_enabled_ = false;
+    // True only while start_closed_loop_control() owns a fully connected
+    // encoder -> controller -> motor feedback path. This is deliberately
+    // independent of current_state_: calibration experiments can temporarily
+    // run the same closed-loop path while the coarse axis state is calibration.
+    volatile bool controller_feedback_active_ = false;
     uint32_t calibration_sample_sequence_ = 0;
 
     osThreadId thread_id_ = 0;

@@ -1519,6 +1519,7 @@ bool Axis::run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_arme
 
 
 bool Axis::start_closed_loop_control() {
+    controller_feedback_active_ = false;
     // Hook up the data paths between the components
     CRITICAL_SECTION() {
         controller_.pos_estimate_circular_src_.connect_to(&encoder_.pos_circular_);
@@ -1558,6 +1559,9 @@ bool Axis::start_closed_loop_control() {
         OutputPort<float>* phase_vel_src = &encoder_.phase_vel_;
         motor_.phase_vel_src_.connect_to(phase_vel_src);
         motor_.current_control_.phase_vel_src_.connect_to(phase_vel_src);
+        // Publish this only after every feedback and actuation endpoint is
+        // connected and the controller has accepted its initial estimate.
+        controller_feedback_active_ = true;
     }
 
     if (!motor_.is_armed_) {
@@ -1570,6 +1574,7 @@ bool Axis::start_closed_loop_control() {
 
 bool Axis::stop_closed_loop_control() {
     motor_.disarm();
+    controller_feedback_active_ = false;
     ControlTimeout::clear_running(*this);
     return check_for_errors();
 }

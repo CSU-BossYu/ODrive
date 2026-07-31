@@ -195,11 +195,17 @@ bool Controller::control_mode_updated() {
     input_pos_updated_ = false;
     reset_sta();
     if (config_.control_mode >= CONTROL_MODE_POSITION_CONTROL) {
-        InputPort<float>& estimate_src = pos_estimate_linear_src_;
+        // CAN mode configuration precedes the CLOSED_LOOP state request, so
+        // the controller input ports are intentionally not connected yet.
+        // Initialize from the encoder's authoritative output instead of
+        // treating the expected pre-connection interval as invalid feedback.
         std::optional<float> estimate =
-            axis_->encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER ?
-            estimate_src.present() :
-            estimate_src.any();
+            axis_->encoder_.pos_estimate_.any();
+        if (axis_->encoder_.mode_ ==
+                Encoder::MODE_SPI_ABS_MT6826S_VERNIER &&
+            !axis_->encoder_.controller_feedback_ready()) {
+            estimate.reset();
+        }
         if (!estimate.has_value()) {
             set_error(ERROR_INVALID_ESTIMATE);
             return false;

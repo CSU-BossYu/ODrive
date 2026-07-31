@@ -177,6 +177,16 @@ def periodic_lut(position_rad, table):
     return table[index] + fraction * (table[following] - table[index])
 
 
+def controller_cycle(feedback_active, encoder_update_ok,
+                     controller_update_ok=True):
+    """Model the firmware's controller lifecycle/fault propagation gate."""
+    controller_ran = feedback_active and encoder_update_ok
+    pipeline_ok = (feedback_active and encoder_update_ok and
+                   (controller_update_ok if controller_ran else True))
+    controller_failed = feedback_active and not pipeline_ok
+    return controller_ran, controller_failed
+
+
 class Lz5710EncoderChainTest(unittest.TestCase):
     def test_01_stationary_near_zero(self):
         main, aux = synthesize(1.0e-6)
@@ -394,6 +404,18 @@ class Lz5710EncoderChainTest(unittest.TestCase):
         if has_new_sample and not sample_valid:
             consecutive_valid_frames = 0
         self.assertEqual(consecutive_valid_frames, 0)
+
+    def test_23_idle_mode_write_does_not_run_feedback_controller(self):
+        controller_ran, controller_failed = controller_cycle(
+            feedback_active=False, encoder_update_ok=True)
+        self.assertFalse(controller_ran)
+        self.assertFalse(controller_failed)
+
+    def test_24_active_feedback_failure_is_still_faulted(self):
+        controller_ran, controller_failed = controller_cycle(
+            feedback_active=True, encoder_update_ok=False)
+        self.assertFalse(controller_ran)
+        self.assertTrue(controller_failed)
 
 
 if __name__ == "__main__":
