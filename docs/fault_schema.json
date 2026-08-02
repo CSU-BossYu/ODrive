@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "fault_sources": [
+    {"name": "AXIS", "value": 1},
+    {"name": "MOTOR", "value": 2},
+    {"name": "ENCODER", "value": 3},
+    {"name": "CONTROLLER", "value": 4},
+    {"name": "SAFETY", "value": 5},
+    {"name": "POWER_STAGE", "value": 6},
+    {"name": "ISR", "value": 7},
+    {"name": "CAN", "value": 8},
+    {"name": "USB", "value": 9}
+  ],
+  "fault_codes": [
+    {"name": "NONE", "value": 0},
+    {"name": "TIMEOUT", "value": 1},
+    {"name": "FEEDBACK_MISSING", "value": 2},
+    {"name": "ENCODER_ERROR", "value": 3},
+    {"name": "CONTROLLER_REJECTED", "value": 4},
+    {"name": "CONTROLLER_ERROR", "value": 5},
+    {"name": "MOTOR_ERROR", "value": 6},
+    {"name": "POWER_STAGE_SHUTDOWN", "value": 7},
+    {"name": "INVALID_STATE", "value": 8},
+    {"name": "COMPATIBILITY_PROJECTION", "value": 9},
+    {"name": "ESTOP_REQUESTED", "value": 10}
+  ],
+  "fault_sites": [
+    {"name": "UNKNOWN", "value": 0},
+    {"name": "AXIS_WATCHDOG", "value": 1},
+    {"name": "CLOSED_LOOP_PREPARE", "value": 2},
+    {"name": "ENCODER_UPDATE", "value": 3},
+    {"name": "CONTROLLER_UPDATE", "value": 4},
+    {"name": "MOTOR_UPDATE", "value": 5},
+    {"name": "POWER_STAGE_ARM", "value": 6},
+    {"name": "COMMAND_TIMEOUT", "value": 7},
+    {"name": "STATE_TRANSITION", "value": 8},
+    {"name": "COMPATIBILITY_PROJECTION", "value": 9},
+    {"name": "CAN_ESTOP", "value": 10}
+  ],
+  "fault_severities": [
+    {"name": "INFO", "value": 0, "clearable": true},
+    {"name": "WARNING", "value": 1, "clearable": true},
+    {"name": "RECOVERABLE", "value": 2, "clearable": true},
+    {"name": "LATCHED", "value": 3, "clearable": true},
+    {"name": "IMMEDIATE_SHUTDOWN", "value": 4, "clearable": false}
+  ]
+}

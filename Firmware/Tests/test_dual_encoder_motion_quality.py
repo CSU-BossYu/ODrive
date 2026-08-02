@@ -39,6 +39,27 @@ class DualEncoderMotionQualityTest(unittest.TestCase):
             passed = MODULE.print_quality_report(stats, frame_clean=True)
         self.assertFalse(passed)
 
+    def test_wait_for_state_requires_stable_consecutive_heartbeats(self):
+        class FakeClient:
+            def __init__(self):
+                self.states = iter((8, 1, 8, 8, 8))
+
+            async def wait_telemetry(self, _timeout):
+                return {
+                    "ch": {
+                        "axis_state": next(self.states),
+                        "axis_error": 0,
+                        "motor_err": 0,
+                        "enc_err": 0,
+                        "ctrl_err": 0,
+                    }
+                }
+
+        import asyncio
+        asyncio.run(MODULE.wait_for_state(
+            FakeClient(), MODULE.AXIS_STATE_CLOSED_LOOP_CONTROL,
+            timeout=1.0, consecutive=3))
+
 
 if __name__ == "__main__":
     unittest.main()

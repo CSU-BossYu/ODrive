@@ -59,6 +59,7 @@
 #include "usbd_cdc.h"
 
 /* USER CODE BEGIN INCLUDE */
+#include <stddef.h>
 /* USER CODE END INCLUDE */
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY
@@ -121,6 +122,7 @@
 extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
 
 /* USER CODE BEGIN EXPORTED_VARIABLES */
+size_t usb_cdc_ingress_read(uint8_t* output, size_t capacity);
 /* USER CODE END EXPORTED_VARIABLES */
 
 /**

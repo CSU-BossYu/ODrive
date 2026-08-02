@@ -1,0 +1,58 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "firmware-release",
+      "displayName": "Firmware Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/firmware-release",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake",
+      "cacheVariables": {
+        "BOARD_VERSION": "v3.6-56V",
+        "CONFIG_DEBUG": "OFF",
+        "BUILD_FIRMWARE": "ON",
+        "BUILD_NATIVE_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "firmware-debug",
+      "displayName": "Firmware Debug",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/firmware-debug",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake",
+      "cacheVariables": {
+        "BOARD_VERSION": "v3.6-56V",
+        "CONFIG_DEBUG": "ON",
+        "BUILD_FIRMWARE": "ON",
+        "BUILD_NATIVE_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "host-debug",
+      "displayName": "Host Debug",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/host-mingw-debug",
+      "cacheVariables": {
+        "BUILD_FIRMWARE": "OFF",
+        "BUILD_NATIVE_TESTS": "ON",
+        "HOST_SANITIZERS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "$penv{LOCALAPPDATA}/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.MCF.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "$penv{LOCALAPPDATA}/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.MCF.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/bin/mingw32-make.exe"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "firmware-release", "configurePreset": "firmware-release" },
+    { "name": "firmware-debug", "configurePreset": "firmware-debug" },
+    { "name": "host-debug", "configurePreset": "host-debug" }
+  ],
+  "testPresets": [
+    { "name": "host-debug", "configurePreset": "host-debug", "output": { "outputOnFailure": true } }
+  ]
+}

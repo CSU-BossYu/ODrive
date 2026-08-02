@@ -24,10 +24,19 @@ extern USBStats_t usb_stats_;
 
 void start_usb_server(void);
 size_t usb_stdout_write(const uint8_t* data, size_t length);
-// Queues the complete frame atomically or queues nothing. Intended for binary
-// calibration records that must never be interleaved with stdout text.
-bool usb_stdout_write_frame(const uint8_t* data, size_t length);
 bool usb_stdout_is_connected(void);
+
+// Binary Debug/Test channel. Bytes enter here only from the USB task after the
+// CDC interrupt has copied them into its bounded C ingress ring.
+void usb_debug_receive_bytes(const uint8_t* data, size_t length);
+void usb_debug_notify_connected(bool connected);
+void usb_debug_service(void);
+bool usb_debug_begin_tx_chunk(uint16_t maximum_length, const uint8_t** data,
+                              uint16_t* length);
+void usb_debug_complete_tx_chunk(uint16_t transmitted_length);
+bool usb_debug_binary_session_active(void);
+bool usb_debug_publish_calibration(uint16_t record_type, uint32_t sequence,
+                                   const uint8_t* payload, size_t length);
 
 #ifdef __cplusplus
 }

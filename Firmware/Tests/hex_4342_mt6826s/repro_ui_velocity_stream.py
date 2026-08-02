@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+from pathlib import Path
+import sys
 import time
 
-from common import (
-    AXIS_STATE_CLOSED_LOOP_CONTROL,
-    AXIS_STATE_IDLE,
+_TESTS_ROOT = Path(__file__).resolve().parents[1]
+if str(_TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TESTS_ROOT))
+
+from odrive_hil import HilSafetyLimits, HilSession
+from odrive_hil.can_simple import (
     CMD_GET_BUS_VOLTAGE_CURRENT,
     CMD_GET_CONTROLLER_ERROR,
     CMD_GET_ENCODER_ERROR,
@@ -15,13 +20,9 @@ from common import (
     EXT_TYPE_UINT32,
     clear_errors,
     ext_request,
-    open_bus,
     request_two_floats,
     request_u32,
     request_u64,
-    set_input_vel,
-    set_limits,
-    set_requested_state,
     wait_heartbeat,
 )
 
@@ -78,28 +79,35 @@ def main():
     ap.add_argument("--channel", default="PCAN_USBBUS1")
     ap.add_argument("--bitrate", type=int, default=1000000)
     ap.add_argument("--node-id", type=int, default=0)
-    ap.add_argument("--velocity", type=float, default=5.0)
+    ap.add_argument("--velocity", type=float, default=0.3)
     ap.add_argument("--hz", type=float, default=20.0)
     ap.add_argument("--duration", type=float, default=5.0)
-    ap.add_argument("--current-limit", type=float, default=3.0)
-    ap.add_argument("--vel-limit", type=float, default=10.0)
+    ap.add_argument("--current-limit", type=float, default=0.5)
+    ap.add_argument("--vel-limit", type=float, default=0.5)
     ap.add_argument("--accel", type=float, default=20.0)
     ap.add_argument("--watchdog-ms", type=int, default=800)
+    ap.add_argument("--hardware-estop-ready", action="store_true",
+                    help="confirm an independent hardware emergency stop is ready")
     args = ap.parse_args()
 
-    bus = open_bus(args.channel, args.bitrate)
+    session = HilSession(
+        channel=args.channel, bitrate=args.bitrate, node_id=args.node_id,
+        motion=True, hardware_estop_confirmed=args.hardware_estop_ready,
+        limits=HilSafetyLimits(velocity_turns_per_s=args.vel_limit,
+                               current_amps=args.current_limit,
+                               duration_s=args.duration + 5.0))
+    session.__enter__()
+    bus = session.bus
     period = 1.0 / args.hz
     try:
         print(f"Opened {bus.channel_info}")
         clear_errors(bus, args.node_id)
-        set_limits(bus, args.node_id, args.vel_limit, args.current_limit)
         ctrl_set(bus, args.node_id, VEL_ACCEL, args.accel, True)
         ctrl_set(bus, args.node_id, VEL_DECEL, args.accel, True)
         ctrl_set(bus, args.node_id, CAN_WD_MS, args.watchdog_ms, False)
         ctrl_set(bus, args.node_id, SERVO_MODE, 1, False)
-        set_input_vel(bus, args.node_id, 0.0, 0.0)
-        set_requested_state(bus, args.node_id, AXIS_STATE_CLOSED_LOOP_CONTROL)
-        time.sleep(0.4)
+        session.set_velocity(0.0)
+        session.arm_closed_loop()
 
         print(
             f"servo_mode={ctrl_get(bus, args.node_id, SERVO_MODE)} "
@@ -109,7 +117,7 @@ def main():
         start = time.monotonic()
         while time.monotonic() - start < args.duration:
             t = time.monotonic() - start
-            set_input_vel(bus, args.node_id, args.velocity, 0.0)
+            session.set_velocity(args.velocity)
             _, enc = request_two_floats(bus, args.node_id, CMD_GET_ENCODER_ESTIMATES, timeout=0.05)
             _, iq = request_two_floats(bus, args.node_id, CMD_GET_IQ, timeout=0.05)
             _, bus_vi = request_two_floats(bus, args.node_id, CMD_GET_BUS_VOLTAGE_CURRENT, timeout=0.05)
@@ -138,11 +146,7 @@ def main():
             time.sleep(period)
         return 0
     finally:
-        for _ in range(10):
-            set_input_vel(bus, args.node_id, 0.0, 0.0)
-            time.sleep(0.02)
-        set_requested_state(bus, args.node_id, AXIS_STATE_IDLE)
-        bus.shutdown()
+        session.close()
 
 
 if __name__ == "__main__":

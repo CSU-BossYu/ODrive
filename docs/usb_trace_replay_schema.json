@@ -1,0 +1,21 @@
+{
+  "format": "odrive-usb-replay",
+  "schema_version": 1,
+  "description": "Versioned USB frame capture plus decoded deterministic replay events",
+  "required": ["format", "schema_version", "identity", "protocol", "capture", "mutations"],
+  "identity": {
+    "build_id": "16 lowercase hex characters",
+    "manifest_identity": "32 lowercase hex characters"
+  },
+  "protocol": {
+    "release": "USB protocol release string",
+    "version": "u8",
+    "schema_version": "u8"
+  },
+  "capture": {
+    "raw_frames_base64": "bounded raw USB byte stream",
+    "events": "decoded event array; firmware timestamps and sequences are authoritative"
+  },
+  "mutation_types": ["drop_control_sequence", "corrupt_frame_crc", "mark_stale_feedback"],
+  "integer_wrap": "control sequence and timestamp arithmetic is modulo 2^32"
+}

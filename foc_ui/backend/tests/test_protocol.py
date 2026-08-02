@@ -16,14 +16,15 @@ from odrive_can.protocol import (
     ExtSubCmd, ExtStatus, ExtType,
     AXIS_ERROR_BITS, MOTOR_ERROR_BITS, ENCODER_ERROR_BITS, CONTROLLER_ERROR_BITS,
     make_frame_id, parse_frame_id,
-    decode_heartbeat, decode_encoder_estimates, decode_iq, decode_bus_vi,
+    decode_heartbeat, decode_product_status, decode_encoder_estimates,
+    decode_iq, decode_bus_vi, decode_command_ack,
     decode_motor_error, decode_encoder_error, decode_controller_error,
     decode_extended_response, decode_encoder_count,
     encode_set_axis_state, encode_set_controller_mode,
     encode_set_input_pos, encode_set_input_vel, encode_set_input_torque,
     encode_set_limits, encode_set_pos_gain, encode_set_vel_gains,
     encode_mit_control, encode_mit_neutral,
-    encode_extended_request,
+    encode_extended_request, encode_management_command,
     decode_flags, clamp,
     axis_states_as_json, control_modes_as_json, input_modes_as_json,
     error_bits_as_json,
@@ -60,6 +61,13 @@ class TestFrameId:
                 assert got_nid == nid
                 assert got_cmd == int(cmd)
 
+    def test_generated_phase7_ids_close_the_old_0x10_gap(self):
+        assert CmdId.COMMAND_ACK == 0x05
+        assert CmdId.MANAGEMENT_COMMAND == 0x08
+        assert CmdId.PRODUCT_STATUS == 0x10
+        assert CmdId.SET_TRAJ_VEL_LIMIT == 0x11
+        assert CmdId.GET_BUS_VOLTAGE_CURRENT == 0x17
+
 
 # --------------------------------------------------------------------------- #
 # Heartbeat decode
@@ -87,6 +95,25 @@ class TestDecodeHeartbeat:
 
     def test_short_frame(self):
         assert decode_heartbeat(b'\x00\x00') == {}
+
+
+class TestProductManagement:
+    def test_management_and_ack_golden_vectors(self):
+        request = encode_management_command(
+            0x1234, command_type=4, operation=2, arg0=0x12345678)
+        assert request == bytes.fromhex('3412040278563412')
+        ack = decode_command_ack(bytes.fromhex('341202007856bc9a'))
+        assert ack == {'request_id': 0x1234, 'status': 2,
+                       'state_epoch_low': 0x5678, 'reason': 0x9ABC}
+
+    def test_product_status(self):
+        status = decode_product_status(
+            struct.pack('<IBBBB', 0x200, 4, 1, 0x1F, 0x09))
+        assert status['fault_summary'] == 0x200
+        assert status['safety_state'] == 4
+        assert status['operation'] == 1
+        assert status['armed']
+        assert status['command_watchdog_expired']
 
 
 # --------------------------------------------------------------------------- #

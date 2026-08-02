@@ -46,7 +46,8 @@ for axisID in range(0, 1):
     newNode = can.Node(f"ODrive_Axis{axisID}")
     nodes.append(newNode)
 
-    # 0x00 - NMT Message (Reserved)
+    # 0x000 - compatibility NMT frame
+    nmtMsg = can.Message(0x000, "NMT", 0, [], senders=['Master'])
 
     # 0x001 - Heartbeat
     axisError = can.Signal("Axis_Error", 0, 32, receivers=['Master'], choices={error.value: error.name for error in AxisError})
@@ -81,7 +82,15 @@ for axisID in range(0, 1):
         0x004, "Get_Encoder_Error", 8, [encoderError], senders=[newNode.name]
     )
 
-    # 0x005 - Reserved (sensorless removed from the production firmware)
+    # 0x005 - Product management ACK
+    commandRequestID = can.Signal("Request_ID", 0, 16, receivers=['Master'])
+    commandStatus = can.Signal("Command_Status", 16, 8, receivers=['Master'])
+    commandEpoch = can.Signal("State_Epoch_Low", 32, 16, receivers=['Master'])
+    commandReason = can.Signal("Reason", 48, 16, receivers=['Master'])
+    commandAckMsg = can.Message(
+        0x005, "Command_Ack", 8,
+        [commandRequestID, commandStatus, commandEpoch, commandReason],
+        senders=[newNode.name])
 
     # 0x006 - Axis Node ID
     axisNodeID = can.Signal("Axis_Node_ID", 0, 32, receivers=[newNode.name])
@@ -93,7 +102,19 @@ for axisID in range(0, 1):
         0x007, "Set_Axis_State", 8, [axisRequestedState], senders=['Master']
     )
 
-    # 0x008 - Startup Config (Reserved)
+    # 0x008 - ACKed product management request
+    managementRequestID = can.Signal("Request_ID", 0, 16,
+                                     receivers=[newNode.name])
+    managementType = can.Signal("Command_Type", 16, 8,
+                                receivers=[newNode.name])
+    managementOperation = can.Signal("Operation", 24, 8,
+                                     receivers=[newNode.name])
+    managementArg0 = can.Signal("Arg0", 32, 32,
+                                receivers=[newNode.name])
+    managementMsg = can.Message(
+        0x008, "Management_Command", 8,
+        [managementRequestID, managementType, managementOperation,
+         managementArg0], senders=['Master'])
 
     # 0x009 - Encoder Estimates
     encoderPosEstimate = can.Signal("Pos_Estimate", 0, 32, is_float=True, receivers=['Master'], unit='rev')
@@ -109,11 +130,7 @@ for axisID in range(0, 1):
         0x00A, "Get_Encoder_Count", 8, [encoderShadowCount, encoderCountInCPR], senders=[newNode.name]
     )
 
-    # 0x005 / 0x015 are explicitly reserved in this production protocol.
-    # They were used by sensorless support in upstream ODrive and must not be
-    # reused without a protocol-version bump.
-    reserved005Msg = can.Message(0x005, "Reserved_005", 0, [], senders=[newNode.name])
-    reserved015Msg = can.Message(0x015, "Reserved_015", 0, [], senders=[newNode.name])
+    # 0x015 is intentionally absent from the product schema.
 
     # 0x00B - Set Controller Modes
     controlMode = can.Signal("Control_Mode", 0, 32, receivers=[newNode.name], choices={state.value: state.name for state in ControlMode})
@@ -150,8 +167,17 @@ for axisID in range(0, 1):
         0x00F, "Set_Limits", 8, [velLimit, currentLimit], senders=['Master']
     )
 
-    # 0x010 - Start Anticogging
-    startAnticoggingMsg = can.Message(0x010, "Start_Anticogging", 0, [], senders=['Master'])
+    # 0x010 - Bounded product status
+    faultSummary = can.Signal("Fault_Summary", 0, 32, receivers=['Master'])
+    safetyState = can.Signal("Safety_State", 32, 8, receivers=['Master'])
+    activeOperation = can.Signal("Active_Operation", 40, 8, receivers=['Master'])
+    readinessFlags = can.Signal("Readiness_Flags", 48, 8, receivers=['Master'])
+    productFlags = can.Signal("Product_Flags", 56, 8, receivers=['Master'])
+    productStatusMsg = can.Message(
+        0x010, "Product_Status", 8,
+        [faultSummary, safetyState, activeOperation, readinessFlags,
+         productFlags], send_type='cyclic', cycle_time=100,
+        senders=[newNode.name])
 
     # 0x011 - Set Traj Vel Limit
     trajVelLim = can.Signal("Traj_Vel_Limit", 0, 32, is_float=True, receivers=[newNode.name], unit='rev/s')
@@ -259,12 +285,15 @@ for axisID in range(0, 1):
     )
 
     axisMsgs = [
+        nmtMsg,
         heartbeatMsg,
+        estopMsg,
         motorErrorMsg,
         encoderErrorMsg,
-        reserved005Msg,
+        commandAckMsg,
         axisNodeMsg,
         setAxisState,
+        managementMsg,
         encoderEstimates,
         encoderCountMsg,
         setControllerModeMsg,
@@ -272,12 +301,11 @@ for axisID in range(0, 1):
         setInputVelMsg,
         setInputTqMsg,
         setVelLimMsg,
-        startAnticoggingMsg,
+        productStatusMsg,
         setTrajVelMsg,
         setTrajAccelMsg,
         trajInertiaMsg,
         getIqMsg,
-        reserved015Msg,
         rebootMsg,
         getVbusVCMsg,
         clearErrorsMsg,
@@ -288,10 +316,6 @@ for axisID in range(0, 1):
         controllerErrorMsg,
         extendedCmdMsg,
         setMitCtrlMsg,
-    ]
-
-    masterMsgs = [
-        estopMsg,
     ]
 
     # Prepend Axis ID to each message name
@@ -308,7 +332,7 @@ for axisID in range(0, 1):
 from itertools import chain
 msgList = list(chain.from_iterable(msgList))
 
-db = can.Database(msgList, nodes, buses, version='0.5.6')
+db = can.Database(msgList, nodes, buses, version='1.12')
 
 dump_file(db, "odrive-cansimple.dbc")
 db = load_file("odrive-cansimple.dbc")

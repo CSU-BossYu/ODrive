@@ -40,6 +40,10 @@ class HeartbeatState:
     running: bool = False
     trajectory_done: bool = False
     controller_flags: int = 0
+    safety_state: int = 0
+    operation: int = 0
+    readiness_flags: int = 0
+    product_flags: int = 0
     last_ts: float = 0.0
 
     @property
@@ -155,6 +159,10 @@ class AxisCache:
             'running': self.heartbeat.running,
             'trajectory_done': self.heartbeat.trajectory_done,
             'controller_flags': self.heartbeat.controller_flags,
+            'safety_state': self.heartbeat.safety_state,
+            'operation': self.heartbeat.operation,
+            'readiness_flags': self.heartbeat.readiness_flags,
+            'product_flags': self.heartbeat.product_flags,
             'pos_turns': self.encoder.pos_estimate,
             'vel_turns_per_s': self.encoder.vel_estimate,
             'shadow_count': self.encoder.shadow_count,

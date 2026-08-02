@@ -1,6 +1,7 @@
 
 #include "odrive_main.h"
 #include "control_timeout.hpp"
+#include "platform_ports.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -62,7 +63,20 @@ void Controller::reset() {
 }
 
 void Controller::set_error(Error error) {
-    error_ |= error;
+    const uint32_t new_bits = static_cast<uint32_t>(error) &
+                              ~static_cast<uint32_t>(error_);
+    if (axis_ && new_bits != 0u) {
+        odrive::fault::FaultRecord record;
+        record.control_sequence = odrv.n_evt_control_loop_;
+        record.timestamp_cycles = odrive::platform::cycle_count();
+        record.source = odrive::fault::FaultSource::CONTROLLER;
+        record.code = odrive::fault::FaultCode::CONTROLLER_ERROR;
+        record.site = odrive::fault::FaultSite::CONTROLLER_UPDATE;
+        record.severity = odrive::fault::FaultSeverity::LATCHED;
+        record.arg0 = new_bits;
+        axis_->raise_fault(record, Axis::ERROR_CONTROLLER_FAILED);
+    }
+    error_ |= error;  // LEGACY_ERROR_PROJECTION
     last_error_time_ = odrv.n_evt_control_loop_ * current_meas_period;
 }
 

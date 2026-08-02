@@ -178,13 +178,39 @@ def periodic_lut(position_rad, table):
 
 
 def controller_cycle(feedback_active, encoder_update_ok,
-                     controller_update_ok=True):
+                     controller_update_ok=True,
+                     electrical_feedback_published=True):
     """Model the firmware's controller lifecycle/fault propagation gate."""
     controller_ran = feedback_active and encoder_update_ok
     pipeline_ok = (feedback_active and encoder_update_ok and
+                   electrical_feedback_published and
                    (controller_update_ok if controller_ran else True))
     controller_failed = feedback_active and not pipeline_ok
     return controller_ran, controller_failed
+
+
+def phase_velocity_fault(armed, phase_velocity_present):
+    """Model the motor feedforward phase-velocity safety gate."""
+    return armed and not phase_velocity_present
+
+
+def resolver_residual_accepted(residual, locked, accept=0.04, reject=0.08):
+    """Model the resolver's acquisition/retention residual hysteresis."""
+    if abs(residual) > reject:
+        return False
+    return abs(residual) <= (reject if locked else accept)
+
+
+def controller_ready_observations(cycles, divider=5):
+    """Count actual multi-rate controller updates in 10 kHz ISR cycles."""
+    sequence = 0
+    ready = False
+    for cycle in range(1, cycles + 1):
+        if cycle % divider == 0:
+            ready = True
+            sequence += 1
+        # Non-scheduled hold cycles retain readiness.
+    return sequence, ready
 
 
 class Lz5710EncoderChainTest(unittest.TestCase):
@@ -436,6 +462,36 @@ class Lz5710EncoderChainTest(unittest.TestCase):
         if main_sample_age_cycles > timeout_cycles:
             motor_phase_valid = False
         self.assertFalse(motor_phase_valid)
+
+    def test_27_unarmed_phase_acquisition_window_is_not_a_motor_fault(self):
+        self.assertFalse(phase_velocity_fault(
+            armed=False, phase_velocity_present=False))
+
+    def test_28_armed_phase_velocity_loss_remains_fatal(self):
+        self.assertTrue(phase_velocity_fault(
+            armed=True, phase_velocity_present=False))
+
+    def test_29_closed_loop_pipeline_waits_for_electrical_feedback(self):
+        _controller_ran, controller_failed = controller_cycle(
+            feedback_active=True,
+            encoder_update_ok=True,
+            controller_update_ok=True,
+            electrical_feedback_published=False)
+        self.assertTrue(controller_failed)
+
+    def test_30_stationary_settling_can_acquire_resolver(self):
+        # Hardware regression: the calibrated unit settled at 0.03245 rad.
+        self.assertTrue(resolver_residual_accepted(0.03245, locked=False))
+
+    def test_31_locked_resolver_uses_reject_hysteresis(self):
+        self.assertFalse(resolver_residual_accepted(0.06, locked=False))
+        self.assertTrue(resolver_residual_accepted(0.06, locked=True))
+        self.assertFalse(resolver_residual_accepted(0.081, locked=True))
+
+    def test_32_multirate_controller_readiness_counts_executions(self):
+        sequence, ready = controller_ready_observations(20)
+        self.assertEqual(sequence, 4)
+        self.assertTrue(ready)
 
 
 if __name__ == "__main__":

@@ -76,6 +76,23 @@ def _make_tx_bus(channel):
     return _can.Bus(interface='virtual', channel=channel)
 
 
+async def _ack_management(rx, svc, count=1):
+    """Act as a product CAN device and complete management transactions."""
+    seen = []
+    loop = asyncio.get_running_loop()
+    while count:
+        msg = await loop.run_in_executor(None, rx.recv, 1.0)
+        assert msg is not None
+        seen.append(msg)
+        if msg.arbitration_id != make_frame_id(0, CmdId.MANAGEMENT_COMMAND):
+            continue
+        request_id = struct.unpack_from('<H', msg.data, 0)[0]
+        ack = struct.pack('<HBBHH', request_id, 2, 0, 7, 0)
+        await svc.on_frame(CmdId.COMMAND_ACK, ack, time.monotonic())
+        count -= 1
+    return seen
+
+
 # --------------------------------------------------------------------------- #
 # Frame Dispatch
 # --------------------------------------------------------------------------- #
@@ -159,13 +176,17 @@ class TestCommands:
         transport, svc = _make_service(event_loop, 'test_cmd_state')
         rx = _make_rx_bus('test_cmd_state')
         try:
-            event_loop.run_until_complete(
-                svc.set_axis_state(AxisState.CLOSED_LOOP_CONTROL))
-            msg = rx.recv(timeout=1.0)
-            assert msg is not None
-            assert msg.arbitration_id == make_frame_id(0, CmdId.SET_AXIS_STATE)
-            state = struct.unpack_from('<I', msg.data, 0)[0]
-            assert state == 8
+            async def run_test():
+                _, seen = await asyncio.gather(
+                    svc.set_axis_state(AxisState.CLOSED_LOOP_CONTROL),
+                    _ack_management(rx, svc, count=2))
+                return seen
+            seen = event_loop.run_until_complete(run_test())
+            management = [msg for msg in seen if
+                          msg.arbitration_id == make_frame_id(
+                              0, CmdId.MANAGEMENT_COMMAND)]
+            assert [msg.data[2] for msg in management] == [1, 2]
+            assert management[0].data[3] == 1
         finally:
             rx.shutdown()
             transport.close()
@@ -274,10 +295,16 @@ class TestCommands:
         transport, svc = _make_service(event_loop, 'test_cmd_clear')
         rx = _make_rx_bus('test_cmd_clear')
         try:
-            event_loop.run_until_complete(svc.clear_errors())
-            msg = rx.recv(timeout=1.0)
-            assert msg is not None
-            assert msg.arbitration_id == make_frame_id(0, CmdId.CLEAR_ERRORS)
+            async def run_test():
+                _, seen = await asyncio.gather(
+                    svc.clear_errors(), _ack_management(rx, svc))
+                return seen
+            seen = event_loop.run_until_complete(run_test())
+            management = [msg for msg in seen if
+                          msg.arbitration_id == make_frame_id(
+                              0, CmdId.MANAGEMENT_COMMAND)]
+            assert len(management) == 1
+            assert management[0].data[2] == 4
         finally:
             rx.shutdown()
             transport.close()
@@ -376,10 +403,15 @@ class TestSafetyMonitor:
                 await asyncio.sleep(1.0)
                 await svc.stop_safety_monitor()
 
-            event_loop.run_until_complete(run_test())
+            async def run_with_device():
+                run = asyncio.create_task(run_test())
+                seen = await _ack_management(rx, svc)
+                await run
+                return seen
+
+            msgs = event_loop.run_until_complete(run_with_device())
 
             # Should have received set_input_torque(0) and set_axis_state(IDLE)
-            msgs = []
             while True:
                 msg = rx.recv(timeout=0.1)
                 if msg is None:
@@ -389,7 +421,7 @@ class TestSafetyMonitor:
             # At minimum, we expect a torque=0 command and an IDLE state command
             arb_ids = [m.arbitration_id for m in msgs]
             assert make_frame_id(0, CmdId.SET_INPUT_TORQUE) in arb_ids
-            assert make_frame_id(0, CmdId.SET_AXIS_STATE) in arb_ids
+            assert make_frame_id(0, CmdId.MANAGEMENT_COMMAND) in arb_ids
         finally:
             rx.shutdown()
             transport.close()

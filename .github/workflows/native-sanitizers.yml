@@ -1,0 +1,42 @@
+name: Native tests with sanitizers
+
+on:
+  push:
+    paths:
+      - "Firmware/**"
+      - "tools/check_phase*_static_gate.py"
+      - ".github/workflows/native-sanitizers.yml"
+  pull_request:
+    paths:
+      - "Firmware/**"
+      - "tools/check_phase*_static_gate.py"
+      - ".github/workflows/native-sanitizers.yml"
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang ninja-build
+          python -m pip install -r Firmware/Tests/requirements-dev.txt
+      - name: Configure Clang ASan and UBSan
+        run: >-
+          cmake -S Firmware -B Firmware/build/host-sanitized -G Ninja
+          -DBUILD_FIRMWARE=OFF
+          -DBUILD_NATIVE_TESTS=ON
+          -DHOST_SANITIZERS=ON
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=clang++
+      - name: Build
+        run: cmake --build Firmware/build/host-sanitized --parallel 4
+      - name: Execute native and ctypes scenarios
+        run: ctest --test-dir Firmware/build/host-sanitized --output-on-failure
+      - name: Execute offline Python tests
+        run: python -m pytest Firmware/Tests -q

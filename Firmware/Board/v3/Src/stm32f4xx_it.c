@@ -39,6 +39,7 @@
 
 /* USER CODE BEGIN 0 */
 #include <Drivers/STM32/stm32_system.h>
+#include <MotorControl/crash_recorder_c.h>
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -71,105 +72,72 @@ void NMI_Handler(void)
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 
-__attribute__((used)) 
-void get_regs(void** stack_ptr) {
-  TIM1->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M0 PWM
-  TIM8->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M1 PWM
-
-  void* volatile r0 __attribute__((unused)) = stack_ptr[0];
-  void* volatile r1 __attribute__((unused)) = stack_ptr[1];
-  void* volatile r2 __attribute__((unused)) = stack_ptr[2];
-  void* volatile r3 __attribute__((unused)) = stack_ptr[3];
-
-  void* volatile r12 __attribute__((unused)) = stack_ptr[4];
-  void* volatile lr __attribute__((unused)) = stack_ptr[5];  // Link register
-  void* volatile pc __attribute__((unused)) = stack_ptr[6];  // Program counter
-  void* volatile psr __attribute__((unused)) = stack_ptr[7];  // Program status register
-
-  void* volatile cfsr __attribute__((unused)) = (void*)SCB->CFSR; // Configurable fault status register
-  void* volatile cpacr __attribute__((unused)) = (void*)SCB->CPACR;
-  void* volatile fpccr __attribute__((unused)) = (void*)FPU->FPCCR;
-
-  volatile bool preciserr __attribute__((unused)) = (uint32_t)cfsr & 0x200;
-  volatile bool ibuserr __attribute__((unused)) = (uint32_t)cfsr & 0x100;
-
-  volatile int stay_looping = 1;
-  while(stay_looping);
-}
-
 /**
 * @brief This function handles Hard fault interrupt.
 */
 __attribute__((naked))
 void HardFault_Handler(void)
 {
-  __asm(
+  __asm volatile(
     " tst lr, #4     \n\t"
     " ite eq         \n\t"
     " mrseq r0, msp  \n\t"
     " mrsne r0, psp  \n\t"
-    " b get_regs     \n\t"
+    " mov r1, lr     \n\t"
+    " movs r2, #1   \n\t"
+    " b crash_recorder_capture \n\t"
   );
 }
 
 /**
 * @brief This function handles Memory management fault.
 */
+__attribute__((naked))
 void MemManage_Handler(void)
 {
-  /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-  COUNT_IRQ(MemoryManagement_IRQn);
-  /* USER CODE END MemoryManagement_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
-    TIM1->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M0 PWM
-    TIM8->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M1 PWM
-    /* USER CODE END W1_MemoryManagement_IRQn 0 */
-  }
-  /* USER CODE BEGIN MemoryManagement_IRQn 1 */
-
-  /* USER CODE END MemoryManagement_IRQn 1 */
+  __asm volatile(
+    " tst lr, #4     \n\t"
+    " ite eq         \n\t"
+    " mrseq r0, msp  \n\t"
+    " mrsne r0, psp  \n\t"
+    " mov r1, lr     \n\t"
+    " movs r2, #2   \n\t"
+    " b crash_recorder_capture \n\t"
+  );
 }
 
 /**
 * @brief This function handles Pre-fetch fault, memory access fault.
 */
+__attribute__((naked))
 void BusFault_Handler(void)
 {
-  /* USER CODE BEGIN BusFault_IRQn 0 */
-  COUNT_IRQ(BusFault_IRQn);
-  /* USER CODE END BusFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_BusFault_IRQn 0 */
-    TIM1->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M0 PWM
-    TIM8->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M1 PWM
-    /* USER CODE END W1_BusFault_IRQn 0 */
-  }
-  /* USER CODE BEGIN BusFault_IRQn 1 */
-
-  /* USER CODE END BusFault_IRQn 1 */
+  __asm volatile(
+    " tst lr, #4     \n\t"
+    " ite eq         \n\t"
+    " mrseq r0, msp  \n\t"
+    " mrsne r0, psp  \n\t"
+    " mov r1, lr     \n\t"
+    " movs r2, #3   \n\t"
+    " b crash_recorder_capture \n\t"
+  );
 }
 
 /**
 * @brief This function handles Undefined instruction or illegal state.
 */
+__attribute__((naked))
 void UsageFault_Handler(void)
 {
-  /* USER CODE BEGIN UsageFault_IRQn 0 */
-  COUNT_IRQ(UsageFault_IRQn);
-  /* USER CODE END UsageFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
-    TIM1->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M0 PWM
-    TIM8->BDTR &= ~(TIM_BDTR_AOE_Msk | TIM_BDTR_MOE_Msk); // disable M1 PWM
-    /* USER CODE END W1_UsageFault_IRQn 0 */
-  }
-  /* USER CODE BEGIN UsageFault_IRQn 1 */
-
-  /* USER CODE END UsageFault_IRQn 1 */
+  __asm volatile(
+    " tst lr, #4     \n\t"
+    " ite eq         \n\t"
+    " mrseq r0, msp  \n\t"
+    " mrsne r0, psp  \n\t"
+    " mov r1, lr     \n\t"
+    " movs r2, #4   \n\t"
+    " b crash_recorder_capture \n\t"
+  );
 }
 
 /**

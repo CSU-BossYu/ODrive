@@ -271,19 +271,52 @@ async def require_clean_ready(client: BackendClient) -> None:
 
 
 async def wait_for_state(
-        client: BackendClient, state: int, timeout: float) -> None:
+        client: BackendClient, state: int, timeout: float,
+        consecutive: int = 1) -> None:
     deadline = time.monotonic() + timeout
+    consecutive_matches = 0
+    observed_states = []
+    last_telemetry = None
     while time.monotonic() < deadline:
         telemetry = await client.wait_telemetry(min(0.5, timeout))
+        last_telemetry = telemetry
         errors = telemetry_errors(telemetry)
         if any(errors):
             raise RuntimeError(
                 "state transition fault: axis=0x%08X motor=0x%016X "
                 "encoder=0x%08X controller=0x%08X" % errors)
         current = int(telemetry.get("ch", {}).get("axis_state", -1))
+        if not observed_states or observed_states[-1] != current:
+            observed_states.append(current)
         if current == state:
-            return
-    raise RuntimeError(f"timed out waiting for axis state {state}")
+            consecutive_matches += 1
+            if consecutive_matches >= consecutive:
+                return
+        else:
+            consecutive_matches = 0
+    ch = (last_telemetry or {}).get("ch", {})
+    raise RuntimeError(
+        "timed out waiting for axis state %d; transitions=%s last_state=%s "
+        "ctrl_mode=%s input_mode=%s ctrl_flags=0x%02X" % (
+            state, observed_states, ch.get("axis_state", -1),
+            ch.get("ctrl_mode", -1), ch.get("input_mode", -1),
+            int(ch.get("ctrl_flags", 0))))
+
+
+async def command_pump(
+        client: BackendClient, target_rpm: list[float],
+        stop_event: asyncio.Event) -> None:
+    """Keep control commands independent of slower diagnostic round-trips."""
+    while not stop_event.is_set():
+        await client.send({
+            "type": "set_vel",
+            "vel": target_rpm[0] / 60.0,
+            "torque_ff": 0.0,
+        })
+        try:
+            await asyncio.wait_for(stop_event.wait(), 0.05)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def safe_stop(client: BackendClient) -> None:
@@ -302,17 +335,13 @@ async def safe_stop(client: BackendClient) -> None:
 
 async def run_stage(
         client: BackendClient, stats: QualityStats, test_start: float,
-        name: str, rpm: float, duration: float, sample_period: float) -> None:
+        name: str, rpm: float, duration: float, sample_period: float,
+        target_rpm: list[float]) -> None:
     print(f"\n{name}: command {rpm:+.3f} rpm for {duration:.2f} s")
+    target_rpm[0] = rpm
     stage_start = time.monotonic()
     next_sample = stage_start
     while time.monotonic() - stage_start < duration:
-        await client.send({
-            "type": "set_vel",
-            # CAN velocity input remains output turns/s at this boundary.
-            "vel": rpm / 60.0,
-            "torque_ff": 0.0,
-        })
         now = time.monotonic()
         if now >= next_sample:
             try:
@@ -338,6 +367,12 @@ async def run_stage(
                         "encoder=0x%08X controller=0x%08X" % (
                             sample.axis_error, sample.motor_error,
                             sample.encoder_error, sample.controller_error))
+                if sample.axis_state != AXIS_STATE_CLOSED_LOOP_CONTROL:
+                    raise RuntimeError(
+                        "closed loop dropped during %s: axis_state=%d "
+                        "(expected %d)" % (
+                            name, sample.axis_state,
+                            AXIS_STATE_CLOSED_LOOP_CONTROL))
             next_sample += sample_period
         await asyncio.sleep(0.01)
 
@@ -434,6 +469,9 @@ async def async_main(args) -> int:
     start_counters = None
     end_counters = None
     entered_closed_loop = False
+    command_stop = asyncio.Event()
+    target_rpm = [0.0]
+    command_task = None
     async with BackendClient(args.url, args.timeout) as client:
         try:
             await client.wait_telemetry(2.0)
@@ -451,32 +489,41 @@ async def async_main(args) -> int:
                 "input_mode": 2,
             })
             await asyncio.sleep(0.15)
+            command_task = asyncio.create_task(
+                command_pump(client, target_rpm, command_stop))
             await client.send({
                 "type": "set_state",
                 "state": AXIS_STATE_CLOSED_LOOP_CONTROL,
             })
             await wait_for_state(client, AXIS_STATE_CLOSED_LOOP_CONTROL,
-                                 args.enter_timeout)
+                                 args.enter_timeout, consecutive=5)
             entered_closed_loop = True
 
             test_start = time.monotonic()
             await run_stage(client, stats, test_start, "settle_zero", 0.0,
-                            args.settle_duration, args.sample_period)
+                            args.settle_duration, args.sample_period,
+                            target_rpm)
             for cycle in range(args.cycles):
                 await run_stage(
                     client, stats, test_start, f"forward_{cycle + 1}",
-                    args.rpm, args.segment_duration, args.sample_period)
+                    args.rpm, args.segment_duration, args.sample_period,
+                    target_rpm)
                 await run_stage(
                     client, stats, test_start, f"zero_after_forward_{cycle + 1}",
-                    0.0, args.settle_duration, args.sample_period)
+                    0.0, args.settle_duration, args.sample_period, target_rpm)
                 await run_stage(
                     client, stats, test_start, f"reverse_{cycle + 1}",
-                    -args.rpm, args.segment_duration, args.sample_period)
+                    -args.rpm, args.segment_duration, args.sample_period,
+                    target_rpm)
                 await run_stage(
                     client, stats, test_start, f"zero_after_reverse_{cycle + 1}",
-                    0.0, args.settle_duration, args.sample_period)
+                    0.0, args.settle_duration, args.sample_period, target_rpm)
             end_counters = await read_counters(client)
         finally:
+            target_rpm[0] = 0.0
+            command_stop.set()
+            if command_task is not None:
+                await command_task
             await safe_stop(client)
             if entered_closed_loop:
                 try:

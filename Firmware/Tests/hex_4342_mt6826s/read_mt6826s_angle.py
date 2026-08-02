@@ -4,7 +4,10 @@ import math
 import struct
 import time
 
-from common import (
+from hil_bootstrap import ensure_test_support
+ensure_test_support()
+
+from odrive_hil.can_simple import (
     CMD_GET_ENCODER_ERROR,
     CMD_GET_ENCODER_ESTIMATES,
     EXT_STATUS,

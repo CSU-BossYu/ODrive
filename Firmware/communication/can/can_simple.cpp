@@ -11,6 +11,9 @@
 #include <functional>
 
 bool CANSimple::init() {
+    if (!axes[0].add_command_result_sink(this, command_result_sink)) {
+        return false;
+    }
     return renew_subscription(0);
 }
 
@@ -80,6 +83,7 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
         case MSG_SET_TRAJ_INERTIA:
         case MSG_SET_LINEAR_COUNT:
         case MSG_SET_POS_GAIN:             valid_frame = has_dlc(4); break;
+        case MSG_MANAGEMENT_COMMAND:
         case MSG_SET_INPUT_POS:
         case MSG_SET_INPUT_VEL:
         case MSG_SET_CONTROLLER_MODES:
@@ -91,7 +95,8 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
         case MSG_RESET_ODRIVE:
         case MSG_CLEAR_ERRORS:             valid_frame = has_dlc(0); break;
         case MSG_GET_ADC_VOLTAGE:          valid_frame = has_dlc(1); break;
-        case MSG_SET_AXIS_STARTUP_CONFIG:  valid_frame = false; break;
+        case MSG_COMMAND_ACK:
+        case MSG_PRODUCT_STATUS:           valid_frame = false; break;
         default:                           valid_frame = false; break;
     }
     if (!valid_frame) {
@@ -123,8 +128,8 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
         case MSG_SET_AXIS_REQUESTED_STATE:
             set_axis_requested_state_callback(axis, msg);
             break;
-        case MSG_SET_AXIS_STARTUP_CONFIG:
-            set_axis_startup_config_callback(axis, msg);
+        case MSG_MANAGEMENT_COMMAND:
+            handle_management_command(axis, msg);
             break;
         case MSG_GET_ENCODER_ESTIMATES:
             if (msg.rtr || msg.len == 0)
@@ -188,7 +193,7 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
             get_controller_error_callback(axis);
             break;
         case MSG_EXTENDED_COMMAND:
-            extended_command_callback(axis, msg);
+            legacy_extended_command_callback(axis, msg);
             break;
         case MSG_SET_MIT_CONTROL:
             set_mit_control_callback(axis, msg);
@@ -199,7 +204,14 @@ void CANSimple::do_command(Axis& axis, const can_Message_t& msg) {
 }
 
 void CANSimple::estop_callback(Axis& axis, const can_Message_t& msg) {
-    axis.error_ |= Axis::ERROR_ESTOP_REQUESTED;
+    (void)msg;
+    odrive::fault::FaultRecord record;
+    record.timestamp_cycles = DWT->CYCCNT;
+    record.source = odrive::fault::FaultSource::CAN;
+    record.code = odrive::fault::FaultCode::ESTOP_REQUESTED;
+    record.site = odrive::fault::FaultSite::CAN_ESTOP;
+    record.severity = odrive::fault::FaultSeverity::LATCHED;
+    axis.raise_fault(record, Axis::ERROR_ESTOP_REQUESTED);
 }
 
 bool CANSimple::get_motor_error_callback(const Axis& axis) {
@@ -246,11 +258,12 @@ void CANSimple::set_axis_nodeid_callback(Axis& axis, const can_Message_t& msg) {
 }
 
 void CANSimple::set_axis_requested_state_callback(Axis& axis, const can_Message_t& msg) {
-    axis.requested_state_ = static_cast<Axis::AxisState>(can_getSignal<int32_t>(msg, 0, 32, true));
-}
-
-void CANSimple::set_axis_startup_config_callback(Axis& axis, const can_Message_t& msg) {
-    // Not Implemented
+    odrive::safety::Command command;
+    command.request_id = axis.allocate_command_request_id();
+    command.source = odrive::safety::CommandSource::CAN;
+    command.type = odrive::safety::CommandType::LEGACY_AXIS_STATE;
+    command.arg0 = static_cast<uint32_t>(can_getSignal<int32_t>(msg, 0, 32, true));
+    axis.submit_command(command);
 }
 
 bool CANSimple::get_encoder_estimates_callback(const Axis& axis) {
@@ -492,7 +505,105 @@ bool CANSimple::get_adc_voltage_callback(const Axis& axis, const can_Message_t& 
 }
 
 void CANSimple::clear_errors_callback(Axis& axis, const can_Message_t& msg) {
-    odrv.clear_errors();  // TODO: might want to clear axis errors only
+    (void)msg;
+    odrive::safety::Command command;
+    command.request_id = axis.allocate_command_request_id();
+    command.source = odrive::safety::CommandSource::CAN;
+    command.type = odrive::safety::CommandType::CLEAR_FAULTS;
+    axis.submit_command(command);
+}
+
+namespace {
+
+constexpr uint32_t kCanManagementNamespace = 0xCA000000u;
+constexpr uint16_t kCanReasonDuplicate = 0xFF01u;
+constexpr uint16_t kCanReasonQueueFull = 0xFF03u;
+constexpr uint16_t kCanReasonBadPayload = 0xFF04u;
+
+uint32_t management_request_id(uint16_t wire_request_id) {
+    return kCanManagementNamespace | wire_request_id;
+}
+
+}  // namespace
+
+bool CANSimple::handle_management_command(Axis& axis,
+                                          const can_Message_t& msg) {
+    using namespace odrive::can::product;
+    const ManagementCommand request = decode_management_command(msg.buf);
+    const bool valid_type =
+        request.command_type >= static_cast<uint8_t>(
+            odrive::safety::CommandType::SET_OPERATION) &&
+        request.command_type <= static_cast<uint8_t>(
+            odrive::safety::CommandType::RESTART_CALIBRATION);
+    const bool valid_operation = request.operation <= static_cast<uint8_t>(
+        odrive::safety::Operation::SELF_TEST);
+    auto queue_rejection = [&](uint16_t reason) {
+        odrive::safety::CommandResult result;
+        result.request_id = management_request_id(request.request_id);
+        result.status = odrive::safety::CommandStatus::REJECTED;
+        result.reason = static_cast<odrive::fault::FaultCode>(reason);
+        result.source = odrive::safety::CommandSource::CAN;
+        if (!command_result_ring_.push(result)) ++command_result_overflow_;
+    };
+    if (request.request_id == 0u || !valid_type || !valid_operation) {
+        queue_rejection(kCanReasonBadPayload);
+        return false;
+    }
+    for (uint16_t pending : pending_management_requests_) {
+        if (pending == request.request_id) {
+            queue_rejection(kCanReasonDuplicate);
+            return false;
+        }
+    }
+    auto slot = std::find(pending_management_requests_.begin(),
+                          pending_management_requests_.end(), 0u);
+    if (slot == pending_management_requests_.end()) {
+        queue_rejection(kCanReasonQueueFull);
+        return false;
+    }
+
+    odrive::safety::Command command;
+    command.request_id = management_request_id(request.request_id);
+    command.source = odrive::safety::CommandSource::CAN;
+    command.type = static_cast<odrive::safety::CommandType>(
+        request.command_type);
+    command.operation = static_cast<odrive::safety::Operation>(
+        request.operation);
+    command.arg0 = request.arg0;
+    if (!axis.submit_command(command)) {
+        queue_rejection(kCanReasonQueueFull);
+        return false;
+    }
+    *slot = request.request_id;
+    return true;
+}
+
+void CANSimple::command_result_sink(
+        void* context, const odrive::safety::CommandResult& result) {
+    if (context != nullptr) {
+        static_cast<CANSimple*>(context)->publish_command_result(result);
+    }
+}
+
+void CANSimple::publish_command_result(
+        const odrive::safety::CommandResult& result) {
+    if (result.source != odrive::safety::CommandSource::CAN ||
+        (result.request_id & 0xFFFF0000u) != kCanManagementNamespace) {
+        return;
+    }
+    if (!command_result_ring_.push(result)) ++command_result_overflow_;
+}
+
+bool CANSimple::send_command_ack(uint16_t request_id, uint8_t status,
+                                 uint16_t state_epoch, uint16_t reason) {
+    can_Message_t txmsg{};
+    txmsg.id = axes[0].config_.can.node_id << NUM_CMD_ID_BITS;
+    txmsg.id += MSG_COMMAND_ACK;
+    txmsg.isExt = axes[0].config_.can.is_extended;
+    txmsg.len = 8u;
+    odrive::can::product::encode_command_ack(
+        {request_id, status, state_epoch, reason}, txmsg.buf);
+    return canbus_->send_message(txmsg);
 }
 
 uint32_t CANSimple::service_stack() {
@@ -513,13 +624,38 @@ uint32_t CANSimple::service_stack() {
     };
 
     Axis& axis = axes[0];
-    std::array<periodic, 8> periodics = {{
+
+    if (!pending_command_result_valid_) {
+        pending_command_result_valid_ = command_result_ring_.pop(
+            &pending_command_result_);
+    }
+    if (pending_command_result_valid_) {
+        const uint16_t wire_request_id = static_cast<uint16_t>(
+            pending_command_result_.request_id);
+        if (send_command_ack(
+                wire_request_id,
+                static_cast<uint8_t>(pending_command_result_.status),
+                static_cast<uint16_t>(pending_command_result_.state_epoch),
+                static_cast<uint16_t>(pending_command_result_.reason))) {
+            const auto status = pending_command_result_.status;
+            if (status == odrive::safety::CommandStatus::REJECTED ||
+                status == odrive::safety::CommandStatus::COMPLETED ||
+                status == odrive::safety::CommandStatus::FAILED) {
+                auto slot = std::find(pending_management_requests_.begin(),
+                                      pending_management_requests_.end(),
+                                      wire_request_id);
+                if (slot != pending_management_requests_.end()) *slot = 0u;
+            }
+            pending_command_result_valid_ = false;
+        }
+    }
+
+    // Product CAN publishes only bounded operational telemetry. Detailed
+    // component errors and raw encoder counts remain available on request for
+    // legacy tools, but are no longer periodic bus traffic; USB owns diagnosis.
+    std::array<periodic, 4> periodics = {{
             {axis.config_.can.heartbeat_rate_ms, axis.can_.last_heartbeat, &CANSimple::send_heartbeat},
             {axis.config_.can.encoder_rate_ms, axis.can_.last_encoder, &CANSimple::get_encoder_estimates_callback},
-            {axis.config_.can.motor_error_rate_ms, axis.can_.last_motor_error, &CANSimple::get_motor_error_callback},
-            {axis.config_.can.encoder_error_rate_ms, axis.can_.last_encoder_error, &CANSimple::get_encoder_error_callback},
-            {axis.config_.can.controller_error_rate_ms, axis.can_.last_controller_error, &CANSimple::get_controller_error_callback},
-            {axis.config_.can.encoder_count_rate_ms, axis.can_.last_encoder_count, &CANSimple::get_encoder_count_callback},
             {axis.config_.can.iq_rate_ms, axis.can_.last_iq, &CANSimple::get_iq_callback},
             {axis.config_.can.bus_vi_rate_ms, axis.can_.last_bus_vi, &CANSimple::get_bus_voltage_current_callback},
     }};
@@ -537,9 +673,39 @@ uint32_t CANSimple::service_stack() {
                 nextServiceTime = std::min(nextServiceTime, static_cast<uint32_t>(std::max(0, nextAxisService)));
             }
         }
+        const uint32_t product_rate = axis.config_.can.heartbeat_rate_ms;
+        if (product_rate > 0u &&
+            (now - last_product_status_) >= product_rate) {
+            if (send_product_status(axis)) last_product_status_ = now;
+            const int next_product = last_product_status_ + product_rate - now;
+            nextServiceTime = std::min(
+                nextServiceTime,
+                static_cast<uint32_t>(std::max(0, next_product)));
+        }
     }
 
     return nextServiceTime;
+}
+
+bool CANSimple::send_product_status(const Axis& axis) {
+    can_Message_t txmsg{};
+    txmsg.id = axis.config_.can.node_id << NUM_CMD_ID_BITS;
+    txmsg.id += MSG_PRODUCT_STATUS;
+    txmsg.isExt = axis.config_.can.is_extended;
+    txmsg.len = 8u;
+    can_setSignal(txmsg, axis.error_, 0, 32, true);
+    can_setSignal(txmsg, static_cast<uint8_t>(axis.safety_state()), 32, 8, true);
+    can_setSignal(txmsg, static_cast<uint8_t>(axis.active_operation()), 40, 8, true);
+    can_setSignal(txmsg, axis.readiness_snapshot().flags, 48, 8, true);
+    uint8_t flags = axis.motor_.is_armed_ ? 0x01u : 0u;
+    if (axis.safety_state() == odrive::safety::SafetyState::FAULT_LATCHED) {
+        flags |= 0x02u;
+    }
+    const uint32_t timeout_flags = ControlTimeout::state(axis).flags;
+    if ((timeout_flags & ControlTimeout::FLAG_COMM_TIMEOUT) != 0u) flags |= 0x04u;
+    if ((timeout_flags & ControlTimeout::FLAG_CMD_WATCHDOG_EXPIRED) != 0u) flags |= 0x08u;
+    can_setSignal(txmsg, flags, 56, 8, true);
+    return canbus_->send_message(txmsg);
 }
 
 bool CANSimple::send_heartbeat(const Axis& axis) {
@@ -579,7 +745,8 @@ bool CANSimple::send_heartbeat(const Axis& axis) {
 }
 
 // =====================================================================
-// Extended command (CMD 0x1E) - protocol version 1.0
+// Legacy Extended command (CMD 0x1E) - compatibility boundary only.
+// New product behavior must use generated product CAN or framed USB.
 //
 // Request:  byte0=sub_cmd  byte1=param    byte2-3=reserved  byte4-7=value
 // Response: byte0=sub_cmd  byte1=param    byte2=status      byte3=type/aux byte4-7=value
@@ -599,7 +766,8 @@ static constexpr uint8_t  EXT_STATUS_INVALID_VALUE = 4;
 static constexpr uint8_t  EXT_STATUS_BUSY_ARMED  = 5;
 static constexpr uint8_t  EXT_STATUS_STORAGE_ERROR = 6;
 
-static constexpr uint32_t EXT_PROTOCOL_VERSION   = 0x0000010B;  // v1.11
+static constexpr uint32_t EXT_PROTOCOL_VERSION =
+    odrive::can::product::kProtocolVersion;
 
 // ---- utility --------------------------------------------------------
 static bool any_axis_armed() {
@@ -616,7 +784,8 @@ static bool is_nonnegative_finite(float value) {
 }
 
 // ---- dispatcher -----------------------------------------------------
-bool CANSimple::extended_command_callback(Axis& axis, const can_Message_t& msg) {
+bool CANSimple::legacy_extended_command_callback(
+        Axis& axis, const can_Message_t& msg) {
     const uint8_t sub_cmd = msg.buf[0];
     can_Message_t txmsg;
     txmsg.id = axis.config_.can.node_id << NUM_CMD_ID_BITS;

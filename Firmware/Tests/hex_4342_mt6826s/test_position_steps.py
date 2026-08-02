@@ -11,9 +11,16 @@ effect.
 
 import argparse
 import os
+from pathlib import Path
 import struct
 import sys
 import time
+
+_TESTS_ROOT = Path(__file__).resolve().parents[1]
+if str(_TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TESTS_ROOT))
+
+from odrive_hil import HilSafetyLimits, HilSession
 
 try:
     import numpy as np
@@ -75,7 +82,7 @@ TARGET_DEG = [0, 180, 360, 540, 720, 1080]
 HOLD_S = 2.0
 SETTLE_S = 5.0
 VEL_LIMIT_RPS = 1.0
-CURRENT_LIMIT_A = 3.0
+CURRENT_LIMIT_A = 1.0
 TRAJ_VEL_RPS = 1.0
 TRAJ_ACCEL_RPS2 = 1.0
 
@@ -252,17 +259,28 @@ def main():
     parser.add_argument("--vel-tol-rps", type=float, default=0.01)
     parser.add_argument("--configure-limits", action="store_true",
                         help="Write legacy SET_LIMITS and trajectory limits before the test.")
+    parser.add_argument("--hardware-estop-ready", action="store_true",
+                        help="confirm an independent hardware emergency stop is ready")
     args = parser.parse_args()
 
     print(f"Opening CAN: {args.channel} @ {args.bitrate/1e6:.1f} Mbps  node_id={args.node_id}")
-    bus = can.Bus(interface="pcan", channel=args.channel, bitrate=args.bitrate)
+    session = HilSession(
+        channel=args.channel, bitrate=args.bitrate, node_id=args.node_id,
+        extended_id=args.extended, motion=True,
+        hardware_estop_confirmed=args.hardware_estop_ready,
+        limits=HilSafetyLimits(
+            velocity_turns_per_s=VEL_LIMIT_RPS,
+            current_amps=CURRENT_LIMIT_A,
+            duration_s=len(TARGET_DEG) * (args.settle_timeout + args.hold) + 10.0))
+    session.__enter__()
+    bus = session.bus
     ext = args.extended
     nid = args.node_id
 
     hb = recv_heartbeat(bus, nid, ext, 5.0)
     if hb is None:
         print("ERROR: no heartbeat")
-        bus.shutdown()
+        session.close()
         sys.exit(1)
     print(f"  axis_error=0x{hb['axis_error']:08X}  axis_state={hb['axis_state']}")
 
@@ -271,34 +289,14 @@ def main():
         time.sleep(0.3)
 
     if hb["axis_state"] != AXIS_CLOSED_LOOP:
-        print("  axis is idle; requesting CLOSED_LOOP")
-        send(bus, nid, CMD_SET_REQUESTED_STATE, struct.pack("<I", AXIS_CLOSED_LOOP), ext)
-        time.sleep(0.5)
+        print("  axis is idle; requesting ACKed CLOSED_LOOP ownership")
+        session.arm_closed_loop()
         hb = recv_heartbeat(bus, nid, ext, 2.0)
-
-    if hb is None or hb["axis_state"] != AXIS_CLOSED_LOOP:
-        status = get_status_ex(bus, nid, ext, timeout=1.0)
-        if status is not None:
-            print("  status_ex: axis_state=%s motor_calibrated=%s encoder_ready=%s axis_error=0x%08X" %
-                  (status["axis_state"], status["motor_calibrated"],
-                   status["encoder_ready"], status["axis_error"]))
-
-        if status is None or not (status["motor_calibrated"] and status["encoder_ready"]):
-            resp = set_precalibrated(bus, nid, ext)
-            if resp is None or resp["status"] != EXT_OK:
-                status_name = EXT_STATUS.get(resp["status"] if resp else -1, str(resp))
-                print(f"ERROR: cannot enter closed loop and set_precalibrated failed ({status_name}).")
-                print("       Calibration may not be loaded, or this firmware rejects marking while armed/busy.")
-                bus.shutdown()
-                sys.exit(1)
-            send(bus, nid, CMD_SET_REQUESTED_STATE, struct.pack("<I", AXIS_CLOSED_LOOP), ext)
-            time.sleep(0.5)
-            hb = recv_heartbeat(bus, nid, ext, 2.0)
 
     if hb is None or hb["axis_state"] != AXIS_CLOSED_LOOP:
         state = hb["axis_state"] if hb else "?"
         print(f"ERROR: cannot enter closed loop (state={state}). Check axis_error/status_ex above.")
-        bus.shutdown()
+        session.close()
         sys.exit(1)
 
     if args.configure_limits:
@@ -317,7 +315,7 @@ def main():
     zero_pos_rev, _, used_source = poll_position_sample(bus, nid, ext, args.source, 1.0)
     if zero_pos_rev is None:
         print("ERROR: cannot read initial position")
-        bus.shutdown()
+        session.close()
         sys.exit(1)
 
     send_input_pos(bus, nid, zero_pos_rev, ext)
@@ -392,8 +390,7 @@ def main():
             print(f" {step_idx:3d}   {target_deg:5.0f}deg   {mean_err:7.4f}  "
                   f"{std_err:7.4f}  {max_abs:9.4f}  {rms:7.4f}")
     finally:
-        send(bus, nid, CMD_SET_REQUESTED_STATE, struct.pack("<I", AXIS_IDLE), ext)
-        bus.shutdown()
+        session.close()
         print("\nMotor stopped, bus closed.")
 
     print("\n" + "=" * 74)

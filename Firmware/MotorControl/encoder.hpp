@@ -11,6 +11,7 @@ class Encoder;
 #include "utils.hpp"
 #include <autogen/interfaces.hpp>
 #include "component.hpp"
+#include "platform_ports.hpp"
 
 
 class Encoder : public ODriveIntf::EncoderIntf {
@@ -97,7 +98,8 @@ public:
         void set_bandwidth(float value) { bandwidth = value; parent->update_pll_gains(); }
     };
 
-    Encoder(Stm32SpiArbiter* spi_arbiter);
+    Encoder(Stm32SpiArbiter* spi_arbiter,
+            const odrive::platform::SensorSourcePort* sensor_source = nullptr);
     
     bool apply_config();
     void setup();
@@ -114,8 +116,10 @@ public:
     bool run_offset_calibration();
     void sample_now();
     bool update();
+    float effective_vernier_residual_accept_rad() const;
 
     Stm32SpiArbiter* spi_arbiter_;
+    const odrive::platform::SensorSourcePort* sensor_source_ = nullptr;
     Axis* axis_ = nullptr; // set by Axis constructor
 
     Config_t config_;
@@ -173,6 +177,7 @@ public:
     void clear_lz5710_faults();
     float controller_to_motor_direction() const;
     float controller_torque_to_motor_torque_scale() const;
+    bool motor_phase_feedback_ready() const;
     bool controller_feedback_ready() const;
     float vernier_motor_turns_per_output_turn() const;
     float vernier_output_direction_sign() const;

@@ -22,7 +22,7 @@ struct ResolverConfig {
     bool main_reversed = false;
     bool aux_reversed = true;
     bool output_reversed = false;
-    float residual_accept_rad = 0.03f;
+    float residual_accept_rad = 0.04f;
     float residual_reject_rad = 0.08f;
     float ambiguity_margin_rad = 0.04f;
     float branch_continuity_tolerance_rad = 0.10f;

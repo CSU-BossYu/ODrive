@@ -6,10 +6,12 @@ import {
   decodeOdriveSystemErrors,
 } from '../channels'
 import { AXIS_STATES } from '../types'
+import { useUsbDiagnostics } from '../composables/useUsbDiagnostics'
 
 interface CanIface { interface: string; desc: string }
 
 const oSocket = useOdriveSocket()
+const usb = useUsbDiagnostics()
 const canInterfaces = ref<CanIface[]>([])
 const selectedInterface = ref('pcan')
 const selectedChannel = ref('PCAN_USBBUS1')
@@ -157,21 +159,43 @@ function fmt(v: number, digits = 2): string {
 
 <template>
   <div class="status-bar">
-    <div class="cell conn">
-      <span class="section-kicker">CAN</span>
-      <select v-model="selectedInterface" :disabled="transportConnected" class="iface-select">
-        <option v-for="i in canInterfaces" :key="i.interface" :value="i.interface">{{ i.interface }}</option>
-      </select>
-      <input v-model="selectedChannel" :disabled="transportConnected" class="ch-input" placeholder="PCAN_USBBUS1" />
-      <label class="node-label">N<input type="number" v-model.number="nodeId" :disabled="transportConnected" min="0" max="63" class="node-input" /></label>
-      <button @click="refreshInterfaces" :disabled="transportConnected" title="刷新接口" class="icon-btn">刷新</button>
-      <button v-if="!transportConnected" @click="canConnect" :disabled="canConnecting || !canFormValid" class="primary">
-        {{ canConnecting ? '连接中...' : '连接' }}
-      </button>
-      <button v-else @click="canDisconnect" class="danger">断开</button>
+    <div class="conn can-cluster">
+      <div class="cluster-heading">
+        <span class="section-kicker">CAN</span>
+        <small>控制连接</small>
+      </div>
+      <label class="field iface-field">
+        <span>接口</span>
+        <select v-model="selectedInterface" :disabled="transportConnected" class="iface-select">
+          <option v-for="i in canInterfaces" :key="i.interface" :value="i.interface">{{ i.interface }}</option>
+        </select>
+      </label>
+      <label class="field channel-field">
+        <span>通道名</span>
+        <input v-model="selectedChannel" :disabled="transportConnected" class="ch-input" placeholder="PCAN_USBBUS1" title="CAN 通道名，例如 PCAN_USBBUS1" />
+      </label>
+      <label class="field node-field">
+        <span>节点 ID</span>
+        <input type="number" v-model.number="nodeId" :disabled="transportConnected" min="0" max="63" class="node-input" />
+      </label>
+      <div class="conn-actions">
+        <button @click="refreshInterfaces" :disabled="transportConnected" title="刷新接口" class="icon-btn">刷新</button>
+        <button v-if="!transportConnected" @click="canConnect" :disabled="canConnecting || !canFormValid" class="primary">
+          {{ canConnecting ? '连接中...' : '连接' }}
+        </button>
+        <button v-else @click="canDisconnect" class="danger">断开</button>
+      </div>
       <span v-if="canErrorMsg" class="conn-error">{{ canErrorMsg }}</span>
     </div>
 
+    <div class="divider"></div>
+    <div class="transport-cluster">
+      <span class="section-kicker usb-kicker">USB</span>
+      <small>诊断链路</small>
+      <span class="pill" :class="usb.handshakeComplete.value ? 'ok' : usb.error.value ? 'err' : usb.connected.value ? 'warn' : 'dim'">
+        {{ usb.handshakeComplete.value ? '诊断就绪' : usb.error.value ? '握手失败' : usb.connected.value ? '握手中' : '未连接' }}
+      </span>
+    </div>
     <div class="divider"></div>
     <span class="pill system-pill" :class="systemClass">{{ systemText }}</span>
     <span class="pill dim">{{ axisStateName }}</span>
@@ -206,15 +230,41 @@ function fmt(v: number, digits = 2): string {
 .status-bar {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 12px;
+  gap: 12px;
+  padding: 5px 0;
   background: var(--bg-2);
   flex-wrap: nowrap;
   overflow-x: auto;
   scrollbar-width: thin;
 }
 .cell { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
-.conn { flex: 0 0 auto; flex-wrap: wrap; }
+.can-cluster {
+  display: grid;
+  grid-template-columns: auto 94px minmax(174px, 1fr) 70px auto minmax(0, 1fr);
+  align-items: end;
+  gap: 4px 8px;
+  min-width: 530px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(20, 31, 47, .78), rgba(10, 17, 28, .78));
+}
+.cluster-heading {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 58px;
+  align-self: stretch;
+}
+.cluster-heading small,
+.transport-cluster small {
+  color: var(--fg-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.field { display: grid; gap: 3px; min-width: 0; }
+.field > span { color: var(--fg-dim); font-size: 9px; line-height: 1; }
+.conn-actions { display: flex; align-items: end; gap: 5px; }
 .section-kicker {
   margin-right: 2px;
   color: var(--accent-2);
@@ -232,10 +282,9 @@ function fmt(v: number, digits = 2): string {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.iface-select { width: 82px; }
-.ch-input { width: 124px; font-size: 11px; font-family: var(--mono); padding: 4px 7px; }
-.node-label { font-size: 10px; color: var(--fg-dim); display: flex; align-items: center; gap: 2px; }
-.node-input { width: 36px; font-size: 11px; text-align: center; }
+.iface-select { width: 100%; min-height: 29px; }
+.ch-input { width: 100%; min-width: 174px; font-size: 12px; font-family: var(--mono); padding: 5px 8px; }
+.node-input { width: 70px; font-size: 12px; text-align: center; }
 .icon-btn { padding: 6px 8px; }
 .divider {
   width: 1px;
@@ -245,6 +294,18 @@ function fmt(v: number, digits = 2): string {
   flex: 0 0 auto;
 }
 .system-pill { min-width: 78px; text-align: center; font-weight: 750; }
+.transport-cluster {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 108px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: rgba(14, 22, 35, .68);
+}
+.transport-cluster .pill { grid-column: 1 / -1; justify-self: start; }
 .cfg-default-pill {
   background: rgba(245, 158, 11, 0.16);
   color: var(--warn);
@@ -286,6 +347,7 @@ function fmt(v: number, digits = 2): string {
 
 @media (max-width: 760px) {
   .status-bar { padding: 7px 0; }
+  .can-cluster { min-width: 520px; }
   .readings { display: none; }
 }
 </style>

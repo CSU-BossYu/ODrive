@@ -201,6 +201,10 @@ public:
     uint32_t n_evt_sampling_ = 0;
     uint32_t n_evt_control_loop_ = 0;
     bool task_timers_armed_ = false;
+    // Flash programming deliberately stalls interrupt service while every
+    // axis is disarmed. The board ISR consumes this flag once to discard stale
+    // pending work and re-establish its timer phase after the store completes.
+    volatile bool realtime_timing_resync_pending_ = false;
     TaskTimes task_times_;
     const bool otp_valid_ = ((uint8_t*)FLASH_OTP_BASE)[0] != 0xff;
 };

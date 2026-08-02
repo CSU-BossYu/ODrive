@@ -16,10 +16,17 @@ diagnostic velocity (ext 0x0A item 0x29), not the raw motor encoder velocity.
 
 import argparse
 import math
+from pathlib import Path
 import struct
 import time
 import sys
 import os
+
+_TESTS_ROOT = Path(__file__).resolve().parents[1]
+if str(_TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TESTS_ROOT))
+
+from odrive_hil import HilSafetyLimits, HilSession
 
 try:
     import numpy as np
@@ -194,10 +201,10 @@ def poll_velocity_sample(bus, node_id, source, extended_id=False, timeout=0.1):
 
 # ── Test parameters ─────────────────────────────────────────────────────
 VEL_STEPS_RPM = [0.1, 1.0, 10.0, 20.0, 40.0, 60.0]
-STEP_DURATION_S = 20.0
+STEP_DURATION_S = 10.0
 POLL_PERIOD_S = 0.02  # 50 Hz polling
 VEL_LIMIT_REV_S = 2.0     # 120 rpm — well above our max
-CURRENT_LIMIT_A = 3.0     # safe bench current
+CURRENT_LIMIT_A = 1.0     # hard HIL ceiling
 GEAR_RATIO = 42.0          # vernier main ratio
 
 
@@ -217,10 +224,21 @@ def main():
     )
     parser.add_argument("--duration", type=float, default=STEP_DURATION_S,
                         help="Hold time per velocity step in seconds.")
+    parser.add_argument("--hardware-estop-ready", action="store_true",
+                        help="confirm an independent hardware emergency stop is ready")
     args = parser.parse_args()
 
     print(f"Opening CAN: {args.channel} @ {args.bitrate/1e6:.1f} Mbps  node_id={args.node_id}")
-    bus = can.Bus(interface="pcan", channel=args.channel, bitrate=args.bitrate)
+    session = HilSession(
+        channel=args.channel, bitrate=args.bitrate, node_id=args.node_id,
+        extended_id=args.extended, motion=True,
+        hardware_estop_confirmed=args.hardware_estop_ready,
+        limits=HilSafetyLimits(
+            velocity_turns_per_s=VEL_LIMIT_REV_S,
+            current_amps=CURRENT_LIMIT_A,
+            duration_s=len(VEL_STEPS_RPM) * args.duration + 10.0))
+    session.__enter__()
+    bus = session.bus
 
     ext = args.extended
     nid = args.node_id
@@ -230,7 +248,7 @@ def main():
     data = recv_matching(bus, nid, CMD_HEARTBEAT, ext, timeout=5.0)
     if data is None:
         print("ERROR: no heartbeat — check power / CAN wiring")
-        bus.shutdown()
+        session.close()
         sys.exit(1)
     axis_error, axis_state = struct.unpack("<IB", data[:5])
     print(f"  axis_error=0x{axis_error:08X}  axis_state={axis_state}")
@@ -241,30 +259,21 @@ def main():
         time.sleep(0.3)
         print("  errors cleared")
 
-    # ── 3) Ensure closed-loop: if not already, request it ────────────
+    # Enter through correlated product-management acknowledgements.
     if axis_state != AXIS_STATE_CLOSED_LOOP_CONTROL:
-        print("Axis not in closed loop — requesting it now.")
-        # Set pre-calibrated first so the motor can enter closed loop
-        resp = set_precalibrated(bus, nid, ext)
-        if resp is None or resp["status"] != 0:
-            print("ERROR: set_precalibrated failed (status=%s). "
-                  "Run calibration via upper computer first." %
-                  (EXT_STATUS.get(resp["status"] if resp else -1, str(resp))))
-            bus.shutdown()
-            sys.exit(1)
-        send(bus, nid, CMD_SET_REQUESTED_STATE,
-             struct.pack("<I", AXIS_STATE_CLOSED_LOOP_CONTROL), ext)
+        print("Axis not in closed loop; requesting ACKed CLOSED_LOOP ownership.")
+        session.arm_closed_loop()
         time.sleep(0.5)
         data = recv_matching(bus, nid, CMD_HEARTBEAT, ext, timeout=2.0)
         if data is None:
             print("ERROR: lost heartbeat after entering closed loop")
-            bus.shutdown()
+            session.close()
             sys.exit(1)
         axis_state = struct.unpack("<IB", data[:5])[1]
         if axis_state != AXIS_STATE_CLOSED_LOOP_CONTROL:
             print(f"ERROR: axis_state={axis_state} (not CLOSED_LOOP). "
                   "Check motor/encoder calibration.")
-            bus.shutdown()
+            session.close()
             sys.exit(1)
 
     # ── 4) Set limits + velocity control mode ────────────────────────
@@ -290,8 +299,7 @@ def main():
 
     for step_idx, rpm_ref in enumerate(VEL_STEPS_RPM):
         rev_s_ref = rpm_ref / 60.0
-        data_rev_s = struct.pack("<ff", rev_s_ref, 0.0)
-        send(bus, nid, CMD_SET_INPUT_VEL, data_rev_s, ext)
+        session.set_velocity(rev_s_ref)
 
         step_start = time.monotonic()
         step_velocities = []
@@ -345,11 +353,9 @@ def main():
               f"{mean_vel:7.3f}     {std_vel:6.3f}   {rms_err:6.3f}")
 
     # ── 7) Stop ─────────────────────────────────────────────────────
-    send(bus, nid, CMD_SET_INPUT_VEL, struct.pack("<ff", 0.0, 0.0), ext)
+    session.set_velocity(0.0)
     time.sleep(0.5)
-    send(bus, nid, CMD_SET_REQUESTED_STATE,
-         struct.pack("<I", AXIS_STATE_IDLE), ext)
-    bus.shutdown()
+    session.close()
     print("\nMotor stopped, bus closed.")
 
     # ── 8) Print summary table ──────────────────────────────────────

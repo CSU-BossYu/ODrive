@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "max_capture_channels": 8,
+  "max_pre_samples": 64,
+  "max_post_samples": 128,
+  "max_batch_samples": 6,
+  "channels": [
+    {"id": 1, "name": "control_sequence", "wire_type": "u32", "unit": "count", "display_min": 0, "display_max": 100000, "max_sample_rate_hz": 10000, "threshold_allowed": false, "source": "control_sequence"},
+    {"id": 2, "name": "timestamp_cycles", "wire_type": "u32", "unit": "cycles", "display_min": 0, "display_max": 4294967295, "max_sample_rate_hz": 10000, "threshold_allowed": false, "source": "timestamp_cycles"},
+    {"id": 3, "name": "state_epoch", "wire_type": "u32", "unit": "epoch", "display_min": 0, "display_max": 4294967295, "max_sample_rate_hz": 1000, "threshold_allowed": false, "source": "state_epoch"},
+    {"id": 4, "name": "SafetyState", "wire_type": "u8", "unit": "enum", "display_min": 0, "display_max": 7, "max_sample_rate_hz": 1000, "threshold_allowed": true, "source": "safety_state"},
+    {"id": 5, "name": "Operation", "wire_type": "u8", "unit": "enum", "display_min": 0, "display_max": 3, "max_sample_rate_hz": 1000, "threshold_allowed": true, "source": "operation"},
+    {"id": 6, "name": "phase", "wire_type": "f32", "unit": "rad", "display_min": -3.1415927, "display_max": 3.1415927, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "phase"},
+    {"id": 7, "name": "phase_velocity", "wire_type": "f32", "unit": "rad/s", "display_min": -10000, "display_max": 10000, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "phase_velocity"},
+    {"id": 8, "name": "position", "wire_type": "f32", "unit": "rev", "display_min": -1000, "display_max": 1000, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "position"},
+    {"id": 9, "name": "velocity", "wire_type": "f32", "unit": "rev/s", "display_min": -1000, "display_max": 1000, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "velocity"},
+    {"id": 10, "name": "Id measured", "wire_type": "f32", "unit": "A", "display_min": -50, "display_max": 50, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "id_measured"},
+    {"id": 11, "name": "Iq measured", "wire_type": "f32", "unit": "A", "display_min": -50, "display_max": 50, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "iq_measured"},
+    {"id": 12, "name": "Id setpoint", "wire_type": "f32", "unit": "A", "display_min": -50, "display_max": 50, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "id_setpoint"},
+    {"id": 13, "name": "Iq setpoint", "wire_type": "f32", "unit": "A", "display_min": -50, "display_max": 50, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "iq_setpoint"},
+    {"id": 14, "name": "torque setpoint", "wire_type": "f32", "unit": "Nm", "display_min": -50, "display_max": 50, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "torque_setpoint"},
+    {"id": 15, "name": "controller output", "wire_type": "f32", "unit": "command", "display_min": -1, "display_max": 1, "max_sample_rate_hz": 10000, "threshold_allowed": true, "source": "controller_output"}
+  ]
+}

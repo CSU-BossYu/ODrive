@@ -7,6 +7,7 @@ class Motor;
 #include <board.h>
 #include <autogen/interfaces.hpp>
 #include "foc.hpp"
+#include "platform_ports.hpp"
 
 class Motor : public ODriveIntf::MotorIntf {
 public:
@@ -72,7 +73,8 @@ public:
          TGateDriver& gate_driver,
          TOpAmp& opamp,
          OnboardThermistorCurrentLimiter& fet_thermistor,
-         OffboardThermistorCurrentLimiter& motor_thermistor);
+         OffboardThermistorCurrentLimiter& motor_thermistor,
+         const odrive::platform::PowerStagePort* power_stage = nullptr);
 
     bool arm(PhaseControlLaw<3>* control_law);
     void apply_pwm_timings(uint16_t timings[3], bool tentative);
@@ -81,6 +83,7 @@ public:
     bool setup();
 
     void update_current_controller_gains();
+    void set_error(Error error);
     void disarm_with_error(Error error);
     bool do_checks(uint32_t timestamp);
     float effective_current_lim();
@@ -98,6 +101,7 @@ public:
 
     // hardware config
     TIM_HandleTypeDef* const timer_;
+    const odrive::platform::PowerStagePort* power_stage_ = nullptr;
     const uint8_t current_sensor_mask_;
     const float shunt_conductance_;
     TGateDriver& gate_driver_;

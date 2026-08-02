@@ -1,0 +1,51 @@
+{
+  "protocol_name": "ODrive Product CAN",
+  "protocol_version": "1.12",
+  "protocol_version_u32": 268,
+  "bitrate": 1000000,
+  "node_id_bits": 6,
+  "command_id_bits": 5,
+  "management": {
+    "request_message": "MANAGEMENT_COMMAND",
+    "ack_message": "COMMAND_ACK",
+    "request_layout": "request_id:u16, command_type:u8, operation:u8, arg0:u32",
+    "ack_layout": "request_id:u16, status:u8, reserved:u8, state_epoch_low:u16, reason:u16"
+  },
+  "messages": [
+    {"id": 0, "name": "NMT", "direction": "host_to_device", "dlc": 0, "class": "liveness", "status": "compatibility"},
+    {"id": 1, "name": "HEARTBEAT", "direction": "device_to_host", "dlc": 8, "class": "status", "status": "compatibility"},
+    {"id": 2, "name": "ESTOP", "direction": "host_to_device", "dlc": 0, "class": "safety", "status": "product"},
+    {"id": 3, "name": "GET_MOTOR_ERROR", "direction": "bidirectional", "dlc": 8, "class": "diagnostic", "status": "usb_migration"},
+    {"id": 4, "name": "GET_ENCODER_ERROR", "direction": "bidirectional", "dlc": 8, "class": "diagnostic", "status": "usb_migration"},
+    {"id": 5, "name": "COMMAND_ACK", "direction": "device_to_host", "dlc": 8, "class": "management", "status": "product"},
+    {"id": 6, "name": "SET_AXIS_NODE_ID", "direction": "host_to_device", "dlc": 4, "class": "configuration", "status": "compatibility"},
+    {"id": 7, "name": "SET_AXIS_STATE", "direction": "host_to_device", "dlc": 4, "class": "management", "status": "deprecated"},
+    {"id": 8, "name": "MANAGEMENT_COMMAND", "direction": "host_to_device", "dlc": 8, "class": "management", "status": "product"},
+    {"id": 9, "name": "ENCODER_ESTIMATES", "direction": "device_to_host", "dlc": 8, "class": "telemetry", "status": "product"},
+    {"id": 10, "name": "GET_ENCODER_COUNT", "direction": "bidirectional", "dlc": 8, "class": "diagnostic", "status": "usb_migration"},
+    {"id": 11, "name": "SET_CONTROLLER_MODE", "direction": "host_to_device", "dlc": 8, "class": "control", "status": "product"},
+    {"id": 12, "name": "SET_INPUT_POS", "direction": "host_to_device", "dlc": 8, "class": "setpoint", "status": "product"},
+    {"id": 13, "name": "SET_INPUT_VEL", "direction": "host_to_device", "dlc": 8, "class": "setpoint", "status": "product"},
+    {"id": 14, "name": "SET_INPUT_TORQUE", "direction": "host_to_device", "dlc": 4, "class": "setpoint", "status": "product"},
+    {"id": 15, "name": "SET_LIMITS", "direction": "host_to_device", "dlc": 8, "class": "control", "status": "product"},
+    {"id": 16, "name": "PRODUCT_STATUS", "direction": "device_to_host", "dlc": 8, "class": "status", "status": "product"},
+    {"id": 17, "name": "SET_TRAJ_VEL_LIMIT", "direction": "host_to_device", "dlc": 4, "class": "control", "status": "product"},
+    {"id": 18, "name": "SET_TRAJ_ACCEL_LIMITS", "direction": "host_to_device", "dlc": 8, "class": "control", "status": "product"},
+    {"id": 19, "name": "SET_TRAJ_INERTIA", "direction": "host_to_device", "dlc": 4, "class": "control", "status": "product"},
+    {"id": 20, "name": "IQ", "direction": "device_to_host", "dlc": 8, "class": "telemetry", "status": "product"},
+    {"id": 22, "name": "REBOOT", "direction": "host_to_device", "dlc": 0, "class": "management", "status": "deprecated"},
+    {"id": 23, "name": "BUS_VOLTAGE_CURRENT", "direction": "device_to_host", "dlc": 8, "class": "telemetry", "status": "product"},
+    {"id": 24, "name": "CLEAR_ERRORS", "direction": "host_to_device", "dlc": 0, "class": "management", "status": "deprecated"},
+    {"id": 25, "name": "SET_LINEAR_COUNT", "direction": "host_to_device", "dlc": 4, "class": "diagnostic", "status": "usb_migration"},
+    {"id": 26, "name": "SET_POS_GAIN", "direction": "host_to_device", "dlc": 4, "class": "configuration", "status": "usb_migration"},
+    {"id": 27, "name": "SET_VEL_GAINS", "direction": "host_to_device", "dlc": 8, "class": "configuration", "status": "usb_migration"},
+    {"id": 28, "name": "GET_ADC_VOLTAGE", "direction": "bidirectional", "dlc": 8, "class": "diagnostic", "status": "usb_migration"},
+    {"id": 29, "name": "GET_CONTROLLER_ERROR", "direction": "bidirectional", "dlc": 8, "class": "diagnostic", "status": "usb_migration"},
+    {"id": 30, "name": "LEGACY_EXTENDED", "direction": "bidirectional", "dlc": 8, "class": "diagnostic", "status": "legacy_isolated"},
+    {"id": 31, "name": "SET_MIT_CONTROL", "direction": "host_to_device", "dlc": 8, "class": "setpoint", "status": "product"}
+  ],
+  "load_profiles": {
+    "typical": {"status_hz": 10, "heartbeat_hz": 10, "estimates_hz": 100, "iq_hz": 100, "bus_hz": 10, "setpoint_hz": 1000},
+    "maximum_allowed_percent": 30.0
+  }
+}

@@ -5,6 +5,7 @@
 
 #include "odrive_main.h"
 #include "control_timeout.hpp"
+#include "crash_recorder.hpp"
 #include "utils.hpp"
 #include "communication/interface_can.hpp"
 
@@ -13,6 +14,35 @@ namespace {
 // TEMPORARY: exclude reducer geometry, mechanical and delay identification.
 // Motor flux linkage/Kt is still identified by an independent electrical scan.
 constexpr bool kEnableReducerIdentification = false;
+
+void apply_supervisor_fault(
+        void* context,
+        odrive::fault::FaultRecord& record,
+        uint32_t projection,
+        bool record_trace) {
+    if (context != nullptr) {
+        static_cast<Axis*>(context)->raise_fault(
+            record, static_cast<Axis::Error>(projection), record_trace);
+    }
+}
+
+bool clear_supervisor_faults(
+        void* context,
+        const odrive::fault::ClearRequest& request,
+        bool* empty_after_clear) {
+    if (context == nullptr) {
+        return false;
+    }
+    return static_cast<Axis*>(context)->clear_faults_for_supervisor(
+        request, empty_after_clear);
+}
+
+bool first_supervisor_fault(
+        void* context,
+        odrive::fault::FaultRecord* record) {
+    return context != nullptr &&
+        static_cast<Axis*>(context)->first_fault(record);
+}
 
 }  // namespace
 
@@ -27,12 +57,413 @@ Axis::Axis(int axis_num,
       encoder_(encoder),
       controller_(controller),
       motor_(motor),
-      trap_traj_(trap)
+      trap_traj_(trap),
+      safety_supervisor_(fault_manager_, realtime_event_ring_, this,
+                         apply_supervisor_fault, clear_supervisor_faults,
+                         first_supervisor_fault),
+      trace_consumer_(critical_event_ring_, state_event_ring_, log_ring_,
+                      scope_ring_)
 {
     encoder_.axis_ = this;
     controller_.axis_ = this;
     motor_.axis_ = this;
     trap_traj_.axis_ = this;
+    odrive::safety::Command boot;
+    boot.request_id = allocate_command_request_id();
+    boot.source = odrive::safety::CommandSource::INTERNAL;
+    boot.type = odrive::safety::CommandType::BOOT_COMPLETE;
+    safety_supervisor_.submit_command(boot);
+    supervisor_trace_mailbox_.publish_from_task({
+        safety_supervisor_.state_epoch(),
+        static_cast<uint8_t>(safety_supervisor_.state()),
+        static_cast<uint8_t>(safety_supervisor_.operation()), 0u, 0u});
+}
+
+uint32_t Axis::raise_fault(odrive::fault::FaultRecord record,
+                           Error legacy_projection,
+                           bool record_trace) {
+    uint32_t sequence = 0;
+    bool first_fault = false;
+    CRITICAL_SECTION() {
+        if (fault_manager_.raise(record)) {
+            sequence = record.fault_sequence;
+        }
+        odrive::fault::FaultRecord first;
+        first_fault = fault_manager_.first_fault(&first) &&
+            first.fault_sequence == record.fault_sequence;
+        if (legacy_projection != ERROR_NONE) {
+            error_ |= legacy_projection;  // LEGACY_ERROR_PROJECTION
+        }
+    }
+
+    if (!record_trace) {
+        return sequence;
+    }
+
+    odrive::trace::CriticalEvent event;
+    event.sequence = record.control_sequence;
+    event.control_sequence = record.control_sequence;
+    event.state_epoch = record.state_epoch;
+    event.timestamp_cycles = record.timestamp_cycles;
+    event.fault_sequence = record.fault_sequence;
+    event.type = odrive::trace::CriticalEventType::FAULT;
+    event.source = record.source;
+    event.code = record.code;
+    event.site = record.site;
+    event.severity = record.severity;
+    event.parent_fault_sequence = record.parent_fault_sequence;
+    event.arg0 = record.arg0;
+    event.arg1 = record.arg1;
+    event.arg2 = record.arg2;
+    critical_event_ring_.push_from_task(event);
+    CRITICAL_SECTION() {
+        critical_black_box_.record_from_context(event);
+        if (first_fault) {
+            critical_black_box_.freeze_on_first_fault();
+        }
+    }
+    return sequence;
+}
+
+bool Axis::clear_faults(const odrive::fault::ClearRequest& request) {
+    bool changed = false;
+    CRITICAL_SECTION() {
+        changed = fault_manager_.clear(request);
+    }
+    return changed;
+}
+
+bool Axis::clear_faults_for_supervisor(
+        const odrive::fault::ClearRequest& request,
+        bool* empty_after_clear) {
+    bool changed = false;
+    bool empty = false;
+    CRITICAL_SECTION() {
+        changed = fault_manager_.clear(request);
+        empty = fault_manager_.record_count() == 0u;
+        if (empty) {
+            motor_.error_ = Motor::ERROR_NONE;
+            controller_.error_ = Controller::ERROR_NONE;
+            controller_.clear_overspeed_snapshot();
+            encoder_.error_ = Encoder::ERROR_NONE;
+            encoder_.spi_error_rate_ = 0.0f;
+            encoder_.clear_lz5710_faults();
+            error_ = ERROR_NONE;
+        }
+        if (empty_after_clear != nullptr) {
+            *empty_after_clear = empty;
+        }
+    }
+    if (empty) {
+        ControlTimeout::clear(*this);
+        ControlTimeout::feed_command(*this);
+        CRITICAL_SECTION() {
+            critical_black_box_.reset();
+        }
+    }
+    return changed;
+}
+
+void Axis::clear_errors() {
+    bool empty_after_clear = false;
+    clear_faults_for_supervisor({0u, 0u}, &empty_after_clear);
+    if (empty_after_clear) {
+        safety_supervisor_.handle_external_clear();
+    }
+}
+
+bool Axis::first_fault(odrive::fault::FaultRecord* out) const {
+    bool found = false;
+    CRITICAL_SECTION() {
+        found = fault_manager_.first_fault(out);
+    }
+    return found;
+}
+
+bool Axis::submit_command(const odrive::safety::Command& command) {
+    return safety_supervisor_.submit_command(command);
+}
+
+bool Axis::submit_realtime_event(const odrive::safety::RealtimeEvent& event) {
+    return realtime_event_ring_.push(event);
+}
+
+bool Axis::record_critical_event_from_isr(
+        const odrive::trace::CriticalEvent& event) {
+    crash_recorder_note_critical(
+        event.sequence, event.control_sequence, event.timestamp_cycles,
+        static_cast<uint16_t>(event.source),
+        static_cast<uint16_t>(event.code),
+        static_cast<uint16_t>(event.site),
+        static_cast<uint8_t>(event.severity),
+        event.arg0, event.arg1, event.arg2);
+    const bool queued = critical_event_ring_.push_from_isr(event);
+    critical_black_box_.record_from_isr(event);
+    if (event.type == odrive::trace::CriticalEventType::FAULT) {
+        critical_black_box_.freeze_on_first_fault();
+        scope_capture_.trigger_fault_from_isr();
+    }
+    return queued;
+}
+
+bool Axis::snapshot_critical_black_box(
+        odrive::trace::CriticalEvent* output, size_t capacity,
+        size_t* written) const {
+    bool success = false;
+    CRITICAL_SECTION() {
+        success = critical_black_box_.snapshot(output, capacity, written);
+    }
+    return success;
+}
+
+void Axis::capture_realtime_snapshot_from_isr(uint32_t isr_start_cycles) {
+    (void)isr_start_cycles;
+    odrive::trace::RealtimeSnapshot snapshot;
+    snapshot.sequence = odrv.n_evt_control_loop_;
+    snapshot.control_sequence = odrv.n_evt_control_loop_;
+    snapshot.encoder_sample_sequence = encoder_.consumed_main_sample_sequence_;
+    snapshot.feedback_sequence = encoder_.consumed_vernier_pair_sequence_;
+    snapshot.timestamp_cycles = DWT->CYCCNT;
+    snapshot.isr_cycles = previous_complete_isr_cycles_;
+    snapshot.encoder_cycles = task_times_.encoder_update.max_length_;
+    snapshot.controller_cycles = task_times_.controller_update.max_length_;
+    snapshot.motor_cycles = task_times_.motor_update.max_length_;
+
+    snapshot.phase = encoder_.phase_.present().value_or(0.0f);
+    snapshot.phase_velocity = encoder_.phase_vel_.present().value_or(0.0f);
+    snapshot.position = encoder_.pos_estimate_.present().value_or(0.0f);
+    snapshot.velocity = encoder_.vel_estimate_.present().value_or(0.0f);
+    snapshot.id_measured = motor_.current_control_.Id_measured_;
+    snapshot.iq_measured = motor_.current_control_.Iq_measured_;
+    const auto idq_setpoint = motor_.Idq_setpoint_.present().value_or(
+        float2D{0.0f, 0.0f});
+    snapshot.id_setpoint = idq_setpoint.first;
+    snapshot.iq_setpoint = idq_setpoint.second;
+    snapshot.torque_setpoint =
+        controller_.torque_output_.present().value_or(0.0f);
+    snapshot.controller_output = snapshot.torque_setpoint;
+    snapshot.flags = (motor_.is_armed_ ? 1u : 0u) |
+        (controller_feedback_active_ ? 2u : 0u) |
+        (closed_loop_prepared_ ? 4u : 0u);
+    odrive::trace::SupervisorTraceState supervisor_state;
+    if (supervisor_trace_mailbox_.read_from_isr(&supervisor_state)) {
+        snapshot.state_epoch = supervisor_state.state_epoch;
+        snapshot.safety_state = supervisor_state.safety_state;
+        snapshot.operation = supervisor_state.operation;
+        snapshot.readiness_flags = supervisor_state.readiness_flags;
+    } else {
+        snapshot.flags |= 0x80u;
+    }
+
+    realtime_snapshot_buffer_.publish_from_isr(snapshot);
+    crash_recorder_update_context(
+        snapshot.control_sequence, snapshot.state_epoch,
+        snapshot.safety_state, snapshot.operation);
+
+    odrive::scope::generated::ScopeSampleContext scope_sample;
+    scope_sample.control_sequence = snapshot.control_sequence;
+    scope_sample.timestamp_cycles = snapshot.timestamp_cycles;
+    scope_sample.state_epoch = snapshot.state_epoch;
+    scope_sample.safety_state = snapshot.safety_state;
+    scope_sample.operation = snapshot.operation;
+    scope_sample.phase = snapshot.phase;
+    scope_sample.phase_velocity = snapshot.phase_velocity;
+    scope_sample.position = snapshot.position;
+    scope_sample.velocity = snapshot.velocity;
+    scope_sample.id_measured = snapshot.id_measured;
+    scope_sample.iq_measured = snapshot.iq_measured;
+    scope_sample.id_setpoint = snapshot.id_setpoint;
+    scope_sample.iq_setpoint = snapshot.iq_setpoint;
+    scope_sample.torque_setpoint = snapshot.torque_setpoint;
+    scope_sample.controller_output = snapshot.controller_output;
+    scope_capture_.sample_from_isr(scope_sample);
+}
+
+void Axis::finish_realtime_snapshot_from_isr(uint32_t isr_start_cycles) {
+    previous_complete_isr_cycles_ = DWT->CYCCNT - isr_start_cycles;
+}
+
+bool Axis::read_realtime_snapshot(
+        odrive::trace::RealtimeSnapshot* snapshot) const {
+    return realtime_snapshot_buffer_.read_consistent(snapshot);
+}
+
+void Axis::service_trace_buffers() {
+    const uint8_t state = static_cast<uint8_t>(safety_supervisor_.state());
+    const uint8_t operation =
+        static_cast<uint8_t>(safety_supervisor_.operation());
+    const auto readiness = safety_supervisor_.readiness();
+    scope_capture_.notify_state_from_task(state);
+    if (state != last_trace_state_ || operation != last_trace_operation_ ||
+        safety_supervisor_.state_epoch() != last_trace_epoch_ ||
+        readiness.sequence != last_trace_readiness_sequence_) {
+        odrive::trace::StateEvent event;
+        event.sequence = ++trace_sequence_;
+        event.state_epoch = safety_supervisor_.state_epoch();
+        event.timestamp_cycles = DWT->CYCCNT;
+        event.request_id = last_command_result_valid_
+            ? last_command_result_.request_id : 0u;
+        event.state = state;
+        event.operation = operation;
+        event.axis_state = static_cast<uint8_t>(current_state_);
+        event.type = readiness.sequence != last_trace_readiness_sequence_
+            ? odrive::trace::StateEventType::READINESS
+            : odrive::trace::StateEventType::TRANSITION;
+        event.reason = last_command_result_valid_
+            ? last_command_result_.reason
+            : odrive::fault::FaultCode::NONE;
+        state_event_ring_.push(event);
+        last_trace_state_ = state;
+        last_trace_operation_ = operation;
+        last_trace_epoch_ = safety_supervisor_.state_epoch();
+        last_trace_readiness_sequence_ = readiness.sequence;
+    }
+    trace_consumer_.consume();
+}
+
+void Axis::service_safety_supervisor() {
+    constexpr size_t kMaximumServicePasses = 4;
+    for (size_t pass = 0; pass < kMaximumServicePasses; ++pass) {
+        safety_supervisor_.tick(odrv.n_evt_control_loop_);
+
+        odrive::safety::CommandResult result;
+        while (safety_supervisor_.pop_result(&result)) {
+            last_command_result_ = result;
+            last_command_result_valid_ = true;
+            odrive::trace::LogRecord log;
+            log.sequence = ++trace_sequence_;
+            log.timestamp_cycles = DWT->CYCCNT;
+            log.arg0 = result.request_id;
+            log.arg1 = result.state_epoch;
+            log.code = static_cast<uint16_t>(result.status);
+            log.level = result.status == odrive::safety::CommandStatus::FAILED
+                ? odrive::trace::LogLevel::ERROR
+                : odrive::trace::LogLevel::INFO;
+            log.category = 1u;
+            log_ring_.push(log);
+            for (const auto& slot : command_result_sinks_) {
+                if (slot.sink != nullptr) {
+                    slot.sink(slot.context, result);
+                }
+            }
+        }
+
+        uint32_t legacy_axis_state = 0;
+        while (safety_supervisor_.pop_legacy_axis_state(&legacy_axis_state)) {
+            requested_state_ = static_cast<AxisState>(legacy_axis_state);
+        }
+
+        odrive::safety::RealtimeRequest request;
+        if (!safety_supervisor_.pop_realtime_request(&request)) {
+            break;
+        }
+
+        odrive::safety::RealtimeEvent event;
+        event.sequence = odrv.n_evt_control_loop_ == 0u
+            ? 1u : odrv.n_evt_control_loop_;
+        event.epoch = request.epoch;
+        event.feedback_sequence = event.sequence;
+        event.control_sequence = odrv.n_evt_control_loop_;
+        event.timestamp_cycles = DWT->CYCCNT;
+
+        switch (request.type) {
+            case odrive::safety::RealtimeRequestType::PREPARE_OPERATION:
+                if (request.operation == odrive::safety::Operation::CLOSED_LOOP &&
+                    safety_supervisor_.state() ==
+                        odrive::safety::SafetyState::PREPARING &&
+                    request.epoch == safety_supervisor_.state_epoch() &&
+                    prepare_closed_loop_control()) {
+                    event.type = odrive::safety::RealtimeEventType::READY_SNAPSHOT;
+                    event.readiness_flags = odrive::safety::kRequiredReadinessFlags;
+                } else if (error_ == ERROR_NONE &&
+                           motor_.error_ == Motor::ERROR_NONE &&
+                           encoder_.error_ == Encoder::ERROR_NONE &&
+                           controller_.error_ == Controller::ERROR_NONE) {
+                    // Configuration/readiness rejection is a command outcome,
+                    // not a persistent device fault. Undo partial preparation
+                    // and let the Supervisor return to SAFE_OFF.
+                    stop_closed_loop_control();
+                    event.type =
+                        odrive::safety::RealtimeEventType::PREPARE_REJECTED;
+                    event.source = odrive::fault::FaultSource::CONTROLLER;
+                    event.code = odrive::fault::FaultCode::CONTROLLER_REJECTED;
+                    event.site = odrive::fault::FaultSite::CLOSED_LOOP_PREPARE;
+                    event.severity = odrive::fault::FaultSeverity::INFO;
+                } else {
+                    event.type = odrive::safety::RealtimeEventType::FAULT;
+                    event.source = odrive::fault::FaultSource::SAFETY;
+                    event.code = odrive::fault::FaultCode::CONTROLLER_REJECTED;
+                    event.site = odrive::fault::FaultSite::CLOSED_LOOP_PREPARE;
+                    event.severity = odrive::fault::FaultSeverity::LATCHED;
+                }
+                safety_supervisor_.handle_realtime_event(event);
+                break;
+
+            case odrive::safety::RealtimeRequestType::ARM:
+                if (safety_supervisor_.state() ==
+                        odrive::safety::SafetyState::READY &&
+                    request.epoch == safety_supervisor_.state_epoch() &&
+                    arm_closed_loop_control()) {
+                    event.type = odrive::safety::RealtimeEventType::ARM_CONFIRMED;
+                    requested_state_ = AXIS_STATE_CLOSED_LOOP_CONTROL;
+                } else {
+                    event.type = odrive::safety::RealtimeEventType::FAULT;
+                    event.source = odrive::fault::FaultSource::POWER_STAGE;
+                    event.code = odrive::fault::FaultCode::POWER_STAGE_SHUTDOWN;
+                    event.site = odrive::fault::FaultSite::POWER_STAGE_ARM;
+                    event.severity = odrive::fault::FaultSeverity::LATCHED;
+                    event.legacy_projection = ERROR_MOTOR_FAILED;
+                }
+                safety_supervisor_.handle_realtime_event(event);
+                break;
+
+            case odrive::safety::RealtimeRequestType::DISARM:
+                stop_closed_loop_control();
+                requested_state_ = AXIS_STATE_IDLE;
+                event.type = odrive::safety::RealtimeEventType::DISARM_CONFIRMED;
+                safety_supervisor_.handle_realtime_event(event);
+                break;
+        }
+    }
+
+    if (safety_supervisor_.state() ==
+        odrive::safety::SafetyState::FAULT_LATCHED) {
+        motor_.disarm();
+    }
+    const auto readiness = safety_supervisor_.readiness();
+    supervisor_trace_mailbox_.publish_from_task({
+        safety_supervisor_.state_epoch(),
+        static_cast<uint8_t>(safety_supervisor_.state()),
+        static_cast<uint8_t>(safety_supervisor_.operation()),
+        readiness.flags, 0u});
+    service_trace_buffers();
+}
+
+uint32_t Axis::allocate_command_request_id() {
+    ++command_request_sequence_;
+    if (command_request_sequence_ == 0u) {
+        ++command_request_sequence_;
+    }
+    return command_request_sequence_;
+}
+
+bool Axis::add_command_result_sink(void* context, CommandResultSink sink) {
+    if (sink == nullptr) return false;
+    for (const auto& slot : command_result_sinks_) {
+        if (slot.context == context && slot.sink == sink) return true;
+    }
+    for (auto& slot : command_result_sinks_) {
+        if (slot.sink == nullptr) {
+            slot = {context, sink};
+            return true;
+        }
+    }
+    return false;
+}
+
+void Axis::set_trace_dispatch_sink(void* context,
+                                   odrive::trace::TraceDispatchFn sink) {
+    trace_consumer_.set_callback(context, sink);
 }
 
 Axis::LockinConfig_t Axis::default_calibration() {
@@ -490,7 +921,7 @@ bool Axis::finalize_vernier_offset_candidate() {
     if (!std::isfinite(result.vernier_fit_rms_rad) ||
         !std::isfinite(result.vernier_worst_residual_rad) ||
         result.vernier_worst_residual_rad >
-            encoder_.config_.vernier_err_accept) {
+            encoder_.effective_vernier_residual_accept_rad()) {
         if (calibration_session_.active()) {
             calibration_session_.fail(
                 CalibrationSession::FAILURE_VERNIER_RESIDUAL);
@@ -1148,7 +1579,7 @@ bool Axis::validate_calibration_candidate() const {
          result.vernier_fit_rms_rad < 0.0f ||
          result.vernier_worst_residual_rad < 0.0f ||
          result.vernier_worst_residual_rad >
-             encoder_.config_.vernier_err_accept ||
+             encoder_.effective_vernier_residual_accept_rad() ||
          !std::isfinite(result.vernier_minimum_margin_rad) ||
          result.vernier_minimum_margin_rad < 0.04f ||
          result.vernier_used_samples < 12u)) {
@@ -1340,39 +1771,12 @@ bool Axis::commit_calibration_candidate() {
     }
     controller_.reset_sta();
 
-    // A committed calibration must satisfy the same live chain used by the
-    // closed-loop gate. Do not persist a merely plausible offline fit.
-    bool encoder_ready = encoder_.controller_feedback_ready();
-    if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
-        for (uint32_t elapsed_ms = 0;
-             !encoder_ready && elapsed_ms < 500u;
-             ++elapsed_ms) {
-            osDelay(1);
-            encoder_ready = encoder_.controller_feedback_ready();
-        }
-    }
-    if (!encoder_ready) {
-        CRITICAL_SECTION() {
-            motor_.config_ = motor_snapshot;
-            encoder_.config_ = encoder_snapshot;
-            controller_.config_ = controller_snapshot;
-            motor_.is_calibrated_ = motor_calibrated_snapshot;
-            encoder_.is_ready_ = encoder_ready_snapshot;
-            motor_.config_.parent = &motor_;
-            encoder_.config_.parent = &encoder_;
-            controller_.config_.parent = &controller_;
-        }
-        motor_.update_current_controller_gains();
-        if (encoder_.mode_ == Encoder::MODE_SPI_ABS_MT6826S_VERNIER) {
-            encoder_.apply_vernier_resolver_config();
-        }
-        controller_.reset_sta();
-        if (calibration_session_.active()) {
-            calibration_session_.fail(
-                CalibrationSession::FAILURE_VERNIER_READY_TIMEOUT);
-        }
-        return false;
-    }
+    // Committing a validated calibration and admitting closed-loop control are
+    // separate operations. Applying vernier parameters intentionally resets
+    // the resolver, tracker and PLL, so requiring the complete feedback chain
+    // to relock inside this storage transaction makes a valid calibration
+    // depend on an arbitrary timeout. Persist the validated candidate here;
+    // the normal closed-loop gate still requires controller_feedback_ready().
 
     if (odrv.save_configuration()) {
         return true;
@@ -1451,7 +1855,14 @@ bool Axis::watchdog_check() {
         watchdog_current_value_--;
         return true;
     } else {
-        error_ |= ERROR_WATCHDOG_TIMER_EXPIRED;
+        odrive::fault::FaultRecord record;
+        record.control_sequence = odrv.n_evt_control_loop_;
+        record.timestamp_cycles = DWT->CYCCNT;
+        record.source = odrive::fault::FaultSource::AXIS;
+        record.code = odrive::fault::FaultCode::TIMEOUT;
+        record.site = odrive::fault::FaultSite::AXIS_WATCHDOG;
+        record.severity = odrive::fault::FaultSeverity::LATCHED;
+        raise_fault(record, ERROR_WATCHDOG_TIMER_EXPIRED);
         return false;
     }
 }
@@ -1518,8 +1929,13 @@ bool Axis::run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_arme
 }
 
 
-bool Axis::start_closed_loop_control() {
+bool Axis::prepare_closed_loop_control() {
+    if (closed_loop_prepared_) {
+        return true;
+    }
     controller_feedback_active_ = false;
+    closed_loop_phase_feedback_ready_ = false;
+    closed_loop_controller_ready_ = false;
     // Hook up the data paths between the components
     CRITICAL_SECTION() {
         controller_.pos_estimate_circular_src_.connect_to(&encoder_.pos_circular_);
@@ -1530,7 +1946,6 @@ bool Axis::start_closed_loop_control() {
         encoder_.reset_vernier_output_velocity_estimate();
         if (!encoder_.controller_feedback_ready()) {
             encoder_.set_error(Encoder::ERROR_VERNIER_RESOLVER_FAIL);
-            error_ |= ERROR_ENCODER_FAILED;
             return false;
         }
 
@@ -1559,23 +1974,92 @@ bool Axis::start_closed_loop_control() {
         OutputPort<float>* phase_vel_src = &encoder_.phase_vel_;
         motor_.phase_vel_src_.connect_to(phase_vel_src);
         motor_.current_control_.phase_vel_src_.connect_to(phase_vel_src);
-        // Publish this only after every feedback and actuation endpoint is
-        // connected and the controller has accepted its initial estimate.
-        controller_feedback_active_ = true;
     }
 
     if (!motor_.is_armed_) {
-        wait_for_control_iteration();
-        motor_.arm(&motor_.current_control_);
+        // Do not arm on the same state-machine turn that connects the ports.
+        // Require several completed realtime iterations to prove that both
+        // electrical feedback outputs are being published continuously.
+        constexpr uint32_t kRequiredReadyObservations = 3u;
+        constexpr uint32_t kMaximumReadyObservations = 20u;
+        uint32_t consecutive_ready = 0u;
+        for (uint32_t i = 0u;
+             i < kMaximumReadyObservations &&
+             consecutive_ready < kRequiredReadyObservations;
+             ++i) {
+            wait_for_control_iteration();
+            consecutive_ready = closed_loop_phase_feedback_ready_
+                ? consecutive_ready + 1u
+                : 0u;
+        }
+        if (consecutive_ready < kRequiredReadyObservations) {
+            closed_loop_phase_feedback_ready_ = false;
+            return false;
+        }
+
+        // Only now expose the connected feedback path to the controller. This
+        // prevents the controller from treating the encoder's acquisition
+        // window as an invalid runtime estimate.
+        const uint32_t controller_ready_sequence_start =
+            closed_loop_controller_ready_sequence_;
+        controller_feedback_active_ = true;
+        for (uint32_t i = 0u;
+             i < kMaximumReadyObservations &&
+             static_cast<uint32_t>(closed_loop_controller_ready_sequence_ -
+                                   controller_ready_sequence_start) <
+                 kRequiredReadyObservations;
+             ++i) {
+            wait_for_control_iteration();
+            if (controller_.error_ != Controller::ERROR_NONE ||
+                error_ != ERROR_NONE) {
+                break;
+            }
+        }
+        if (static_cast<uint32_t>(closed_loop_controller_ready_sequence_ -
+                                  controller_ready_sequence_start) <
+                kRequiredReadyObservations ||
+            !closed_loop_controller_ready_ ||
+            controller_.error_ != Controller::ERROR_NONE ||
+            error_ != ERROR_NONE) {
+            controller_feedback_active_ = false;
+            closed_loop_phase_feedback_ready_ = false;
+            closed_loop_controller_ready_ = false;
+            return false;
+        }
     }
 
+    closed_loop_prepared_ = true;
     return true;
+}
+
+bool Axis::arm_closed_loop_control() {
+    if (!prepare_closed_loop_control()) {
+        return false;
+    }
+    if (!motor_.is_armed_ && !motor_.arm(&motor_.current_control_)) {
+        return false;
+    }
+    if (motor_.is_armed_) {
+        // Start each armed interval with a fresh watchdog grace period; idle
+        // deadlines must never leak into a new control transaction.
+        ControlTimeout::clear(*this);
+        ControlTimeout::feed_command(*this);
+    }
+    return motor_.is_armed_ && check_for_errors();
+}
+
+bool Axis::start_closed_loop_control() {
+    return prepare_closed_loop_control() && arm_closed_loop_control();
 }
 
 bool Axis::stop_closed_loop_control() {
     motor_.disarm();
     controller_feedback_active_ = false;
+    closed_loop_phase_feedback_ready_ = false;
+    closed_loop_controller_ready_ = false;
+    closed_loop_prepared_ = false;
     ControlTimeout::clear_running(*this);
+    ControlTimeout::clear(*this);
     return check_for_errors();
 }
 
@@ -1584,6 +2068,7 @@ bool Axis::run_closed_loop_control_loop() {
         return false;
     }
     while ((requested_state_ == AXIS_STATE_UNDEFINED) && motor_.is_armed_) {
+        service_safety_supervisor();
         osDelay(1);
     }
 
@@ -1596,6 +2081,10 @@ bool Axis::run_closed_loop_control_loop() {
 bool Axis::run_idle_loop() {
     last_drv_fault_ = motor_.gate_driver_.get_error();
     while (requested_state_ == AXIS_STATE_UNDEFINED) {
+        service_safety_supervisor();
+        if (requested_state_ != AXIS_STATE_UNDEFINED || motor_.is_armed_) {
+            break;
+        }
         motor_.setup();
         osDelay(1);
     }
@@ -1605,6 +2094,8 @@ bool Axis::run_idle_loop() {
 // Infinite loop that does calibration and enters main control loop as appropriate
 void Axis::run_state_machine_loop() {
     for (;;) {
+        service_safety_supervisor();
+
         // Load the task chain if a specific request is pending
         if (requested_state_ != AXIS_STATE_UNDEFINED) {
             size_t pos = 0;
@@ -1626,8 +2117,6 @@ void Axis::run_state_machine_loop() {
             }
             task_chain_[pos++] = AXIS_STATE_UNDEFINED;  // TODO: bounds checking
             requested_state_ = AXIS_STATE_UNDEFINED;
-            // Auto-clear any invalid state error
-            error_ &= ~ERROR_INVALID_STATE;
         }
 
         // START only wakes this thread. All stage selection and later
@@ -1846,7 +2335,17 @@ void Axis::run_state_machine_loop() {
 
             default:
             invalid_state_label:
-                error_ |= ERROR_INVALID_STATE;
+                {
+                    odrive::fault::FaultRecord record;
+                    record.control_sequence = odrv.n_evt_control_loop_;
+                    record.timestamp_cycles = DWT->CYCCNT;
+                    record.source = odrive::fault::FaultSource::AXIS;
+                    record.code = odrive::fault::FaultCode::INVALID_STATE;
+                    record.site = odrive::fault::FaultSite::STATE_TRANSITION;
+                    record.severity = odrive::fault::FaultSeverity::LATCHED;
+                    record.arg0 = static_cast<uint32_t>(current_state_);
+                    raise_fault(record, ERROR_INVALID_STATE);
+                }
                 status = false;  // this will set the state to idle
                 break;
         }

@@ -133,13 +133,21 @@ ResolverResult Resolver::update(uint16_t main_count, bool main_valid,
         candidate.second_best_margin_rad < config_.ambiguity_margin_rad;
 
     bool accepted = false;
+    // Use the tighter threshold only while acquiring a branch.  Once a
+    // branch is locked, retain it up to the reject threshold and rely on the
+    // independent ambiguity and continuity checks.  Treating the hysteresis
+    // band as an invalid sample made normal stationary settling repeatedly
+    // drop the resolver and starve the downstream PLL.
+    const float active_residual_limit = accepted_position_valid_
+        ? config_.residual_reject_rad
+        : config_.residual_accept_rad;
     if (candidate.ambiguous) {
         candidate.locked = false;
         candidate.fault = RESOLVER_FAULT_AMBIGUOUS;
     } else if (best_abs > config_.residual_reject_rad) {
         candidate.locked = false;
         candidate.fault = RESOLVER_FAULT_RESIDUAL;
-    } else if (best_abs <= config_.residual_accept_rad) {
+    } else if (best_abs <= active_residual_limit) {
         if (!accepted_position_valid_) {
             if (pending_branch_ == best_branch) {
                 pending_count_ = static_cast<uint8_t>(pending_count_ + 1u);

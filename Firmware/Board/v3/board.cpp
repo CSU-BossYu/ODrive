@@ -384,6 +384,21 @@ void TIM8_UP_TIM13_IRQHandler(void) {
     // If we are counting down, we just sampled in SVM vector 7, with zero current
     bool counting_down = TIM8->CR1 & TIM_CR1_DIR;
 
+    if (odrv.realtime_timing_resync_pending_) {
+        // NVM storage runs only while disarmed and can hold off these IRQs for
+        // many PWM periods. Drop any stale software-triggered control pass and
+        // accept the timer's current phase as the new baseline. The next normal
+        // up-count event resumes sampling and all runtime deadline checks remain
+        // active outside this one-shot maintenance recovery.
+        NVIC_ClearPendingIRQ(ControlLoop_IRQn);
+        clear_realtime_adc_flags();
+        counting_down_ = counting_down;
+        timestamp_ += TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1);
+        odrv.realtime_timing_resync_pending_ = false;
+        TaskTimer::enabled = false;
+        return;
+    }
+
     bool timer_update_missed = (counting_down_ == counting_down);
     if (timer_update_missed) {
         motors[0].disarm_with_error(Motor::ERROR_TIMER_UPDATE_MISSED);

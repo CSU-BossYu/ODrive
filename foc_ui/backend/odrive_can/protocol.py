@@ -1,9 +1,7 @@
-"""ODrive CAN Simple protocol constants and codec.
+"""ODrive product CAN codecs and compatibility definitions.
 
-Single source of truth for all CAN frame IDs, enums, error tables, and
-encode/decode functions. Hand-written from:
-  - Firmware/communication/can/CAN_PROTOCOL_PRODUCTION.md
-  - tools/odrive-cansimple.dbc
+Message IDs are generated from ``docs/can_product_protocol_schema.json``.
+Signal codecs and legacy enums remain hand-written compatibility code.
 
 Frame ID format: ``(node_id << 5) | command_id``
   - Node ID: 6 bits (0..63)
@@ -21,6 +19,10 @@ import struct
 from enum import IntEnum
 from typing import Any
 
+from .can_product_schema_generated import (
+    ProductCanMessageId, decode_command_ack, encode_management_command,
+)
+
 # --------------------------------------------------------------------------- #
 # Node ID
 # --------------------------------------------------------------------------- #
@@ -34,34 +36,37 @@ NODE_ID_DEFAULT = 0
 
 class CmdId(IntEnum):
     """CAN command ID (5-bit, 0x00..0x1F)."""
-    NMT                     = 0x000
-    HEARTBEAT               = 0x001
-    ESTOP                   = 0x002
-    GET_MOTOR_ERROR         = 0x003
-    GET_ENCODER_ERROR       = 0x004
-    SET_AXIS_NODE_ID        = 0x006
-    SET_AXIS_STATE          = 0x007
-    GET_ENCODER_ESTIMATES   = 0x009
-    GET_ENCODER_COUNT       = 0x00A
-    SET_CONTROLLER_MODE     = 0x00B
-    SET_INPUT_POS           = 0x00C
-    SET_INPUT_VEL           = 0x00D
-    SET_INPUT_TORQUE        = 0x00E
-    SET_LIMITS              = 0x00F
-    SET_TRAJ_VEL_LIMIT      = 0x011
-    SET_TRAJ_ACCEL_LIMITS   = 0x012
-    SET_TRAJ_INERTIA        = 0x013
-    GET_IQ                  = 0x014
-    REBOOT                  = 0x016
-    GET_BUS_VOLTAGE_CURRENT = 0x017
-    CLEAR_ERRORS            = 0x018
-    SET_LINEAR_COUNT        = 0x019
-    SET_POS_GAIN            = 0x01A
-    SET_VEL_GAINS           = 0x01B
-    GET_ADC_VOLTAGE         = 0x01C
-    GET_CONTROLLER_ERROR    = 0x01D
-    EXTENDED_COMMAND        = 0x01E
-    SET_MIT_CONTROL         = 0x01F
+    NMT = ProductCanMessageId.NMT
+    HEARTBEAT = ProductCanMessageId.HEARTBEAT
+    ESTOP = ProductCanMessageId.ESTOP
+    GET_MOTOR_ERROR = ProductCanMessageId.GET_MOTOR_ERROR
+    GET_ENCODER_ERROR = ProductCanMessageId.GET_ENCODER_ERROR
+    COMMAND_ACK = ProductCanMessageId.COMMAND_ACK
+    SET_AXIS_NODE_ID = ProductCanMessageId.SET_AXIS_NODE_ID
+    SET_AXIS_STATE = ProductCanMessageId.SET_AXIS_STATE
+    MANAGEMENT_COMMAND = ProductCanMessageId.MANAGEMENT_COMMAND
+    GET_ENCODER_ESTIMATES = ProductCanMessageId.ENCODER_ESTIMATES
+    GET_ENCODER_COUNT = ProductCanMessageId.GET_ENCODER_COUNT
+    SET_CONTROLLER_MODE = ProductCanMessageId.SET_CONTROLLER_MODE
+    SET_INPUT_POS = ProductCanMessageId.SET_INPUT_POS
+    SET_INPUT_VEL = ProductCanMessageId.SET_INPUT_VEL
+    SET_INPUT_TORQUE = ProductCanMessageId.SET_INPUT_TORQUE
+    SET_LIMITS = ProductCanMessageId.SET_LIMITS
+    PRODUCT_STATUS = ProductCanMessageId.PRODUCT_STATUS
+    SET_TRAJ_VEL_LIMIT = ProductCanMessageId.SET_TRAJ_VEL_LIMIT
+    SET_TRAJ_ACCEL_LIMITS = ProductCanMessageId.SET_TRAJ_ACCEL_LIMITS
+    SET_TRAJ_INERTIA = ProductCanMessageId.SET_TRAJ_INERTIA
+    GET_IQ = ProductCanMessageId.IQ
+    REBOOT = ProductCanMessageId.REBOOT
+    GET_BUS_VOLTAGE_CURRENT = ProductCanMessageId.BUS_VOLTAGE_CURRENT
+    CLEAR_ERRORS = ProductCanMessageId.CLEAR_ERRORS
+    SET_LINEAR_COUNT = ProductCanMessageId.SET_LINEAR_COUNT
+    SET_POS_GAIN = ProductCanMessageId.SET_POS_GAIN
+    SET_VEL_GAINS = ProductCanMessageId.SET_VEL_GAINS
+    GET_ADC_VOLTAGE = ProductCanMessageId.GET_ADC_VOLTAGE
+    GET_CONTROLLER_ERROR = ProductCanMessageId.GET_CONTROLLER_ERROR
+    EXTENDED_COMMAND = ProductCanMessageId.LEGACY_EXTENDED
+    SET_MIT_CONTROL = ProductCanMessageId.SET_MIT_CONTROL
 
 
 def make_frame_id(node_id: int, cmd_id: CmdId | int) -> int:
@@ -493,6 +498,25 @@ def decode_heartbeat(data: bytes) -> dict[str, Any]:
     }
 
 
+def decode_product_status(data: bytes) -> dict[str, Any]:
+    """Decode generated product status: fault/safety/operation/readiness."""
+    if len(data) != 8:
+        return {}
+    fault_summary, safety_state, operation, readiness, flags = struct.unpack(
+        "<IBBBB", data)
+    return {
+        "fault_summary": fault_summary,
+        "safety_state": safety_state,
+        "operation": operation,
+        "readiness_flags": readiness,
+        "flags": flags,
+        "armed": bool(flags & 0x01),
+        "fault_latched": bool(flags & 0x02),
+        "comm_timeout": bool(flags & 0x04),
+        "command_watchdog_expired": bool(flags & 0x08),
+    }
+
+
 def decode_encoder_estimates(data: bytes) -> dict[str, float]:
     """Decode 0x009 Get_Encoder_Estimates (8 bytes).
     DBC BO_ 9 (lines 62-63): pos(float32 LE rev), vel(float32 LE rev/s)."""
@@ -614,6 +638,19 @@ def decode_frame_meaning(cmd_id: int, data: bytes, direction: str) -> str:
                 return ''
             return (f"state={hb.get('axis_state')} "
                     f"err=0x{hb.get('axis_error', 0):x}")
+        if cmd == CmdId.PRODUCT_STATUS and direction == 'rx':
+            status = decode_product_status(data)
+            return (f"safety={status.get('safety_state')} "
+                    f"op={status.get('operation')} "
+                    f"ready=0x{status.get('readiness_flags', 0):02x} "
+                    f"fault=0x{status.get('fault_summary', 0):x}") if status else ''
+        if cmd == CmdId.COMMAND_ACK and direction == 'rx':
+            ack = decode_command_ack(data)
+            return (f"req={ack['request_id']} status={ack['status']} "
+                    f"epoch={ack['state_epoch_low']} reason={ack['reason']}")
+        if cmd == CmdId.MANAGEMENT_COMMAND and direction == 'tx' and n == 8:
+            req, typ, op, arg0 = struct.unpack('<HBBI', data)
+            return f"req={req} command={typ} operation={op} arg0={arg0}"
         if cmd == CmdId.GET_ENCODER_ESTIMATES:
             if n < 8:
                 return 'request'

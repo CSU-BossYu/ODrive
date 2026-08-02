@@ -129,6 +129,18 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >RAM AT> FLASH
 
+  /* Retained across Cortex system reset. This section is never initialized or
+     cleared by Reset_Handler. It is not guaranteed to survive power loss. */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _snoinit = .;
+    KEEP(*(.noinit))
+    KEEP(*(.noinit.*))
+    . = ALIGN(4);
+    _enoinit = .;
+  } >RAM
+
   _siccmram = LOADADDR(.ccmram);
 
   /* CCM-RAM section 

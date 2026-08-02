@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "layers": {
+    "L0_NATIVE_UNIT": {
+      "hardware": false,
+      "entry": "ctest --preset host-debug",
+      "coverage": ["fault core", "protocol codecs", "scope/rings", "trajectory"]
+    },
+    "L1_NATIVE_SCENARIO": {
+      "hardware": false,
+      "entry": "ctest --preset host-debug",
+      "python_driver": "odrive_hil.native_scenario.NativeScenario",
+      "python_smoke": "native_scenario_smoke.py",
+      "native_library": "odrive_scenario",
+      "coverage": ["SafetySupervisor event sequences", "timeouts", "command results", "versioned USB replay mutations"]
+    },
+    "L1_PLATFORM_PORTS": {
+      "hardware": false,
+      "entry": "ctest --preset host-debug",
+      "contract": "MotorControl/platform_ports.hpp",
+      "coverage": ["sensor pair evidence", "power-stage PWM", "fail-closed disarm", "unbound ports"]
+    },
+    "L2_TARGET_LOOPBACK": {
+      "hardware": true,
+      "power_stage": false,
+      "entry": "python Firmware/Tests/test_usb_debug_protocol.py",
+      "coverage": ["USB framing", "CRC and sequence rejection", "scope transport", "Test Session lease and ownership"]
+    },
+    "L3_HIL": {
+      "hardware": true,
+      "power_stage": true,
+      "safety_contract": "odrive_hil.HilSession",
+      "migrated": [
+        "hex_4342_mt6826s/repro_ui_velocity_stream.py",
+        "hex_4342_mt6826s/test_position_steps.py",
+        "hex_4342_mt6826s/test_velocity_steps.py"
+      ],
+      "coverage": ["encoder", "motor", "closed loop", "protection"]
+    },
+    "L4_PRODUCT_CAN": {
+      "hardware": "optional",
+      "entry": "python tools/check_phase7_static_gate.py",
+      "coverage": ["public CAN contract", "golden codecs", "bus load"]
+    },
+    "L5_READONLY_SYSTEM": {
+      "hardware": true,
+      "power_stage": false,
+      "entry": "python tools/run_architecture_qualification.py --hardware-readonly",
+      "coverage": ["firmware identity", "USB parser", "read-only ownership", "ARM rejection"]
+    }
+  }
+}

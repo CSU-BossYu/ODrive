@@ -16,7 +16,10 @@ import argparse
 import math
 import time
 
-from common import (
+from hil_bootstrap import ensure_test_support
+ensure_test_support()
+
+from odrive_hil.can_simple import (
     AXIS_STATE_IDLE,
     AXIS_STATES,
     EXT_STATUS,

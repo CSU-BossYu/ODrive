@@ -15,6 +15,12 @@ pydantic==2.10.4
 # reproducibility).
 websockets==14.1
 
+# USB CDC serial transport (BSD-3-Clause)
+pyserial==3.5
+
 # CAN bus access (MIT) -- supports PCAN, SocketCAN, Kvaser, etc.
 # Used by the CAN backend package.
 python-can==4.4.2
+
+# USB CDC debug/test transport (BSD-3-Clause).
+pyserial==3.5

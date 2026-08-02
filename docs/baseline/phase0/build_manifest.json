@@ -1,0 +1,15 @@
+{
+  "board": "v3.6-56V",
+  "compile_options": [
+    "-O2"
+  ],
+  "configuration": "firmware-release",
+  "dirty": true,
+  "git_revision": "91a9d60e5496fcd9d012decf4698a16db6702938",
+  "manifest_version": 1,
+  "protocol_version": "0x0000010B",
+  "targets": {
+    "firmware": true,
+    "native_tests": false
+  }
+}

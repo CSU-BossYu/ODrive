@@ -21,7 +21,10 @@ Usage:
 import argparse
 import struct
 import time
-from common import (
+from hil_bootstrap import ensure_test_support
+ensure_test_support()
+
+from odrive_hil.can_simple import (
     open_bus, send, wait_heartbeat, get_status_ex,
     ext_request, clear_errors, set_limits, set_requested_state,
     set_controller_modes, set_input_pos, set_input_vel, set_input_torque,

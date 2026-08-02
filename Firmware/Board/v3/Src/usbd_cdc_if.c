@@ -63,6 +63,16 @@
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
+static uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
+
+// USB IRQ is the sole producer and the USB server task is the sole consumer.
+// Keep this boundary in C so the interrupt never enters the C++ protocol
+// transport, parser, allocator, or control graph.
+#define USB_CDC_INGRESS_CAPACITY 1024U
+static uint8_t usb_cdc_ingress[USB_CDC_INGRESS_CAPACITY];
+static volatile uint16_t usb_cdc_ingress_write = 0U;
+static volatile uint16_t usb_cdc_ingress_read_index = 0U;
+
 /* USER CODE END PV */
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY
@@ -170,6 +180,9 @@ static int8_t CDC_Init_FS(void)
 {
   /* USER CODE BEGIN 3 */
   /* Set Application Buffers */
+  (void)USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS, CDC_OUT_EP);
+  (void)USBD_CDC_ReceivePacket(&hUsbDeviceFS, UserRxBufferFS,
+                               APP_RX_DATA_SIZE, CDC_OUT_EP);
   osMessagePut(usb_event_queue, 1, 0);
   return (USBD_OK);
   /* USER CODE END 3 */
@@ -251,7 +264,13 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
     break;
 
   case CDC_SET_CONTROL_LINE_STATE:
-
+    // DTR is a CDC serial control line, not a USB connection boundary. In
+    // particular, do not re-arm an already active OUT endpoint here: Windows
+    // toggles DTR on every COM-port open and doing so would overwrite the
+    // low-level receive transfer state. CDC_Init_FS/CDC_DeInit_FS own the
+    // physical connection lifetime; HELLO owns the binary session lifetime.
+    (void)pbuf;
+    (void)length;
     break;
 
   case CDC_SEND_BREAK:
@@ -283,13 +302,51 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len, uint8_t endpoint_pair)
 {
   /* USER CODE BEGIN 6 */
-  // Production USB is stdout-only. Host-to-device data is intentionally
-  // ignored; all control traffic uses CAN.
-  (void)Buf;
-  (void)Len;
-  (void)endpoint_pair;
+  // The USB callback is an ingress boundary only. It copies bytes into the
+  // bounded RX ring and wakes the USB task; it never parses, validates CRC, or
+  // touches control or safety state.
+  if (Buf != NULL && Len != NULL && *Len != 0U && endpoint_pair == CDC_OUT_EP) {
+    ++usb_stats_.rx_cnt;
+    for (uint32_t index = 0U; index < *Len; ++index) {
+      const uint16_t next = (uint16_t)(
+          (usb_cdc_ingress_write + 1U) % USB_CDC_INGRESS_CAPACITY);
+      if (next == usb_cdc_ingress_read_index) {
+        break;
+      }
+      usb_cdc_ingress[usb_cdc_ingress_write] = Buf[index];
+      __DMB();
+      usb_cdc_ingress_write = next;
+    }
+    osMessagePut(usb_event_queue, 8, 0);
+  }
+
+  // The application owns the RX-buffer lifetime. Re-arm the OUT endpoint
+  // only after the packet has been copied into the bounded ISR ingress ring.
+  // This follows the STM32 CDC application callback contract and prevents
+  // the class driver and application from racing over endpoint ownership.
+  if (endpoint_pair == CDC_OUT_EP) {
+    (void)USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS, CDC_OUT_EP);
+    (void)USBD_CDC_ReceivePacket(&hUsbDeviceFS, UserRxBufferFS,
+                                 CDC_DATA_FS_OUT_PACKET_SIZE, CDC_OUT_EP);
+  }
   return (USBD_OK);
   /* USER CODE END 6 */
+}
+
+size_t usb_cdc_ingress_read(uint8_t* output, size_t capacity)
+{
+  size_t count = 0U;
+  if (output == NULL) {
+    return 0U;
+  }
+  while (count < capacity &&
+         usb_cdc_ingress_read_index != usb_cdc_ingress_write) {
+    output[count++] = usb_cdc_ingress[usb_cdc_ingress_read_index];
+    usb_cdc_ingress_read_index = (uint16_t)(
+        (usb_cdc_ingress_read_index + 1U) % USB_CDC_INGRESS_CAPACITY);
+    __DMB();
+  }
+  return count;
 }
 
 /**

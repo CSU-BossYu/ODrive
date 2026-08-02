@@ -2,26 +2,21 @@
 
 Calibration is commanded through CAN subcommand `0x0F`; CAN does not carry the
 high-rate samples. While a session captures data, the firmware drains its fixed
-SPSC record queue to the stdout USB CDC endpoint as binary `ODCR` frames. Normal
-text logs may appear between frames, so consumers must scan for magic and
-validate both CRCs.
+SPSC record queue to the versioned USB Debug/Test binary channel as
+`CALIBRATION_DATA` payloads. Calibration data is no longer written through the
+stdout text queue and therefore cannot interleave raw bytes with printf output.
 
-## ODCR frame schema 1
+## CALIBRATION_DATA payload schema 1
 
-All integers and floats are little-endian. The packed 28-byte header contains:
+The enclosing `ODRF` frame uses the Phase 4 fixed header and CRC. Its payload
+contains the following explicit little-endian fields (no C++ struct padding):
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| magic | 4 bytes | ASCII `ODCR` |
-| schema | uint16 | frame schema, currently 1 |
-| header_size | uint16 | 28 |
-| axis | uint16 | source axis index |
 | record_type | uint16 | 1 full, 2 electrical-fast |
 | payload_size | uint16 | 112 or 64 bytes |
-| flags | uint16 | transport flags, currently 0 |
 | sequence | uint32 | must equal the sequence inside the payload |
-| payload_crc32 | uint32 | IEEE CRC-32 of payload |
-| header_crc32 | uint32 | IEEE CRC-32 of the preceding 24 header bytes |
+| sample payload | bytes | fixed calibration record, little-endian |
 
 The electrical-fast record is emitted at PWM rate during R/L excitation. The
 full record is emitted at 1 kHz during geometry motion and adds paired main/aux
@@ -34,16 +29,16 @@ counter, creates a sample-sequence gap, and marks the next accepted record with
 but does not invalidate synchronous on-device identification because the fitter
 consumes the sample before the optional transport copy is queued.
 
-USB capture is optional. When stdout CDC is disconnected, the transport thread
+USB capture is optional. When the binary CDC session is disconnected, the transport thread
 drains and discards its record copies so CAN-only calibration cannot fail merely
 because no stream consumer is attached. This does not affect the synchronous
 on-device geometry fitter. When a host is connected, queue overflow remains
 explicitly visible through the record flag and CAN dropped-record counter.
 
-The host implementation is `CalibrationStreamDecoder` in
-`foc_ui/backend/odrive_can/calibration_record.py`. It handles arbitrary CDC
-fragmentation, text-log interleaving, corrupt-frame rejection, and resynchronizes
-without unbounded buffering.
+The host implementation must decode the common Phase 4 frame first and then
+interpret the `CALIBRATION_DATA` payload. The common decoder handles arbitrary
+CDC fragmentation, CRC rejection, and resynchronization without unbounded
+buffering.
 
 ## Relative-angle model
 

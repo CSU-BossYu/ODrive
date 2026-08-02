@@ -163,8 +163,10 @@ Motor::Motor(TIM_HandleTypeDef* timer,
              TGateDriver& gate_driver,
              TOpAmp& opamp,
              OnboardThermistorCurrentLimiter& fet_thermistor,
-             OffboardThermistorCurrentLimiter& motor_thermistor) :
+             OffboardThermistorCurrentLimiter& motor_thermistor,
+             const odrive::platform::PowerStagePort* power_stage) :
         timer_(timer),
+        power_stage_(power_stage),
         current_sensor_mask_(current_sensor_mask),
         shunt_conductance_(shunt_conductance),
         gate_driver_(gate_driver),
@@ -219,11 +221,11 @@ bool Motor::arm(PhaseControlLaw<3>* control_law) {
             armed_state_ = 1;
             is_armed_ = true;
         } else {
-            error_ |= Motor::ERROR_BRAKE_RESISTOR_DISARMED;
+            set_error(Motor::ERROR_BRAKE_RESISTOR_DISARMED);
         }
     }
 
-    return true;
+    return is_armed_;
 }
 
 /**
@@ -236,19 +238,23 @@ bool Motor::arm(PhaseControlLaw<3>* control_law) {
  * @param tentative: If true, the update is not counted as "refresh".
  */
 void Motor::apply_pwm_timings(uint16_t timings[3], bool tentative) {
+    bool write_ok = true;
     CRITICAL_SECTION() {
         if (odrv.config_.enable_brake_resistor && !brake_resistor_armed) {
             disarm_with_error(ERROR_BRAKE_RESISTOR_DISARMED);
         }
 
-        TIM_HandleTypeDef* htim = timer_;
-        TIM_TypeDef* tim = htim->Instance;
-        tim->CCR1 = timings[0];
-        tim->CCR2 = timings[1];
-        tim->CCR3 = timings[2];
-        
-        if (!tentative) {
-            if (is_armed_) {
+        if (power_stage_ != nullptr) {
+            write_ok = power_stage_->apply(
+                timings, !tentative && is_armed_);
+        } else {
+            TIM_HandleTypeDef* htim = timer_;
+            TIM_TypeDef* tim = htim->Instance;
+            tim->CCR1 = timings[0];
+            tim->CCR2 = timings[1];
+            tim->CCR3 = timings[2];
+
+            if (!tentative && is_armed_) {
                 // Set the Automatic Output Enable so that the Master Output Enable
                 // bit will be automatically enabled on the next update event.
                 tim->BDTR |= TIM_BDTR_AOE;
@@ -264,6 +270,9 @@ void Motor::apply_pwm_timings(uint16_t timings[3], bool tentative) {
         //    disarm_with_error(ERROR_CONTROL_DEADLINE_MISSED);
         //}
     }
+    if (!write_ok) {
+        disarm_with_error(ERROR_DRV_FAULT);
+    }
 }
 
 /**
@@ -275,6 +284,7 @@ void Motor::apply_pwm_timings(uint16_t timings[3], bool tentative) {
  */
 bool Motor::disarm(bool* p_was_armed) {
     bool was_armed;
+    bool hardware_disarmed = true;
     
     CRITICAL_SECTION() {
         was_armed = is_armed_;
@@ -283,9 +293,13 @@ bool Motor::disarm(bool* p_was_armed) {
         }
         is_armed_ = false;
         armed_state_ = 0;
-        TIM_HandleTypeDef* timer = timer_;
-        timer->Instance->BDTR &= ~TIM_BDTR_AOE; // prevent the PWMs from automatically enabling at the next update
-        __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(timer);
+        if (power_stage_ != nullptr) {
+            hardware_disarmed = power_stage_->force_disarm();
+        } else {
+            TIM_HandleTypeDef* timer = timer_;
+            timer->Instance->BDTR &= ~TIM_BDTR_AOE; // prevent the PWMs from automatically enabling at the next update
+            __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(timer);
+        }
         control_law_ = nullptr;
         current_control_.reset();
     }
@@ -299,7 +313,7 @@ bool Motor::disarm(bool* p_was_armed) {
         *p_was_armed = was_armed;
     }
 
-    return true;
+    return hardware_disarmed;
 }
 
 // @brief Tune the current controller based on phase resistance and inductance
@@ -383,9 +397,28 @@ bool Motor::setup() {
     return true;
 }
 
+void Motor::set_error(Motor::Error error) {
+    const uint64_t new_bits = static_cast<uint64_t>(error) &
+                              ~static_cast<uint64_t>(error_);
+    if (axis_ && new_bits != 0u) {
+        odrive::fault::FaultRecord record;
+        record.control_sequence = odrv.n_evt_control_loop_;
+        record.timestamp_cycles = odrive::platform::cycle_count();
+        record.source = odrive::fault::FaultSource::MOTOR;
+        record.code = (error == ERROR_UNKNOWN_PHASE_VEL)
+            ? odrive::fault::FaultCode::FEEDBACK_MISSING
+            : odrive::fault::FaultCode::MOTOR_ERROR;
+        record.site = odrive::fault::FaultSite::MOTOR_UPDATE;
+        record.severity = odrive::fault::FaultSeverity::LATCHED;
+        record.arg0 = static_cast<uint32_t>(new_bits);
+        record.arg1 = static_cast<uint32_t>(new_bits >> 32u);
+        axis_->raise_fault(record, Axis::ERROR_MOTOR_FAILED);
+    }
+    error_ |= error;  // LEGACY_ERROR_PROJECTION
+}
+
 void Motor::disarm_with_error(Motor::Error error){
-    error_ |= error;
-    axis_->error_ |= Axis::ERROR_MOTOR_FAILED;
+    set_error(error);
     last_error_time_ = odrv.n_evt_control_loop_ * current_meas_period;
     disarm();
 }
@@ -431,7 +464,7 @@ float Motor::max_available_torque() {
 std::optional<float> Motor::phase_current_from_adcval(uint32_t ADCValue) {
     // Make sure the measurements don't come too close to the current sensor's hardware limitations
     if (ADCValue < CURRENT_ADC_LOWER_BOUND || ADCValue > CURRENT_ADC_UPPER_BOUND) {
-        error_ |= ERROR_CURRENT_SENSE_SATURATION;
+        set_error(ERROR_CURRENT_SENSE_SATURATION);
         return std::nullopt;
     }
 
@@ -513,7 +546,7 @@ bool Motor::measure_phase_inductance(float test_voltage) {
     
     // TODO arbitrary values set for now
     if (!(config_.phase_inductance >= 2e-6f && config_.phase_inductance <= 4000e-6f)) {
-        error_ |= ERROR_PHASE_INDUCTANCE_OUT_OF_RANGE;
+        set_error(ERROR_PHASE_INDUCTANCE_OUT_OF_RANGE);
         success = false;
     }
 
@@ -541,7 +574,7 @@ void Motor::update(uint32_t timestamp) {
     // Load torque setpoint, convert to motor direction
     std::optional<float> maybe_torque = torque_setpoint_src_.present();
     if (!maybe_torque.has_value()) {
-        error_ |= ERROR_UNKNOWN_TORQUE;
+        set_error(ERROR_UNKNOWN_TORQUE);
         return;
     }
     float torque = direction_ * *maybe_torque;
@@ -569,12 +602,23 @@ void Motor::update(uint32_t timestamp) {
 
     std::optional<float> phase_vel = phase_vel_src_.present();
 
-    if (config_.R_wL_FF_enable) {
-        if (!phase_vel.has_value()) {
-            error_ |= ERROR_UNKNOWN_PHASE_VEL;
-            return;
+    // Feedback ports are deliberately reset at the start of every control
+    // iteration. During closed-loop setup the encoder path is connected before
+    // the PWM is armed, so a short acquisition window can legitimately leave
+    // phase_vel empty. It is not a motor fault while the power stage is off.
+    // Once armed, however, losing phase velocity is safety-critical and must
+    // disarm immediately.
+    const bool phase_vel_required =
+        config_.R_wL_FF_enable || config_.bEMF_FF_enable;
+    if (phase_vel_required && !phase_vel.has_value()) {
+        Vdq_setpoint_ = {0.0f, 0.0f};
+        if (is_armed_) {
+            disarm_with_error(ERROR_UNKNOWN_PHASE_VEL);
         }
+        return;
+    }
 
+    if (config_.R_wL_FF_enable) {
         vd -= *phase_vel * config_.phase_inductance * iq;
         vq += *phase_vel * config_.phase_inductance * id;
         vd += config_.phase_resistance * id;
@@ -582,11 +626,6 @@ void Motor::update(uint32_t timestamp) {
     }
 
     if (config_.bEMF_FF_enable) {
-        if (!phase_vel.has_value()) {
-            error_ |= ERROR_UNKNOWN_PHASE_VEL;
-            return;
-        }
-
         vq += *phase_vel * config_.flux_linkage;
     }
     

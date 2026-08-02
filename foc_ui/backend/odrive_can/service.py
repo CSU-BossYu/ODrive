@@ -22,14 +22,15 @@ from typing import Any, Awaitable, Callable, Optional
 from .protocol import (
     CmdId, AxisState, ControlMode, InputMode,
     ExtSubCmd, ExtStatus, ExtType,
-    decode_heartbeat, decode_encoder_estimates, decode_encoder_count, decode_iq, decode_bus_vi,
+    decode_heartbeat, decode_product_status, decode_encoder_estimates,
+    decode_encoder_count, decode_iq, decode_bus_vi, decode_command_ack,
     decode_motor_error, decode_encoder_error, decode_controller_error,
     decode_extended_response,
     encode_set_axis_state, encode_set_controller_mode,
     encode_set_input_pos, encode_set_input_vel, encode_set_input_torque,
     encode_set_pos_gain, encode_set_vel_gains,
     encode_mit_control, encode_mit_neutral,
-    encode_extended_request,
+    encode_extended_request, encode_management_command,
     MIT_P_MIN, MIT_P_MAX, MIT_V_MIN, MIT_V_MAX,
     OVERSPEED_SNAPSHOT_ITEMS,
     CONTROL_CONFIG_ITEMS,
@@ -194,6 +195,8 @@ class ODriveService:
         # requests so a response cannot be consumed by another in-flight call.
         self._ext_pending: dict[tuple[int, int], asyncio.Future] = {}
         self._ext_lock = asyncio.Lock()
+        self._management_sequence: int = 0
+        self._management_pending: dict[int, asyncio.Future] = {}
 
         # Safety monitoring
         self._safety_task: Optional[asyncio.Task] = None
@@ -265,14 +268,30 @@ class ODriveService:
             if self.on_heartbeat_update:
                 await self.on_heartbeat_update(hb, ts)
 
-            # If error flags are set, request detailed error registers
-            # (throttled to prevent CAN bus flood on persistent faults)
-            if hb['motor_err_flag']:
-                await self._request_error_detail(CmdId.GET_MOTOR_ERROR)
-            if hb['encoder_err_flag']:
-                await self._request_error_detail(CmdId.GET_ENCODER_ERROR)
-            if hb['controller_err_flag']:
-                await self._request_error_detail(CmdId.GET_CONTROLLER_ERROR)
+            # Detailed fault diagnosis is intentionally not fetched over CAN.
+            # PRODUCT_STATUS is the bounded operational summary; USB owns the
+            # structured fault timeline and exact source-location workflow.
+
+        elif cmd_id == CmdId.PRODUCT_STATUS:
+            status = decode_product_status(data)
+            if status:
+                self.cache.heartbeat.axis_error = status['fault_summary']
+                self.cache.heartbeat.safety_state = status['safety_state']
+                self.cache.heartbeat.operation = status['operation']
+                self.cache.heartbeat.readiness_flags = status['readiness_flags']
+                self.cache.heartbeat.product_flags = status['flags']
+                self.cache.heartbeat.comm_timeout = status['comm_timeout']
+                self.cache.heartbeat.cmd_watchdog_expired = \
+                    status['command_watchdog_expired']
+
+        elif cmd_id == CmdId.COMMAND_ACK:
+            try:
+                ack = decode_command_ack(data)
+            except ValueError:
+                return
+            pending = self._management_pending.get(ack['request_id'])
+            if pending is not None and not pending.done() and ack['status'] != 0:
+                pending.set_result(ack)
 
         elif cmd_id == CmdId.GET_ENCODER_ESTIMATES:
             d = decode_encoder_estimates(data)
@@ -366,7 +385,6 @@ class ODriveService:
             try:
                 # Stagger requests to spread bus load
                 await self._send_request(CmdId.GET_ENCODER_ESTIMATES)
-                await self._send_request(CmdId.GET_ENCODER_COUNT)
                 await asyncio.sleep(third)
 
                 await self._send_request(CmdId.GET_IQ)
@@ -375,10 +393,7 @@ class ODriveService:
                 await self._send_request(CmdId.GET_BUS_VOLTAGE_CURRENT)
                 await asyncio.sleep(third)
 
-                # Emit synthesized telemetry at poll rate
-                if self.cache.heartbeat.motor_err_flag:
-                    await self._request_system_error_detail()
-
+                # Emit synthesized telemetry at poll rate.
                 if self.on_telemetry_update:
                     await self.on_telemetry_update(
                         self.cache.synthesize_telemetry(), time.monotonic())
@@ -415,8 +430,19 @@ class ODriveService:
     # ------------------------------------------------------------------ #
 
     async def set_axis_state(self, state: AxisState | int) -> None:
-        data = encode_set_axis_state(state)
-        await self._send_cmd(CmdId.SET_AXIS_STATE, data)
+        state_value = int(state)
+        if state_value == int(AxisState.IDLE):
+            await self.management_command(command_type=3)
+        elif state_value == int(AxisState.CLOSED_LOOP_CONTROL):
+            operation_result = await self.management_command(
+                command_type=1, operation=1)
+            if operation_result['status'] == 2:
+                await self.management_command(command_type=2)
+        else:
+            # Calibration/control state semantics remain on the compatibility
+            # path until their planned redesign.
+            data = encode_set_axis_state(state)
+            await self._send_cmd(CmdId.SET_AXIS_STATE, data)
         if self.on_log:
             try:
                 name = AxisState(int(state)).name
@@ -541,7 +567,11 @@ class ODriveService:
         self._mit_last_ts = time.monotonic()
 
     async def clear_errors(self) -> None:
-        await self._send_cmd(CmdId.CLEAR_ERRORS, b'')
+        result = await self.management_command(command_type=4)
+        if result['status'] != 2:
+            if self.on_log:
+                self.on_log(f"[CMD] clear_errors rejected: {result}")
+            return
         # Clear cached error codes immediately. Otherwise the UI keeps showing
         # a stale motor/encoder/controller error until the next heartbeat
         # re-flags it (which never happens once the fault is actually cleared),
@@ -570,6 +600,24 @@ class ODriveService:
         """Send a CAN command via executor to avoid blocking the event loop."""
         await asyncio.get_running_loop().run_in_executor(
             None, self.transport.send, cmd_id, data)
+
+    async def management_command(self, command_type: int, operation: int = 0,
+                                 arg0: int = 0, timeout: float = 2.0) -> dict:
+        """Send a product management transaction and await its terminal ACK."""
+        self._management_sequence = (self._management_sequence + 1) & 0xFFFF
+        if self._management_sequence == 0:
+            self._management_sequence = 1
+        request_id = self._management_sequence
+        loop = asyncio.get_running_loop()
+        pending = loop.create_future()
+        self._management_pending[request_id] = pending
+        payload = encode_management_command(
+            request_id, command_type, operation, arg0)
+        try:
+            await self._send_cmd(CmdId.MANAGEMENT_COMMAND, payload)
+            return await asyncio.wait_for(pending, timeout=timeout)
+        finally:
+            self._management_pending.pop(request_id, None)
 
     # ------------------------------------------------------------------ #
     # Extended Command Correlation
@@ -743,10 +791,20 @@ class ODriveService:
         )
         result: dict[str, Any] = {}
         for name, item in fields:
-            response = await self.ext_command(
-                ExtSubCmd.CALIBRATION_SESSION, item)
+            response: dict[str, Any] = {}
+            for attempt in range(3):
+                response = await self.ext_command(
+                    ExtSubCmd.CALIBRATION_SESSION, item)
+                if response.get('status') == ExtStatus.OK:
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(0.01)
             if response.get('status') != ExtStatus.OK:
-                return {'ok': False, 'error': f'candidate read failed at {name}'}
+                return {
+                    'ok': False,
+                    'error': f'candidate read failed at {name}',
+                    'status': response.get('status'),
+                }
             result[name] = response.get('value', 0)
         result['ok'] = True
         return result

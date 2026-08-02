@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(ODriveFirmware C CXX ASM)
+option(BUILD_FIRMWARE "Build the STM32 firmware target" ON)
+if(BUILD_FIRMWARE)
+    project(ODriveFirmware C CXX ASM)
+else()
+    project(ODriveFirmware CXX)
+endif()
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -19,6 +24,8 @@ option(CONFIG_STRICT "Treat warnings as errors" OFF)
 option(CONFIG_USE_LTO "Enable link-time optimization" OFF)
 option(CONFIG_NO_DRM "Disable DRM support" OFF)
 option(CONFIG_ENABLE_DISASM "Generate disassembly listing" OFF)
+option(BUILD_NATIVE_TESTS "Build and register native C++ tests" OFF)
+option(HOST_SANITIZERS "Enable ASan/UBSan for native tests when supported" ON)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
@@ -56,6 +63,16 @@ add_custom_command(
 
 set(FIRMWARE_SOURCES
     syscalls.c
+    MotorControl/fault_manager.cpp
+    MotorControl/platform_stm32_ports.cpp
+    MotorControl/crash_recorder.cpp
+    MotorControl/realtime_event_ring.cpp
+    MotorControl/realtime_snapshot.cpp
+    MotorControl/scope_capture.cpp
+    MotorControl/safety_supervisor.cpp
+    MotorControl/trace_rings.cpp
+    USB/usb_debug_protocol.cpp
+    USB/usb_debug_transport.cpp
     MotorControl/utils.cpp
     MotorControl/arm_sin_f32.c
     MotorControl/arm_cos_f32.c
@@ -70,7 +87,6 @@ set(FIRMWARE_SOURCES
     MotorControl/open_loop_controller.cpp
     MotorControl/trapTraj.cpp
     MotorControl/main.cpp
-    MotorControl/log_task.cpp
     Drivers/STM32/stm32_system.cpp
     Drivers/STM32/stm32_gpio.cpp
     Drivers/STM32/stm32_nvm.c
@@ -164,6 +180,161 @@ else()
     message(FATAL_ERROR "Unsupported BOARD_VERSION '${BOARD_VERSION}'. Production firmware supports ODrive v3.6 only.")
 endif()
 
+set(PROTOCOL_VERSION "0x0000010C" CACHE STRING "Product CAN protocol version" FORCE)
+set(USB_DEBUG_PROTOCOL_VERSION "4.5" CACHE STRING "USB Debug/Test protocol version" FORCE)
+set(MANIFEST_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_build_manifest.py")
+set(BUILD_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/build_manifest.json")
+set(FAULT_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/../docs/fault_schema.json")
+set(FAULT_SCHEMA_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_fault_schema.py")
+set(FAULT_CODES_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/autogen/fault_codes_generated.hpp")
+set(FAULT_CODES_PYTHON "${CMAKE_CURRENT_SOURCE_DIR}/../foc_ui/backend/odrive_can/fault_codes.py")
+set(FAULT_CODES_TYPESCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../foc_ui/frontend/src/fault_codes.ts")
+set(LEGACY_ERROR_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_legacy_error_writes.py")
+set(PHASE2_STATIC_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_phase2_static_gate.py")
+set(PHASE3_STATIC_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_phase3_static_gate.py")
+set(PHASE4_STATIC_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_phase4_static_gate.py")
+set(PHASE5_STATIC_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_phase5_static_gate.py")
+set(PHASE6_STATIC_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_phase6_static_gate.py")
+set(PHASE7_STATIC_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_phase7_static_gate.py")
+set(PHASE8_STATIC_GATE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_phase8_static_gate.py")
+set(USB_PROTOCOL_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/../docs/usb_debug_protocol_schema.json")
+set(SCOPE_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/../docs/scope_channel_schema.json")
+set(SCOPE_SCHEMA_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_scope_schema.py")
+set(SCOPE_CPP_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/MotorControl/scope_channels_generated.hpp")
+set(SCOPE_PYTHON_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/../foc_ui/backend/odrive_usb/scope_channels_generated.py")
+set(SCOPE_TYPESCRIPT_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/../foc_ui/frontend/src/scope_channels_generated.ts")
+set(CAN_PRODUCT_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/../docs/can_product_protocol_schema.json")
+set(CAN_PRODUCT_SCHEMA_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_can_product_schema.py")
+set(CAN_PRODUCT_CPP_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/communication/can/can_product_schema_generated.hpp")
+set(CAN_PRODUCT_PYTHON_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/../foc_ui/backend/odrive_can/can_product_schema_generated.py")
+set(CAN_PRODUCT_TEST_PYTHON_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/Tests/odrive_hil/can_product_schema_generated.py")
+set(CAN_PRODUCT_TYPESCRIPT_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/../foc_ui/frontend/src/can_product_schema_generated.ts")
+set(USB_IDENTITY_HEADER "${CMAKE_CURRENT_BINARY_DIR}/autogen/usb_debug_identity.hpp")
+if(CONFIG_DEBUG)
+    set(MANIFEST_OPTIMIZATION "-Og -g3")
+    set(MANIFEST_CONFIGURATION "firmware-debug")
+else()
+    set(MANIFEST_OPTIMIZATION "-O2")
+    set(MANIFEST_CONFIGURATION "firmware-release")
+endif()
+if(NOT BUILD_FIRMWARE)
+    set(MANIFEST_CONFIGURATION "host-debug")
+endif()
+
+add_custom_target(build_manifest ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${MANIFEST_SCRIPT}"
+            --output "${BUILD_MANIFEST}"
+            --configuration "${MANIFEST_CONFIGURATION}"
+            --board "${BOARD_VERSION}"
+            --protocol-version "${PROTOCOL_VERSION}"
+            --usb-protocol-version "${USB_DEBUG_PROTOCOL_VERSION}"
+            --compiler-id "${CMAKE_CXX_COMPILER_ID}"
+            --compiler-version "${CMAKE_CXX_COMPILER_VERSION}"
+            --compiler-path "${CMAKE_CXX_COMPILER}"
+            --fault-schema "${FAULT_SCHEMA}"
+            --protocol-schema "${USB_PROTOCOL_SCHEMA}"
+            --scope-schema "${SCOPE_SCHEMA}"
+            --can-schema "${CAN_PRODUCT_SCHEMA}"
+            --identity-header "${USB_IDENTITY_HEADER}"
+            --build-firmware "${BUILD_FIRMWARE}"
+            --build-native-tests "${BUILD_NATIVE_TESTS}"
+            "--compile-option=${MANIFEST_OPTIMIZATION}"
+    BYPRODUCTS "${BUILD_MANIFEST}"
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT "${FAULT_CODES_GENERATED}" "${FAULT_CODES_PYTHON}" "${FAULT_CODES_TYPESCRIPT}"
+    COMMAND "${Python3_EXECUTABLE}" -B "${FAULT_SCHEMA_SCRIPT}"
+            --schema "${FAULT_SCHEMA}"
+            --cpp-output "${FAULT_CODES_GENERATED}"
+            --python-output "foc_ui/backend/odrive_can/fault_codes.py"
+            --typescript-output "foc_ui/frontend/src/fault_codes.ts"
+    DEPENDS "${FAULT_SCHEMA_SCRIPT}" "${FAULT_SCHEMA}"
+    VERBATIM
+)
+add_custom_target(generate_fault_schema DEPENDS
+    "${FAULT_CODES_GENERATED}" "${FAULT_CODES_PYTHON}" "${FAULT_CODES_TYPESCRIPT}")
+add_custom_target(fault_write_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${LEGACY_ERROR_GATE}"
+    DEPENDS "${LEGACY_ERROR_GATE}"
+    VERBATIM
+)
+add_custom_target(phase2_static_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${PHASE2_STATIC_GATE}"
+    DEPENDS "${PHASE2_STATIC_GATE}"
+    VERBATIM
+)
+add_custom_target(phase3_static_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${PHASE3_STATIC_GATE}"
+    DEPENDS "${PHASE3_STATIC_GATE}"
+    VERBATIM
+)
+add_custom_target(phase4_static_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${PHASE4_STATIC_GATE}"
+    DEPENDS "${PHASE4_STATIC_GATE}" "${USB_PROTOCOL_SCHEMA}"
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT "${SCOPE_CPP_GENERATED}" "${SCOPE_PYTHON_GENERATED}" "${SCOPE_TYPESCRIPT_GENERATED}"
+    COMMAND "${Python3_EXECUTABLE}" -B "${SCOPE_SCHEMA_SCRIPT}"
+            --schema "${SCOPE_SCHEMA}"
+            --cpp-output "${SCOPE_CPP_GENERATED}"
+            --python-output "${SCOPE_PYTHON_GENERATED}"
+            --typescript-output "${SCOPE_TYPESCRIPT_GENERATED}"
+    DEPENDS "${SCOPE_SCHEMA_SCRIPT}" "${SCOPE_SCHEMA}"
+    VERBATIM
+)
+add_custom_target(generate_scope_schema
+    DEPENDS "${SCOPE_CPP_GENERATED}" "${SCOPE_PYTHON_GENERATED}" "${SCOPE_TYPESCRIPT_GENERATED}")
+add_custom_target(phase5_static_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${PHASE5_STATIC_GATE}"
+    DEPENDS "${PHASE5_STATIC_GATE}" "${SCOPE_SCHEMA}" "${USB_PROTOCOL_SCHEMA}"
+    VERBATIM
+)
+add_custom_target(phase6_static_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${PHASE6_STATIC_GATE}"
+    DEPENDS "${PHASE6_STATIC_GATE}" "${USB_PROTOCOL_SCHEMA}"
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT "${CAN_PRODUCT_CPP_GENERATED}" "${CAN_PRODUCT_PYTHON_GENERATED}"
+           "${CAN_PRODUCT_TEST_PYTHON_GENERATED}"
+           "${CAN_PRODUCT_TYPESCRIPT_GENERATED}"
+    COMMAND "${Python3_EXECUTABLE}" -B "${CAN_PRODUCT_SCHEMA_SCRIPT}"
+            --schema "${CAN_PRODUCT_SCHEMA}"
+            --cpp-output "${CAN_PRODUCT_CPP_GENERATED}"
+            --python-output "${CAN_PRODUCT_PYTHON_GENERATED}"
+            --test-python-output "${CAN_PRODUCT_TEST_PYTHON_GENERATED}"
+            --typescript-output "${CAN_PRODUCT_TYPESCRIPT_GENERATED}"
+    DEPENDS "${CAN_PRODUCT_SCHEMA_SCRIPT}" "${CAN_PRODUCT_SCHEMA}"
+    VERBATIM
+)
+add_custom_target(generate_can_product_schema
+    DEPENDS "${CAN_PRODUCT_CPP_GENERATED}" "${CAN_PRODUCT_PYTHON_GENERATED}"
+            "${CAN_PRODUCT_TYPESCRIPT_GENERATED}"
+            "${CAN_PRODUCT_TEST_PYTHON_GENERATED}")
+add_custom_target(phase7_static_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${PHASE7_STATIC_GATE}"
+    DEPENDS "${PHASE7_STATIC_GATE}" "${CAN_PRODUCT_SCHEMA}"
+    VERBATIM
+)
+add_dependencies(phase7_static_gate generate_can_product_schema)
+add_custom_target(phase8_static_gate ALL
+    COMMAND "${Python3_EXECUTABLE}" -B "${PHASE8_STATIC_GATE}"
+    DEPENDS "${PHASE8_STATIC_GATE}" "${CAN_PRODUCT_TEST_PYTHON_GENERATED}"
+    VERBATIM
+)
+add_dependencies(phase8_static_gate generate_can_product_schema)
+
+if(NOT BUILD_FIRMWARE)
+    if(BUILD_NATIVE_TESTS)
+        enable_testing()
+        add_subdirectory(Tests)
+    endif()
+    return()
+endif()
+
 add_executable(ODriveFirmware
     ${FIRMWARE_SOURCES}
     ${FREERTOS_SOURCES}
@@ -172,6 +343,10 @@ add_executable(ODriveFirmware
     ${BOARD_V3_SOURCES}
     "${AUTOGEN_INTERFACES}"
 )
+add_dependencies(ODriveFirmware build_manifest generate_fault_schema
+                 generate_scope_schema phase2_static_gate phase3_static_gate
+                 generate_can_product_schema phase4_static_gate phase5_static_gate
+                 phase6_static_gate phase7_static_gate phase8_static_gate)
 
 set_source_files_properties(
     "${AUTOGEN_INTERFACES}"
@@ -180,6 +355,7 @@ set_source_files_properties(
 
 target_include_directories(ODriveFirmware PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}/autogen"
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/MotorControl"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/STM32F4xx_HAL_Driver/Inc"
@@ -246,7 +422,7 @@ target_compile_options(ODriveFirmware PRIVATE
 )
 
 if(CONFIG_DEBUG)
-    target_compile_options(ODriveFirmware PRIVATE -gdwarf-2 -Og)
+    target_compile_options(ODriveFirmware PRIVATE -g3 -Og)
 else()
     target_compile_options(ODriveFirmware PRIVATE -O2)
 endif()
@@ -288,6 +464,16 @@ add_custom_command(TARGET ODriveFirmware POST_BUILD
     COMMAND "${CMAKE_SIZE}" "$<TARGET_FILE:ODriveFirmware>"
     COMMAND "${CMAKE_OBJCOPY}" -O ihex "$<TARGET_FILE:ODriveFirmware>" "$<TARGET_FILE_DIR:ODriveFirmware>/ODriveFirmware.hex"
     COMMAND "${CMAKE_OBJCOPY}" -O binary -S "$<TARGET_FILE:ODriveFirmware>" "$<TARGET_FILE_DIR:ODriveFirmware>/ODriveFirmware.bin"
+    COMMAND "${Python3_EXECUTABLE}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/archive_firmware_artifacts.py"
+            --manifest "${BUILD_MANIFEST}"
+            --elf "$<TARGET_FILE:ODriveFirmware>"
+            --map "$<TARGET_FILE_DIR:ODriveFirmware>/ODriveFirmware.map"
+            --archive-root "${CMAKE_CURRENT_BINARY_DIR}/artifacts"
+            --schema "${FAULT_SCHEMA}"
+            --schema "${USB_PROTOCOL_SCHEMA}"
+            --schema "${SCOPE_SCHEMA}"
+            --schema "${CAN_PRODUCT_SCHEMA}"
     VERBATIM
 )
 
@@ -296,4 +482,9 @@ if(CONFIG_ENABLE_DISASM)
         COMMAND "${CMAKE_OBJDUMP}" "$<TARGET_FILE:ODriveFirmware>" -dSC > "$<TARGET_FILE_DIR:ODriveFirmware>/ODriveFirmware.asm"
         VERBATIM
     )
+endif()
+
+if(BUILD_NATIVE_TESTS)
+    enable_testing()
+    add_subdirectory(Tests)
 endif()

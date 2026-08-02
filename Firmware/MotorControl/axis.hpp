@@ -19,6 +19,11 @@ class Axis;
 #include "calibration_flux_fitter.hpp"
 #include "calibration_mechanical_fitter.hpp"
 #include "calibration_delay_fitter.hpp"
+#include "fault_manager.hpp"
+#include "safety_supervisor.hpp"
+#include "realtime_snapshot.hpp"
+#include "trace_rings.hpp"
+#include "scope_capture.hpp"
 #include <production_config.h>
 
 #include <array>
@@ -120,6 +125,49 @@ public:
         return error_ == ERROR_NONE;
     }
 
+    uint32_t raise_fault(odrive::fault::FaultRecord record,
+                         Error legacy_projection = ERROR_NONE,
+                         bool record_trace = true);
+    bool clear_faults(const odrive::fault::ClearRequest& request);
+    bool clear_faults_for_supervisor(
+        const odrive::fault::ClearRequest& request,
+        bool* empty_after_clear);
+    void clear_errors();
+    bool first_fault(odrive::fault::FaultRecord* out) const;
+
+    bool submit_command(const odrive::safety::Command& command);
+    bool submit_realtime_event(const odrive::safety::RealtimeEvent& event);
+    bool record_critical_event_from_isr(
+        const odrive::trace::CriticalEvent& event);
+    bool snapshot_critical_black_box(
+        odrive::trace::CriticalEvent* output, size_t capacity,
+        size_t* written) const;
+    void capture_realtime_snapshot_from_isr(uint32_t isr_start_cycles);
+    void finish_realtime_snapshot_from_isr(uint32_t isr_start_cycles);
+    bool read_realtime_snapshot(
+        odrive::trace::RealtimeSnapshot* snapshot) const;
+    void service_safety_supervisor();
+    void service_trace_buffers();
+    uint32_t allocate_command_request_id();
+    using CommandResultSink = void (*)(void* context,
+                                        const odrive::safety::CommandResult& result);
+    static constexpr size_t kCommandResultSinkCapacity = 2u;
+    bool add_command_result_sink(void* context, CommandResultSink sink);
+    odrive::safety::SafetyState safety_state() const {
+        return safety_supervisor_.state();
+    }
+    odrive::safety::Operation active_operation() const {
+        return safety_supervisor_.operation();
+    }
+    odrive::safety::ReadinessSnapshot readiness_snapshot() const {
+        return safety_supervisor_.readiness();
+    }
+    void set_trace_dispatch_sink(void* context,
+                                 odrive::trace::TraceDispatchFn sink);
+    odrive::scope::CaptureEngine& scope_capture() { return scope_capture_; }
+
+    bool prepare_closed_loop_control();
+    bool arm_closed_loop_control();
     bool start_closed_loop_control();
     bool stop_closed_loop_control();
     bool run_lockin_spin(const LockinConfig_t &lockin_config, bool remain_armed,
@@ -166,6 +214,47 @@ public:
     // independent of current_state_: calibration experiments can temporarily
     // run the same closed-loop path while the coarse axis state is calibration.
     volatile bool controller_feedback_active_ = false;
+    // Set by the realtime control loop only after the encoder has published
+    // both electrical phase and phase velocity in the current iteration.
+    // The axis thread waits for this handshake before arming PWM.
+    volatile bool closed_loop_phase_feedback_ready_ = false;
+    // Set only after one complete encoder -> controller realtime iteration.
+    // Startup waits for this separately from electrical feedback readiness.
+    volatile bool closed_loop_controller_ready_ = false;
+    // Counts successful controller executions, not 10 kHz hold cycles.  The
+    // velocity controller is intentionally multi-rate (2 kHz), so a boolean
+    // sampled every current-loop cycle cannot express repeated observations.
+    volatile uint32_t closed_loop_controller_ready_sequence_ = 0u;
+    // FaultManager itself is platform-neutral and intentionally lock-free for
+    // native tests. All target access is serialized by the methods above.
+    odrive::fault::FaultManager fault_manager_;
+    odrive::safety::RealtimeEventRing realtime_event_ring_;
+    odrive::safety::SafetySupervisor safety_supervisor_;
+    odrive::trace::CriticalEventRing critical_event_ring_;
+    odrive::trace::StateEventRing state_event_ring_;
+    odrive::trace::LogRing log_ring_;
+    odrive::trace::ScopeRing scope_ring_;
+    odrive::trace::CriticalBlackBox critical_black_box_;
+    odrive::trace::RealtimeSnapshotBuffer realtime_snapshot_buffer_;
+    odrive::trace::SupervisorTraceMailbox supervisor_trace_mailbox_;
+    odrive::trace::TraceConsumer trace_consumer_;
+    odrive::scope::CaptureEngine scope_capture_;
+    uint32_t command_request_sequence_ = 0;
+    uint32_t trace_sequence_ = 0;
+    uint8_t last_trace_state_ = 0xff;
+    uint8_t last_trace_operation_ = 0xff;
+    uint32_t last_trace_epoch_ = 0;
+    uint32_t last_trace_readiness_sequence_ = 0;
+    bool closed_loop_prepared_ = false;
+    odrive::safety::CommandResult last_command_result_{};
+    bool last_command_result_valid_ = false;
+    struct CommandResultSinkSlot {
+        void* context = nullptr;
+        CommandResultSink sink = nullptr;
+    };
+    std::array<CommandResultSinkSlot, kCommandResultSinkCapacity>
+        command_result_sinks_{};
+    uint32_t previous_complete_isr_cycles_ = 0;
     uint32_t calibration_sample_sequence_ = 0;
 
     osThreadId thread_id_ = 0;

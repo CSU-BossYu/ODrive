@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Root layout: top status bar + three-column workspace.
-// CAN-only UI for ODrive single-axis controller.
+// CAN Control and USB Diagnostics are intentionally separate connections.
 
 import { ref } from 'vue'
 import StatusBar from './components/StatusBar.vue'
@@ -10,6 +10,7 @@ import CalibrationPanel from './components/CalibrationPanel.vue'
 import ParamPanel from './components/ParamPanel.vue'
 import LogConsole from './components/LogConsole.vue'
 import OverspeedPanel from './components/OverspeedPanel.vue'
+import UsbDiagnosticsPanel from './components/UsbDiagnosticsPanel.vue'
 import { ODRIVE_DEFAULT_VISIBLE } from './channels'
 
 const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
@@ -40,6 +41,7 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
         <div class="waveform-wrap">
           <WaveformPanel v-model:visible="visibleChannels" />
         </div>
+        <UsbDiagnosticsPanel />
         <div class="log-wrap">
           <LogConsole />
         </div>
@@ -66,9 +68,9 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
 .app-header {
   display: flex;
   align-items: center;
-  min-height: 64px;
-  padding: 0 14px;
-  gap: 16px;
+  min-height: 76px;
+  padding: 0 16px;
+  gap: 20px;
   background: rgba(8, 13, 22, 0.94);
   border-bottom: 1px solid var(--border-subtle);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
@@ -122,9 +124,9 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
 .workspace {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(330px, 370px) minmax(500px, 1fr) minmax(280px, 320px);
-  gap: 12px;
-  padding: 12px;
+  grid-template-columns: minmax(330px, 370px) minmax(680px, 1fr) minmax(320px, 360px);
+  gap: 16px;
+  padding: 16px;
   min-height: 0;
 }
 .workspace-column {
@@ -138,9 +140,9 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 21px;
+  height: 24px;
   color: var(--fg-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -166,16 +168,16 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
 }
 .center-col {
   display: grid;
-  grid-template-rows: 27px minmax(300px, 1.55fr) minmax(160px, 0.75fr);
+  grid-template-rows: 27px minmax(230px, 1fr) minmax(270px, 1.15fr) minmax(125px, .55fr);
   gap: 0;
   min-height: 0;
 }
 .center-col .column-label { position: static; }
-.center-col .waveform-wrap { margin-bottom: 10px; }
+.center-col .waveform-wrap { margin-bottom: 14px; }
 .waveform-wrap, .log-wrap { min-height: 0; min-width: 0; }
 
 @media (max-width: 1360px) {
-  .workspace { grid-template-columns: 310px minmax(430px, 1fr) 280px; }
+  .workspace { grid-template-columns: 310px minmax(500px, 1fr) 300px; gap: 14px; padding: 14px; }
   .brand-copy { display: none; }
 }
 @media (max-width: 1080px) {
@@ -220,11 +222,18 @@ const visibleChannels = ref<string[]>([...ODRIVE_DEFAULT_VISIBLE])
   }
   .center-col {
     display: grid;
-    grid-template-rows: 27px minmax(420px, 60vh) minmax(300px, 42vh);
+    grid-template-rows: 27px minmax(420px, 60vh) minmax(450px, 62vh) minmax(300px, 42vh);
     min-height: 780px;
   }
   .right-col { display: flex; }
   .right-col :deep(.param-panel),
   .right-col :deep(.overspeed-panel) { min-height: 480px; }
+}
+
+/* A short desktop viewport should scroll the workspace instead of squeezing
+   the diagnostic and log cards into unreadable strips. */
+@media (min-width: 1081px) and (max-height: 820px) {
+  .app-root { height: auto; min-height: 100vh; overflow: auto; }
+  .workspace { min-height: 760px; }
 }
 </style>

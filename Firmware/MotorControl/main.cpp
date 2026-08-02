@@ -3,7 +3,6 @@
 #include "odrive_main.h"
 #include "control_timeout.hpp"
 #include "nvm_config.hpp"
-#include "log_task.hpp"
 
 #include "freertos_vars.h"
 #include "usb_device.h"
@@ -156,6 +155,11 @@ bool ODrive::save_configuration(void) {
             return false;
         }
 
+        // STM32F4 internal-flash writes stall realtime interrupt service. Mark
+        // this planned, disarmed maintenance window before touching NVM so the
+        // first timer IRQ afterwards can resynchronize instead of reporting a
+        // motor deadline fault.
+        realtime_timing_resync_pending_ = true;
         size_t config_size = 0;
         success = config_manager.prepare_store()
                && config_write_all()
@@ -225,15 +229,9 @@ uint64_t ODrive::get_drv_fault() {
 
 void ODrive::clear_errors() {
     for (auto& axis: axes) {
-        axis.motor_.error_ = Motor::ERROR_NONE;
-        axis.controller_.error_ = Controller::ERROR_NONE;
-        axis.controller_.clear_overspeed_snapshot();
+        axis.clear_errors();
         ControlTimeout::clear(axis);
         ControlTimeout::feed_command(axis);
-        axis.encoder_.error_ = Encoder::ERROR_NONE;
-        axis.encoder_.spi_error_rate_ = 0.0f;
-        axis.encoder_.clear_lz5710_faults();
-        axis.error_ = Axis::ERROR_NONE;
     }
     error_ = ERROR_NONE;
     if (odrv.config_.enable_brake_resistor) {
@@ -302,7 +300,7 @@ void ODrive::disarm_with_error(Error error) {
             axis.motor_.disarm_with_error(Motor::ERROR_SYSTEM_LEVEL);
         }
         safety_critical_disarm_brake_resistor();
-        error_ |= error;
+        error_ |= error;  // SYSTEM_ERROR_PROJECTION
     }
 }
 
@@ -346,6 +344,7 @@ void ODrive::sampling_cb() {
  *        must not rely on any interrupts.
  */
 void ODrive::control_loop_cb(uint32_t timestamp) {
+    const uint32_t trace_start_cycles = DWT->CYCCNT;
     last_update_timestamp_ = timestamp;
     n_evt_control_loop_++;
 
@@ -402,11 +401,27 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
     MEASURE_TIME(axis.task_times_.encoder_update)
         encoder_update_ok = axis.encoder_.update();
 
+    const bool electrical_feedback_published =
+        encoder_update_ok &&
+        axis.encoder_.phase_.present().has_value() &&
+        axis.encoder_.phase_vel_.present().has_value();
+    const bool controller_feedback_published =
+        encoder_update_ok &&
+        axis.encoder_.pos_estimate_.present().has_value() &&
+        axis.encoder_.vel_estimate_.present().has_value();
+    axis.closed_loop_phase_feedback_ready_ =
+        electrical_feedback_published &&
+        controller_feedback_published &&
+        axis.encoder_.controller_feedback_ready();
+
     bool controller_update_ok = true;
+    bool controller_ran = false;
     MEASURE_TIME(axis.task_times_.controller_update) {
         const bool controller_feedback_active =
             axis.controller_feedback_active_;
-        if (controller_feedback_active && encoder_update_ok) {
+        const bool controller_inputs_ready =
+            encoder_update_ok && controller_feedback_published;
+        if (controller_feedback_active && controller_inputs_ready) {
             // Multi-rate cascade, aligned with SguanFOC v3.0.1:
             //   current/FOC 10 kHz, velocity 2 kHz, position 400 Hz.
             // Torque passthrough remains a true 10 kHz inner-loop command;
@@ -420,6 +435,7 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
                 torque_passthrough || (n_evt_control_loop_ % kVelocityDivider) == 0u;
 
             if (run_velocity_step) {
+                controller_ran = true;
                 const float controller_period = torque_passthrough
                     ? current_meas_period
                     : current_meas_period * static_cast<float>(kVelocityDivider);
@@ -432,7 +448,12 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
                 axis.controller_.publish_held_torque();
             }
         } else if (controller_feedback_active) {
-            controller_update_ok = false;
+            // During startup the axis thread has connected the ports but has
+            // not armed PWM yet. Hold zero torque until a complete encoder
+            // publication is available; this is acquisition, not a runtime
+            // controller fault.
+            axis.controller_.publish_held_torque();
+            controller_update_ok = !axis.motor_.is_armed_;
         } else {
             // Configuration commands are allowed while idle, before encoder
             // feedback ports are connected. Holding the previous (zero while
@@ -442,14 +463,71 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
             axis.controller_.publish_held_torque();
         }
 
-        if (controller_feedback_active && !controller_update_ok) {
-            axis.error_ |= Axis::ERROR_CONTROLLER_FAILED;
+        if (controller_feedback_active && axis.motor_.is_armed_ &&
+            !controller_update_ok) {
+            odrive::fault::FaultRecord record;
+            record.control_sequence = n_evt_control_loop_;
+            record.timestamp_cycles = DWT->CYCCNT;
+            record.source = odrive::fault::FaultSource::CONTROLLER;
+            record.code = odrive::fault::FaultCode::CONTROLLER_REJECTED;
+            record.site = odrive::fault::FaultSite::CONTROLLER_UPDATE;
+            record.severity = odrive::fault::FaultSeverity::LATCHED;
+            record.arg0 = encoder_update_ok ? 1u : 0u;
+            record.arg1 = controller_feedback_published ? 1u : 0u;
+            record.arg2 = electrical_feedback_published ? 1u : 0u;
+            odrive::safety::RealtimeEvent event;
+            event.sequence = n_evt_control_loop_;
+            event.epoch = 0u;
+            event.feedback_sequence = n_evt_control_loop_;
+            event.control_sequence = record.control_sequence;
+            event.timestamp_cycles = record.timestamp_cycles;
+            event.type = odrive::safety::RealtimeEventType::FAULT;
+            event.source = record.source;
+            event.code = record.code;
+            event.site = record.site;
+            event.severity = record.severity;
+            event.arg0 = record.arg0;
+            event.arg1 = record.arg1;
+            event.arg2 = record.arg2;
+            event.legacy_projection = Axis::ERROR_CONTROLLER_FAILED;
+            odrive::trace::CriticalEvent critical;
+            critical.sequence = event.sequence;
+            critical.control_sequence = event.control_sequence;
+            critical.timestamp_cycles = event.timestamp_cycles;
+            critical.type = odrive::trace::CriticalEventType::FAULT;
+            critical.source = event.source;
+            critical.code = event.code;
+            critical.site = event.site;
+            critical.severity = event.severity;
+            critical.arg0 = event.arg0;
+            critical.arg1 = event.arg1;
+            critical.arg2 = event.arg2;
+            axis.record_critical_event_from_isr(critical);
+            event.trace_recorded = 1u;
+            if (!axis.submit_realtime_event(event)) {
+                // A full ring must not lose a safety fault. This is the
+                // bounded emergency fallback; it performs no USB/CAN work.
+                axis.raise_fault(record, Axis::ERROR_CONTROLLER_FAILED, false);
+            }
+        }
+    }
+    if (!axis.controller_feedback_active_ ||
+        !axis.closed_loop_phase_feedback_ready_) {
+        axis.closed_loop_controller_ready_ = false;
+    } else if (controller_ran) {
+        // Hold the last successful observation between scheduled controller
+        // executions.  At 2 kHz, four out of every five 10 kHz ISR cycles are
+        // intentional hold cycles, not failed readiness observations.
+        axis.closed_loop_controller_ready_ = controller_update_ok;
+        if (controller_update_ok) {
+            ++axis.closed_loop_controller_ready_sequence_;
         }
     }
 
     const bool closed_loop_pipeline_ok =
         axis.controller_feedback_active_ &&
         encoder_update_ok && controller_update_ok &&
+        electrical_feedback_published &&
         axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
     if (axis.current_state_ == Axis::AXIS_STATE_CLOSED_LOOP_CONTROL &&
         !closed_loop_pipeline_ok) {
@@ -478,7 +556,10 @@ void ODrive::control_loop_cb(uint32_t timestamp) {
         osSignalSet(axis.thread_id_, 0x0001);
     }
 
+    axis.capture_realtime_snapshot_from_isr(trace_start_cycles);
+
     get_gpio(odrv.config_.error_gpio_pin).write(odrv.any_error());
+    axis.finish_realtime_snapshot_from_isr(trace_start_cycles);
 }
 
 
@@ -544,10 +625,9 @@ static void rtos_main(void*) {
     // Init communications (this requires the axis objects to be constructed)
     init_communication();
 
-    // Start the USB CDC @log stream task now that the USB server is up
-    // (see log_task.hpp). Started here, not from main(), so it cannot stream
-    // before usb_cdc_stdout_sink / the USB thread are ready.
-    log_task_create();
+    // USB is binary-only. Runtime diagnostics, faults, state and waveforms are
+    // published as framed records; the legacy @log text task must not share
+    // the CDC IN endpoint with the protocol transport.
 
     // Try to initialized gate drivers for fault-free startup.
     // If this does not succeed, a fault will be raised and the idle loop will

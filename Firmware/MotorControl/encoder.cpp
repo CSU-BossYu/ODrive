@@ -12,10 +12,18 @@ namespace {
 // control cycle" is not itself a communication failure.
 constexpr uint32_t kMainEncoderTimeoutControlCycles = 20u;
 
+// A calibrated unit can move a few milliradians after the motion fit has
+// completed (gear preload, cogging and count quantization).  Keep acquisition
+// tolerant enough for that settling while the reject threshold remains the
+// hard safety boundary.
+constexpr float kMinimumVernierAcquisitionResidualRad = 0.04f;
+
 }  // namespace
 
-Encoder::Encoder(Stm32SpiArbiter* spi_arbiter) :
-        spi_arbiter_(spi_arbiter)
+Encoder::Encoder(Stm32SpiArbiter* spi_arbiter,
+                 const odrive::platform::SensorSourcePort* sensor_source) :
+        spi_arbiter_(spi_arbiter),
+        sensor_source_(sensor_source)
 {
 }
 
@@ -86,8 +94,20 @@ void Encoder::set_error(Error error) {
     vel_estimate_valid_ = false;
     pos_estimate_valid_ = false;
     motor_phase_estimate_valid_ = false;
-    error_ |= error;
-    axis_->error_ |= Axis::ERROR_ENCODER_FAILED;
+    const uint32_t new_bits = static_cast<uint32_t>(error) &
+                              ~static_cast<uint32_t>(error_);
+    if (axis_ && new_bits != 0u) {
+        odrive::fault::FaultRecord record;
+        record.control_sequence = odrv.n_evt_control_loop_;
+        record.timestamp_cycles = odrive::platform::cycle_count();
+        record.source = odrive::fault::FaultSource::ENCODER;
+        record.code = odrive::fault::FaultCode::ENCODER_ERROR;
+        record.site = odrive::fault::FaultSite::ENCODER_UPDATE;
+        record.severity = odrive::fault::FaultSeverity::LATCHED;
+        record.arg0 = new_bits;
+        axis_->raise_fault(record, Axis::ERROR_ENCODER_FAILED);
+    }
+    error_ |= error;  // LEGACY_ERROR_PROJECTION
 }
 
 bool Encoder::do_checks(){
@@ -347,6 +367,17 @@ void Encoder::handle_mt6826s_spi_cb(const Mt6826sSpi::Sample& sample, bool succe
 }
 
 bool Encoder::start_mt6826s_main_sample() {
+    if (sensor_source_ != nullptr) {
+        odrive::platform::AbsoluteSensorFrame frame{};
+        if (!sensor_source_->sample(false, &frame)) return false;
+        Mt6826sSpi::Sample sample{};
+        sample.angle = frame.main.angle;
+        sample.status = frame.main.status;
+        sample.sequence = frame.main.sequence;
+        sample.valid = frame.main.valid;
+        handle_mt6826s_spi_cb(sample, frame.valid && sample.valid);
+        return true;
+    }
     if (mt6826s_spi_.start_sample_async(&Encoder::mt6826s_spi_cb, this)) {
         return true;
     }
@@ -358,6 +389,24 @@ bool Encoder::start_mt6826s_main_sample() {
 }
 
 bool Encoder::start_mt6826s_pair_sample() {
+    if (sensor_source_ != nullptr) {
+        odrive::platform::AbsoluteSensorFrame frame{};
+        if (!sensor_source_->sample(true, &frame)) return false;
+        Mt6826sSpiPair::PairSample sample{};
+        sample.main.angle = frame.main.angle;
+        sample.main.status = frame.main.status;
+        sample.main.sequence = frame.main.sequence;
+        sample.main.valid = frame.main.valid;
+        sample.aux.angle = frame.auxiliary.angle;
+        sample.aux.status = frame.auxiliary.status;
+        sample.aux.sequence = frame.auxiliary.sequence;
+        sample.aux.valid = frame.auxiliary.valid;
+        sample.sequence = frame.sequence;
+        sample.valid = frame.valid && frame.coherent_pair;
+        ++mt6826s_vernier_sample_counter_;
+        handle_mt6826s_spi_pair_cb(sample, sample.valid);
+        return true;
+    }
     if (mt6826s_spi_pair_.start_sample_async(&Encoder::mt6826s_spi_pair_cb, this)) {
         ++mt6826s_vernier_sample_counter_;
         return true;
@@ -469,11 +518,18 @@ VernierResolver::Config Encoder::make_vernier_resolver_config() const {
     vernier_config.main_reversed = config_.vernier_main_reversed;
     vernier_config.aux_reversed = config_.vernier_aux_reversed;
     vernier_config.output_reversed = config_.vernier_output_reversed;
-    vernier_config.err_accept = config_.vernier_err_accept / (2.0f * M_PI);
+    vernier_config.err_accept =
+        effective_vernier_residual_accept_rad() / (2.0f * M_PI);
     vernier_config.err_reject = config_.vernier_err_reject / (2.0f * M_PI);
     vernier_config.max_main_cycle_index = 64;
     vernier_config.use_phase_difference = config_.vernier_use_phase_difference;
     return vernier_config;
+}
+
+float Encoder::effective_vernier_residual_accept_rad() const {
+    return std::min(config_.vernier_err_reject,
+                    std::max(config_.vernier_err_accept,
+                             kMinimumVernierAcquisitionResidualRad));
 }
 
 void Encoder::apply_vernier_resolver_config() {
@@ -487,7 +543,8 @@ void Encoder::apply_vernier_resolver_config() {
     resolver_config.main_reversed = config_.vernier_main_reversed;
     resolver_config.aux_reversed = config_.vernier_aux_reversed;
     resolver_config.output_reversed = config_.vernier_output_reversed;
-    resolver_config.residual_accept_rad = config_.vernier_err_accept;
+    resolver_config.residual_accept_rad =
+        effective_vernier_residual_accept_rad();
     resolver_config.residual_reject_rad = config_.vernier_err_reject;
     lz5710_resolver_.init(resolver_config);
     lz5710::TrackerConfig tracker_config = {};
@@ -524,7 +581,6 @@ void Encoder::clear_lz5710_faults() {
     mt6826s_spi_.clear_error();
     mt6826s_aux_spi_.clear_error();
     mt6826s_spi_pair_.clear_error();
-    apply_vernier_resolver_config();
 }
 
 float Encoder::vernier_motor_turns_per_output_turn() const {
@@ -718,15 +774,22 @@ float Encoder::controller_torque_to_motor_torque_scale() const {
 
 bool Encoder::controller_feedback_ready() const {
     if (mode_ != MODE_SPI_ABS_MT6826S_VERNIER) {
-        return is_ready_;
+        return motor_phase_feedback_ready();
     }
 
-    return is_ready_ &&
+    return motor_phase_feedback_ready() &&
+           is_ready_ &&
            vernier_output_estimate_valid_ &&
            lz5710_position_tracker_.valid() &&
            lz5710_output_pll_.valid() &&
            lz5710_resolver_result_.valid &&
            lz5710_resolver_result_.locked;
+}
+
+bool Encoder::motor_phase_feedback_ready() const {
+    return mode_ == MODE_SPI_ABS_MT6826S_VERNIER
+        ? motor_phase_estimate_valid_
+        : is_ready_;
 }
 
 void Encoder::reset_controller_velocity_filter() {
@@ -1753,11 +1816,7 @@ bool Encoder::update() {
     float elec_rad_per_enc = axis_->motor_.config_.pole_pairs * 2 * M_PI * (1.0f / (float)(config_.cpr));
     float ph = elec_rad_per_enc * (interpolated_enc - config_.phase_offset_float);
     
-    const bool electrical_feedback_ready =
-        mode_ == MODE_SPI_ABS_MT6826S_VERNIER
-            ? motor_phase_estimate_valid_
-            : is_ready_;
-    if (electrical_feedback_ready) {
+    if (motor_phase_feedback_ready()) {
         const float electrical_velocity = (2*M_PI) * motor_vel_estimate_turns *
             axis_->motor_.config_.pole_pairs * config_.direction;
         phase_ = wrap_pm_pi(wrap_pm_pi(ph) * config_.direction +

@@ -95,6 +95,9 @@ static bool deadline_expired(uint32_t deadline_ms) {
 
 bool check_command(Axis& axis) {
     State& st = state(axis);
+    if ((st.flags & FLAG_ENABLED) == 0u) {
+        return true;
+    }
     if (st.command_deadline_ms == 0 || st.command_watchdog_expired) {
         return true;
     }
@@ -106,6 +109,9 @@ bool check_command(Axis& axis) {
 
 bool check_heartbeat(Axis& axis) {
     State& st = state(axis);
+    if ((st.flags & FLAG_ENABLED) == 0u) {
+        return true;
+    }
     if (st.heartbeat_deadline_ms == 0 || st.command_watchdog_expired) {
         return true;
     }
@@ -153,7 +159,17 @@ void apply_timeout_action(Axis& axis, uint32_t reason) {
             break;
 
         case Controller::TIMEOUT_ACTION_FAULT_DISABLE:
-            axis.error_ |= Axis::ERROR_CONTROLLER_FAILED;
+            {
+                odrive::fault::FaultRecord record;
+                record.control_sequence = odrv.n_evt_control_loop_;
+                record.timestamp_cycles = DWT->CYCCNT;
+                record.source = odrive::fault::FaultSource::SAFETY;
+                record.code = odrive::fault::FaultCode::TIMEOUT;
+                record.site = odrive::fault::FaultSite::COMMAND_TIMEOUT;
+                record.severity = odrive::fault::FaultSeverity::LATCHED;
+                record.arg0 = reason;
+                axis.raise_fault(record, Axis::ERROR_CONTROLLER_FAILED);
+            }
             break;
     }
 }

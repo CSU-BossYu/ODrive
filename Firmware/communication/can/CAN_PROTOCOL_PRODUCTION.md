@@ -1,7 +1,9 @@
 # Single-axis production CAN protocol
 
-This document freezes the CAN protocol used by the trimmed single-axis ODrive
-v3.6 production firmware profile on branch `feature/mt6826s-encoder`.
+This document describes the CAN protocol used by the trimmed single-axis
+ODrive v3.6 production firmware. The authoritative machine-readable contract
+is `docs/can_product_protocol_schema.json`; C++, Python, and TypeScript IDs are
+generated from that file.
 
 The generated DBC is `tools/odrive-cansimple.dbc`.
 
@@ -30,12 +32,12 @@ The generated DBC is `tools/odrive-cansimple.dbc`.
 | `0x000` | CANOpen NMT | Master -> Axis0 | implemented |
 | `0x001` | Heartbeat | Axis0 -> Master | implemented |
 | `0x002` | Estop | Master -> Axis0 | implemented |
-| `0x003` | Get_Motor_Error | Axis0 -> Master | implemented |
-| `0x004` | Get_Encoder_Error | Axis0 -> Master | implemented |
-| `0x005` | Reserved_005 | reserved | reserved, former sensorless error |
+| `0x003` | Get_Motor_Error | bidirectional | legacy on-request diagnostic |
+| `0x004` | Get_Encoder_Error | bidirectional | legacy on-request diagnostic |
+| `0x005` | Command_ACK | Axis0 -> Master | product management result |
 | `0x006` | Set_Axis_Node_ID | Master -> Axis0 | implemented |
-| `0x007` | Set_Axis_State | Master -> Axis0 | implemented |
-| `0x008` | Set_Axis_Startup_Config | Master -> Axis0 | reserved/no-op in this profile |
+| `0x007` | Set_Axis_State | Master -> Axis0 | deprecated management path |
+| `0x008` | Management_Command | Master -> Axis0 | product, ACKed supervisor path |
 | `0x009` | Get_Encoder_Estimates | Axis0 -> Master | implemented |
 | `0x00A` | Get_Encoder_Count | Axis0 -> Master | implemented |
 | `0x00B` | Set_Controller_Mode | Master -> Axis0 | implemented |
@@ -43,6 +45,7 @@ The generated DBC is `tools/odrive-cansimple.dbc`.
 | `0x00D` | Set_Input_Vel | Master -> Axis0 | implemented |
 | `0x00E` | Set_Input_Torque | Master -> Axis0 | implemented |
 | `0x00F` | Set_Limits | Master -> Axis0 | implemented |
+| `0x010` | Product_Status | Axis0 -> Master | product safety/status summary |
 | `0x011` | Set_Traj_Vel_Limit | Master -> Axis0 | implemented |
 | `0x012` | Set_Traj_Accel_Limits | Master -> Axis0 | implemented |
 | `0x013` | Set_Traj_Inertia | Master -> Axis0 | implemented |
@@ -56,7 +59,7 @@ The generated DBC is `tools/odrive-cansimple.dbc`.
 | `0x01B` | Set_Vel_Gains | Master -> Axis0 | implemented |
 | `0x01C` | Get_ADC_Voltage | Axis0 -> Master | implemented |
 | `0x01D` | Get_Controller_Error | Axis0 -> Master | implemented |
-| `0x01E` | Extended_Command | bidirectional | implemented |
+| `0x01E` | Extended_Command | bidirectional | isolated legacy compatibility |
 | `0x01F` | Set_MIT_Control | Master -> Axis0 | implemented |
 
 `Set_Input_Pos.input_pos` uses the bounded mechanical joint coordinate `[0, 1]`
@@ -69,7 +72,14 @@ turn are identical after a cold start. Distinguishing those endpoints across
 power cycles therefore requires a homing reference, retained branch state, or
 an additional non-repeating absolute reference.
 
-Do not reuse reserved command IDs without bumping the extended protocol version.
+Do not change command IDs without updating the JSON contract and bumping the
+product protocol version.
+
+`Management_Command` layout is `request_id:u16, command_type:u8,
+operation:u8, arg0:u32`. `Command_ACK` layout is `request_id:u16, status:u8,
+reserved:u8, state_epoch_low:u16, reason:u16`. All fields are little-endian.
+Normal management must use this transaction instead of `Set_Axis_State`,
+`Clear_Errors`, or other fire-and-forget state mutations.
 
 ## Control modes and input modes
 
@@ -168,7 +178,11 @@ input_mode = MIT
 
 Otherwise frames only update the stored MIT input values.
 
-## Extended command `0x01E`
+## Legacy Extended command `0x01E`
+
+This dispatcher is frozen for compatibility while calibration/control is
+redesigned. New product behavior must not be added here. Detailed diagnosis,
+waveforms, crash records, and exact source locations belong to framed USB.
 
 Request layout:
 
@@ -230,8 +244,10 @@ Subcommands:
 | `0x10..0x1F` | Reserved | reserved for production protocol growth |
 
 The current extended protocol version is returned by subcommand `0x05`, item
-`0x01`, and is `0x0000010B` (v1.11: added the runtime Calibration_Session
-transaction envelope on subcommand `0x0F`). v1.10: Save_Configuration no longer reboots and
+`0x01`, and is `0x0000010C` (v1.12: generated product IDs, ACKed supervisor
+management, Product_Status, and removal of automatic detailed diagnostic
+traffic). v1.11 added the runtime Calibration_Session transaction envelope on
+subcommand `0x0F`. v1.10: Save_Configuration no longer reboots and
 returns `STORAGE_ERROR` when the verified Flash commit fails). v1.9 added
 `Get_Fault_Snapshot` subcommand `0x0E`
 as the clean home for the overspeed/fault snapshot — items `0x40`-`0x5F` moved

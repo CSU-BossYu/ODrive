@@ -1,0 +1,295 @@
+{
+  "protocol": "ODrive USB Debug/Test",
+  "protocol_release": "4.5",
+  "protocol_version": 4,
+  "schema_version": 4,
+  "byte_order": "little-endian",
+  "magic_u16": "0x4F44",
+  "header_size": 40,
+  "max_payload": 512,
+  "transport": {
+    "kind": "USB CDC byte stream",
+    "session_start": "CDC is binary-only; host sends HELLO and device emits no frames before accepting it",
+    "legacy_text": "Forbidden on this CDC stream; diagnostics use LOG_RECORD, FAULT_EVENT and STATE_EVENT",
+    "usb_packet_fragmentation": "A protocol frame may span any number of USB packets; packet boundaries have no protocol meaning. Firmware submissions are capped at 63 bytes to avoid the customized STM32 CDC full-packet ZLP completion path",
+    "resynchronization": "Scan for magic, validate bounded payload_length and CRC, then resume scanning after malformed input"
+  },
+  "crc": {
+    "name": "CRC-32/ISO-HDLC",
+    "polynomial_normal": "0x04C11DB7",
+    "polynomial_reflected": "0xEDB88320",
+    "init": "0xFFFFFFFF",
+    "refin": true,
+    "refout": true,
+    "xorout": "0xFFFFFFFF",
+    "coverage": "header || payload",
+    "wire_type": "u32"
+  },
+  "flags": {
+    "FRAME_RESPONSE": 1,
+    "FRAME_ERROR": 2,
+    "FRAME_DROPPED": 4
+  },
+  "message_types": {
+    "HELLO": 1,
+    "CAPABILITIES": 2,
+    "COMMAND": 3,
+    "COMMAND_RESULT": 4,
+    "FAULT_EVENT": 5,
+    "STATE_EVENT": 6,
+    "LOG_RECORD": 7,
+    "SCOPE_RECORD": 8,
+    "STATS": 9,
+    "CALIBRATION_DATA": 10
+    ,"SCOPE_CONFIG": 11
+    ,"SCOPE_ARM": 12
+    ,"SCOPE_STATUS": 13
+    ,"SCOPE_DATA_BATCH": 14
+    ,"SCOPE_STOP": 15
+    ,"CRASH_REPORT": 16
+    ,"CRASH_ACK": 17
+    ,"TEST_SESSION_BEGIN": 18
+    ,"TEST_SESSION_STATUS": 19
+    ,"TEST_SESSION_KEEPALIVE": 20
+    ,"TEST_SESSION_STOP": 21
+    ,"TEST_SESSION_END": 22
+  },
+  "directions": {
+    "host_to_device": ["HELLO", "COMMAND", "STATS", "SCOPE_CONFIG", "SCOPE_ARM", "SCOPE_STATUS", "SCOPE_STOP", "CRASH_ACK", "TEST_SESSION_BEGIN", "TEST_SESSION_KEEPALIVE", "TEST_SESSION_STOP", "TEST_SESSION_END"],
+    "device_to_host": ["CAPABILITIES", "COMMAND_RESULT", "FAULT_EVENT", "STATE_EVENT", "LOG_RECORD", "SCOPE_RECORD", "STATS", "CALIBRATION_DATA", "SCOPE_STATUS", "SCOPE_DATA_BATCH", "CRASH_REPORT", "CRASH_ACK", "TEST_SESSION_STATUS"]
+  },
+  "command_type": {
+    "SET_OPERATION": 1,
+    "ARM": 2,
+    "DISARM": 3,
+    "CLEAR_FAULTS": 4,
+    "RESET_ESTIMATOR": 5,
+    "RESTART_CALIBRATION": 6
+  },
+  "operation": {
+    "NONE": 0,
+    "CLOSED_LOOP": 1,
+    "CALIBRATION": 2,
+    "SELF_TEST": 3
+  },
+  "command_status": {
+    "ACCEPTED": 0,
+    "REJECTED": 1,
+    "COMPLETED": 2,
+    "FAILED": 3
+  },
+  "request_semantics": {
+    "request_id_zero": "invalid",
+    "command_lifecycle": "Exactly one terminal REJECTED, COMPLETED, or FAILED result; accepted asynchronous commands first emit ACCEPTED",
+    "duplicate_window": 16,
+    "sequence_expiry_window": 128,
+    "source_isolation": "Only CommandSource::USB results are correlated as USB COMMAND_RESULT responses"
+  },
+  "header": [
+    {"offset": 0, "name": "magic", "type": "u16"},
+    {"offset": 2, "name": "protocol_version", "type": "u8"},
+    {"offset": 3, "name": "schema_version", "type": "u8"},
+    {"offset": 4, "name": "message_type", "type": "u8"},
+    {"offset": 5, "name": "flags", "type": "u8"},
+    {"offset": 6, "name": "sequence", "type": "u32"},
+    {"offset": 10, "name": "request_id", "type": "u32"},
+    {"offset": 14, "name": "payload_length", "type": "u16"},
+    {"offset": 16, "name": "build_id", "type": "bytes[8]"},
+    {"offset": 24, "name": "manifest_identity_prefix", "type": "bytes[16]"}
+  ],
+  "payloads": {
+    "HELLO": {"length": 0, "fields": []},
+    "CAPABILITIES": {"length": 20, "fields": [
+      {"offset": 0, "name": "protocol_version", "type": "u8"},
+      {"offset": 1, "name": "schema_version", "type": "u8"},
+      {"offset": 2, "name": "max_payload", "type": "u16"},
+      {"offset": 4, "name": "capability_bits", "type": "u32"},
+      {"offset": 8, "name": "rx_byte_capacity", "type": "u16"},
+      {"offset": 10, "name": "critical_tx_capacity", "type": "u16"},
+      {"offset": 12, "name": "scope_tx_capacity", "type": "u16"},
+      {"offset": 14, "name": "max_scope_channels", "type": "u8"},
+      {"offset": 15, "name": "reserved", "type": "u8", "required": 0},
+      {"offset": 16, "name": "max_pre_samples", "type": "u16"},
+      {"offset": 18, "name": "max_post_samples", "type": "u16"}
+    ]},
+    "COMMAND": {"length": 8, "fields": [
+      {"offset": 0, "name": "command_type", "type": "u8"},
+      {"offset": 1, "name": "operation", "type": "u8"},
+      {"offset": 2, "name": "reserved", "type": "u16", "required": 0},
+      {"offset": 4, "name": "arg0", "type": "u32"}
+    ]},
+    "COMMAND_RESULT": {"length": 8, "fields": [
+      {"offset": 0, "name": "status", "type": "u8"},
+      {"offset": 1, "name": "reserved", "type": "u8", "required": 0},
+      {"offset": 2, "name": "state_epoch", "type": "u32"},
+      {"offset": 6, "name": "reason", "type": "u16", "schema": "fault_schema.json"}
+    ]},
+    "FAULT_EVENT": {"length": 44, "fields": [
+      {"offset": 0, "name": "sequence", "type": "u32"},
+      {"offset": 4, "name": "control_sequence", "type": "u32"},
+      {"offset": 8, "name": "state_epoch", "type": "u32"},
+      {"offset": 12, "name": "timestamp_cycles", "type": "u32"},
+      {"offset": 16, "name": "fault_sequence", "type": "u32"},
+      {"offset": 20, "name": "source", "type": "u16"},
+      {"offset": 22, "name": "code", "type": "u16", "schema": "fault_schema.json"},
+      {"offset": 24, "name": "site", "type": "u16"},
+      {"offset": 26, "name": "severity", "type": "u8"},
+      {"offset": 27, "name": "reserved", "type": "u8", "required": 0},
+      {"offset": 28, "name": "parent_fault_sequence", "type": "u32"},
+      {"offset": 32, "name": "arg0", "type": "u32"},
+      {"offset": 36, "name": "arg1", "type": "u32"},
+      {"offset": 40, "name": "arg2", "type": "u32"}
+    ]},
+    "STATE_EVENT": {"length": 22, "fields": [
+      {"offset": 0, "name": "sequence", "type": "u32"},
+      {"offset": 4, "name": "state_epoch", "type": "u32"},
+      {"offset": 8, "name": "timestamp_cycles", "type": "u32"},
+      {"offset": 12, "name": "request_id", "type": "u32"},
+      {"offset": 16, "name": "state", "type": "u8"},
+      {"offset": 17, "name": "operation", "type": "u8"},
+      {"offset": 18, "name": "axis_state", "type": "u8"},
+      {"offset": 19, "name": "event_type", "type": "u8"},
+      {"offset": 20, "name": "reason", "type": "u16", "schema": "fault_schema.json"}
+    ]},
+    "LOG_RECORD": {"length": 20, "fields": [
+      {"offset": 0, "name": "sequence", "type": "u32"},
+      {"offset": 4, "name": "timestamp_cycles", "type": "u32"},
+      {"offset": 8, "name": "arg0", "type": "u32"},
+      {"offset": 12, "name": "arg1", "type": "u32"},
+      {"offset": 16, "name": "code", "type": "u16"},
+      {"offset": 18, "name": "level", "type": "u8"},
+      {"offset": 19, "name": "category", "type": "u8"}
+    ]},
+    "SCOPE_RECORD": {"length": 56, "fields": [
+      {"offset": 0, "name": "sequence", "type": "u32"},
+      {"offset": 4, "name": "control_sequence", "type": "u32"},
+      {"offset": 8, "name": "state_epoch", "type": "u32"},
+      {"offset": 12, "name": "timestamp_cycles", "type": "u32"},
+      {"offset": 16, "name": "phase", "type": "f32"},
+      {"offset": 20, "name": "phase_velocity", "type": "f32"},
+      {"offset": 24, "name": "position", "type": "f32"},
+      {"offset": 28, "name": "velocity", "type": "f32"},
+      {"offset": 32, "name": "id_measured", "type": "f32"},
+      {"offset": 36, "name": "iq_measured", "type": "f32"},
+      {"offset": 40, "name": "id_setpoint", "type": "f32"},
+      {"offset": 44, "name": "iq_setpoint", "type": "f32"},
+      {"offset": 48, "name": "torque_setpoint", "type": "f32"},
+      {"offset": 52, "name": "controller_output", "type": "f32"}
+    ]},
+    "STATS": {"request_length": 0, "response_length": 44, "response_fields": [
+      {"offset": 0, "name": "rx_bytes", "type": "u32"},
+      {"offset": 4, "name": "rx_overflow", "type": "u32"},
+      {"offset": 8, "name": "tx_frames", "type": "u32"},
+      {"offset": 12, "name": "tx_overflow_critical", "type": "u32"},
+      {"offset": 16, "name": "tx_overflow_result_state", "type": "u32"},
+      {"offset": 20, "name": "tx_overflow_calibration", "type": "u32"},
+      {"offset": 24, "name": "tx_overflow_scope", "type": "u32"},
+      {"offset": 28, "name": "tx_overflow_log", "type": "u32"},
+      {"offset": 32, "name": "parser_crc_errors", "type": "u32"},
+      {"offset": 36, "name": "parser_length_errors", "type": "u32"},
+      {"offset": 40, "name": "parser_dropped_frames", "type": "u32"}
+    ]},
+    "CALIBRATION_DATA": {"minimum_length": 8, "maximum_length": 512, "fields": [
+      {"offset": 0, "name": "record_type", "type": "u16"},
+      {"offset": 2, "name": "record_length", "type": "u16"},
+      {"offset": 4, "name": "record_sequence", "type": "u32"},
+      {"offset": 8, "name": "record", "type": "bytes[record_length]"}
+    ]},
+    "SCOPE_CONFIG": {"length": 38, "fields": [
+      {"offset": 0, "name": "mode", "type": "u8", "values": {"CONTINUOUS": 0, "TRIGGERED": 1}},
+      {"offset": 1, "name": "trigger_type", "type": "u8", "values": {"NONE": 0, "MANUAL": 1, "FAULT": 2, "STATE": 3, "THRESHOLD": 4}},
+      {"offset": 2, "name": "trigger_channel", "type": "u16", "none": 65535},
+      {"offset": 4, "name": "trigger_edge", "type": "u8", "values": {"RISING": 0, "FALLING": 1}},
+      {"offset": 5, "name": "trigger_state", "type": "u8"},
+      {"offset": 6, "name": "sample_rate_hz", "type": "u32"},
+      {"offset": 10, "name": "decimation", "type": "u16"},
+      {"offset": 12, "name": "pre_samples", "type": "u16"},
+      {"offset": 14, "name": "post_samples", "type": "u16"},
+      {"offset": 16, "name": "channel_count", "type": "u8"},
+      {"offset": 17, "name": "reserved", "type": "u8", "required": 0},
+      {"offset": 18, "name": "threshold", "type": "f32"},
+      {"offset": 22, "name": "channel_ids", "type": "u16[8]", "unused_ids": 65535}
+    ]},
+    "SCOPE_ARM": {"length": 2, "fields": [
+      {"offset": 0, "name": "arm", "type": "u8", "values": {"STOP": 0, "ARM": 1, "MANUAL_TRIGGER": 2}},
+      {"offset": 1, "name": "reserved", "type": "u8", "required": 0}
+    ]},
+    "SCOPE_STATUS": {"length": 32, "fields": [
+      {"offset": 0, "name": "capture_id", "type": "u32"},
+      {"offset": 4, "name": "state", "type": "u8"},
+      {"offset": 5, "name": "final_reason", "type": "u8"},
+      {"offset": 6, "name": "mode", "type": "u8"},
+      {"offset": 7, "name": "trigger_type", "type": "u8"},
+      {"offset": 8, "name": "sample_count", "type": "u32"},
+      {"offset": 12, "name": "dropped_samples", "type": "u32"},
+      {"offset": 16, "name": "sequence_gaps", "type": "u32"},
+      {"offset": 20, "name": "channel_count", "type": "u8"},
+      {"offset": 21, "name": "reserved", "type": "u8", "required": 0},
+      {"offset": 22, "name": "decimation", "type": "u16"},
+      {"offset": 24, "name": "first_timestamp_cycles", "type": "u32"},
+      {"offset": 28, "name": "last_timestamp_cycles", "type": "u32"}
+    ]},
+    "SCOPE_DATA_BATCH": {"minimum_length": 36, "maximum_length": 512, "fields": [
+      {"offset": 0, "name": "capture_id", "type": "u32"},
+      {"offset": 4, "name": "sample_count", "type": "u16"},
+      {"offset": 6, "name": "channel_count", "type": "u8"},
+      {"offset": 7, "name": "flags", "type": "u8"},
+      {"offset": 8, "name": "dropped_samples", "type": "u16"},
+      {"offset": 10, "name": "reserved", "type": "u16", "required": 0},
+      {"offset": 12, "name": "first_sequence", "type": "u32"},
+      {"offset": 16, "name": "first_timestamp_cycles", "type": "u32"},
+      {"offset": 20, "name": "channel_ids", "type": "u16[8]", "unused_ids": 65535},
+      {"offset": 36, "name": "samples", "type": "repeated", "sample_fields": [
+        {"offset": 0, "name": "control_sequence", "type": "u32"},
+        {"offset": 4, "name": "timestamp_cycles", "type": "u32"},
+        {"offset": 8, "name": "flags", "type": "u16"},
+        {"offset": 10, "name": "reserved", "type": "u16", "required": 0},
+        {"offset": 12, "name": "values", "type": "u32[channel_count]"}
+      ]}
+    ]},
+    "SCOPE_STOP": {"length": 0, "fields": []},
+    "CRASH_REPORT": {"length": 204, "retention": "System-reset retained .noinit RAM; not power-loss persistent", "fields": [
+      {"offset": 0, "name": "format_version", "type": "u16", "required": 1},
+      {"offset": 2, "name": "encoded_size", "type": "u16", "required": 204},
+      {"offset": 4, "name": "record_crc", "type": "u32"},
+      {"offset": 8, "name": "generation", "type": "u32"},
+      {"offset": 12, "name": "fault_kind", "type": "u32", "values": {"HARD_FAULT": 1, "MEM_MANAGE": 2, "BUS_FAULT": 3, "USAGE_FAULT": 4}},
+      {"offset": 16, "name": "flags", "type": "u32"},
+      {"offset": 20, "name": "record_build_id", "type": "bytes[8]"},
+      {"offset": 28, "name": "record_manifest_identity", "type": "bytes[16]"},
+      {"offset": 44, "name": "stacked_r0_r3_r12_lr_pc_xpsr", "type": "u32[8]"},
+      {"offset": 76, "name": "exception_return_msp_psp", "type": "u32[3]"},
+      {"offset": 88, "name": "cfsr_hfsr_dfsr_afsr_mmfar_bfar_icsr_shcsr", "type": "u32[8]"},
+      {"offset": 120, "name": "control_sequence", "type": "u32"},
+      {"offset": 124, "name": "state_epoch", "type": "u32"},
+      {"offset": 128, "name": "safety_operation", "type": "u32"},
+      {"offset": 132, "name": "active_irq", "type": "u32"},
+      {"offset": 136, "name": "critical_count", "type": "u32", "maximum": 2},
+      {"offset": 140, "name": "critical_events", "type": "u32[16]"}
+    ]},
+    "CRASH_ACK": {"length": 4, "fields": [
+      {"offset": 0, "name": "record_crc", "type": "u32"}
+    ], "semantics": "Firmware clears retained record only after queuing a matching response"},
+    "TEST_SESSION_BEGIN": {"length": 16, "fields": [
+      {"offset": 0, "name": "flags", "type": "u8", "bits": {"MOTION": 1, "HARDWARE_ESTOP_CONFIRMED": 2}},
+      {"offset": 1, "name": "reserved", "type": "u8", "required": 0},
+      {"offset": 2, "name": "lease_ms", "type": "u16", "minimum": 250, "maximum": 10000},
+      {"offset": 4, "name": "velocity_limit_turns_per_s", "type": "f32", "maximum": 2.0},
+      {"offset": 8, "name": "current_limit_amps", "type": "f32", "maximum": 1.0},
+      {"offset": 12, "name": "torque_limit_nm", "type": "f32", "maximum": 0.2}
+    ]},
+    "TEST_SESSION_STATUS": {"length": 24, "fields": [
+      {"offset": 0, "name": "state", "type": "u8", "values": {"INACTIVE": 0, "ACTIVE": 1, "STOPPING": 2, "EXPIRED": 3}},
+      {"offset": 1, "name": "flags", "type": "u8"},
+      {"offset": 2, "name": "reason", "type": "u16"},
+      {"offset": 4, "name": "session_id", "type": "u32"},
+      {"offset": 8, "name": "lease_remaining_ms", "type": "u32"},
+      {"offset": 12, "name": "velocity_limit_turns_per_s", "type": "f32"},
+      {"offset": 16, "name": "current_limit_amps", "type": "f32"},
+      {"offset": 20, "name": "torque_limit_nm", "type": "f32"}
+    ]},
+    "TEST_SESSION_KEEPALIVE": {"length": 4, "fields": [{"offset": 0, "name": "session_id", "type": "u32"}]},
+    "TEST_SESSION_STOP": {"length": 4, "fields": [{"offset": 0, "name": "session_id", "type": "u32"}], "response": "COMMAND_RESULT terminal ACK for DISARM"},
+    "TEST_SESSION_END": {"length": 4, "fields": [{"offset": 0, "name": "session_id", "type": "u32"}], "semantics": "Accepted only after STOP completed for motion sessions; response is TEST_SESSION_STATUS INACTIVE"}
+  }
+}

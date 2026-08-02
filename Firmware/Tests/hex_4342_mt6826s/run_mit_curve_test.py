@@ -13,7 +13,10 @@ import math
 import os
 import time
 
-from common import (
+from hil_bootstrap import ensure_test_support
+ensure_test_support()
+
+from odrive_hil.can_simple import (
     AXIS_STATE_CLOSED_LOOP_CONTROL,
     AXIS_STATE_IDLE,
     CMD_GET_ENCODER_ESTIMATES,

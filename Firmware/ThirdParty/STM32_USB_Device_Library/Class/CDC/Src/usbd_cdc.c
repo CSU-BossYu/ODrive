@@ -550,7 +550,8 @@ static uint8_t USBD_CDC_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
   NAKed till the end of the application Xfer */
   if(pdev->pClassData != NULL)
   {
-    ((USBD_CDC_ItfTypeDef *)pdev->pUserData)->Receive(NULL, &hEP_Rx->Length, epnum);
+    ((USBD_CDC_ItfTypeDef *)pdev->pUserData)->Receive(
+        hEP_Rx->Buffer, &hEP_Rx->Length, epnum);
 
     return USBD_OK;
   }
@@ -701,6 +702,30 @@ uint8_t USBD_CDC_TransmitPacket(USBD_HandleTypeDef *pdev, uint8_t* buf, size_t l
   }
 }
 
+
+uint8_t USBD_CDC_SetRxBuffer(USBD_HandleTypeDef *pdev, uint8_t *pbuff,
+                             uint8_t endpoint_num)
+{
+  if (pdev == NULL || pdev->pClassData == NULL || endpoint_num != CDC_OUT_EP)
+  {
+    return USBD_FAIL;
+  }
+  ((USBD_CDC_HandleTypeDef *)pdev->pClassData)->CDC_Rx.Buffer = pbuff;
+  return USBD_OK;
+}
+
+uint8_t USBD_CDC_SetTxBuffer(USBD_HandleTypeDef *pdev, uint8_t *pbuff,
+                             uint32_t length, uint8_t endpoint_num)
+{
+  if (pdev == NULL || pdev->pClassData == NULL || endpoint_num != CDC_IN_EP)
+  {
+    return USBD_FAIL;
+  }
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
+  hcdc->CDC_Tx.Buffer = pbuff;
+  hcdc->CDC_Tx.Length = length;
+  return USBD_OK;
+}
 
 /**
   * @brief  USBD_CDC_ReceivePacket

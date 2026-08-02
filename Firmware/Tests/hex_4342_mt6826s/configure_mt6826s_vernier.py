@@ -3,7 +3,10 @@
 import argparse
 import time
 
-from common import (
+from hil_bootstrap import ensure_test_support
+ensure_test_support()
+
+from odrive_hil.can_simple import (
     EXT_STATUS,
     EXT_TYPE_FLOAT32,
     EXT_TYPE_INT32,

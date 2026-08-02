@@ -1,4 +1,4 @@
-"""CAN-only FastAPI application for the FOC upper computer."""
+"""FastAPI application with independent CAN control and USB diagnostics."""
 
 from __future__ import annotations
 
@@ -7,11 +7,12 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .main import CAN_STATE, can_disconnect, can_router
+from odrive_usb.app import USB_STATE, usb_disconnect, usb_router
 
 logger = logging.getLogger('odrive_can.app')
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
@@ -25,11 +26,13 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await can_disconnect()
+        await usb_disconnect()
         logger.info('FOC CAN backend down')
 
 
 app = FastAPI(title='FOC CAN upper-computer', lifespan=lifespan)
 app.include_router(can_router)
+app.include_router(usb_router)
 
 
 @app.get('/', response_class=HTMLResponse)
@@ -56,6 +59,20 @@ for directory in ('assets', 'static'):
     if static_path.is_dir():
         app.mount(f'/{directory}', StaticFiles(directory=static_path),
                   name=f'frontend-{directory}')
+
+
+@app.get('/{full_path:path}')
+async def spa_fallback(full_path: str):
+    """Serve built assets and Vue history routes without swallowing APIs."""
+    if full_path.startswith(('api/', 'ws/')) or full_path in {'api', 'ws', 'docs', 'openapi.json'}:
+        raise HTTPException(status_code=404, detail='route not found')
+    requested = FRONTEND_DIST / full_path
+    if requested.is_file() and FRONTEND_DIST in requested.parents:
+        return FileResponse(requested)
+    index_path = FRONTEND_DIST / 'index.html'
+    if index_path.is_file():
+        return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+    raise HTTPException(status_code=404, detail='frontend build not found')
 
 
 def main():
