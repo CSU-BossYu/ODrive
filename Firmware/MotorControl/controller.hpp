@@ -17,8 +17,8 @@ public:
         InputMode input_mode = INPUT_MODE_PASSTHROUGH;             //see: InputMode_t
         float pos_gain = 7.0f;                   // [(turn/s) / turn], SguanFOC position Kp
         float pos_integrator_gain = 0.0f;        // [(turn/s) / (turn * s)]
-        float vel_gain = 10.0f;                  // [Nm/(turn/s)], output-shaft PI
-        float vel_integrator_gain = 1.5f;        // [Nm/(turn/s * s)]
+        float vel_gain = 1.0f / 6.0f;            // [Nm/(turn/s)], output-shaft PI
+        float vel_integrator_gain = 2.0f / 6.0f; // [Nm/(turn/s * s)]
         float vel_limit = 2.0f;                  // [turn/s] Infinity to disable.
         float vel_limit_tolerance = 1.2f;        // ratio to vel_lim. Infinity to disable.
         float vel_integrator_limit = INFINITY;   // Vel. integrator clamping value. Infinity to disable.

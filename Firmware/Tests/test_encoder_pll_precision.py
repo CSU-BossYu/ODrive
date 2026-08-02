@@ -1,8 +1,12 @@
 """Numerical regression tests for the encoder PLL phase representation."""
 
 import math
+from pathlib import Path
 import struct
 import unittest
+
+
+FIRMWARE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def f32(value):
@@ -18,6 +22,46 @@ def wrap_pm(value, period):
 
 
 class EncoderPllPrecisionTest(unittest.TestCase):
+    def test_public_velocity_port_uses_turns_per_second(self):
+        encoder_source = (
+            FIRMWARE_ROOT / "MotorControl" / "encoder.cpp"
+        ).read_text(encoding="utf-8")
+        controller_source = (
+            FIRMWARE_ROOT / "MotorControl" / "controller.cpp"
+        ).read_text(encoding="utf-8")
+        encoder_header = (
+            FIRMWARE_ROOT / "MotorControl" / "encoder.hpp"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "vel_estimate_ = output_velocity_rpm / 60.0f;",
+            encoder_source)
+        self.assertIn(
+            "vel_estimate_ = 0.0f; // [turn/s]", encoder_header)
+        self.assertNotIn("*vel_estimate /= 60.0f;", controller_source)
+
+        actual_rpm = -133.25
+        public_turns_per_second = actual_rpm / 60.0
+        self.assertAlmostEqual(public_turns_per_second * 60.0, actual_rpm)
+
+    def test_absolute_position_input_is_not_clamped_to_one_turn(self):
+        controller_source = (
+            FIRMWARE_ROOT / "MotorControl" / "controller.cpp"
+        ).read_text(encoding="utf-8")
+        setter_start = controller_source.index(
+            "void Controller::set_input_pos_and_steps")
+        setter_end = controller_source.index(
+            "void Controller::set_mit_input", setter_start)
+        setter = controller_source[setter_start:setter_end]
+
+        self.assertIn("input_pos_ = pos;", setter)
+        self.assertNotIn("std::clamp", setter)
+
+        current_position_rad = 12.9089
+        current_position_turns = current_position_rad / (2.0 * math.pi)
+        self.assertGreater(current_position_turns, 1.0)
+        self.assertAlmostEqual(current_position_turns, 2.0545, places=4)
+
     def test_large_odd_count_is_not_exactly_representable_as_float32(self):
         shadow_count = -31_221_123
         self.assertNotEqual(f32(shadow_count), shadow_count)

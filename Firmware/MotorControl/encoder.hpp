@@ -157,7 +157,7 @@ public:
     float spi_error_rate_ = 0.0f;
 
     OutputPort<float> pos_estimate_ = 0.0f; // [rad], continuous output position
-    OutputPort<float> vel_estimate_ = 0.0f; // [rpm], output velocity
+    OutputPort<float> vel_estimate_ = 0.0f; // [turn/s], output-shaft velocity
     OutputPort<float> pos_circular_ = 0.0f; // [rad], wrapped to [0, 2*pi)
     OutputPort<float> joint_pos_rad_ = 0.0f; // [rad], same as pos_estimate_
 

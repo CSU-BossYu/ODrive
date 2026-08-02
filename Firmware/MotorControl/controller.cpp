@@ -17,10 +17,9 @@ constexpr float kPosDeadbandTurns = 3.0f / (32768.0f * 42.0f);  // ≈ 2.18e-6 t
 
 bool Controller::apply_config() {
     config_.parent = this;
-    // A robot joint is a bounded mechanical coordinate, not a periodic angle:
-    // 0 and 1 output turn are distinct endpoints. Keep the absolute Vernier
-    // coordinate bounded by commands, but never choose a wrapped equivalent
-    // target or take the shortest path through the opposite endpoint.
+    // A robot joint is an absolute mechanical coordinate, not a periodic
+    // angle: 0 and 1 output turn are distinct positions. Mechanical limits
+    // belong to the joint configuration, not to this generic input setter.
     config_.circular_setpoints = false;
     config_.circular_setpoint_range = 1.0f;
     config_.enable_sta = false;
@@ -32,12 +31,13 @@ bool Controller::apply_config() {
     if (std::abs(config_.pos_gain - 20.0f) < 1.0e-6f) {
         config_.pos_gain = 7.0f;
     }
-    // Migrate only the exact former defaults. Preserve gains already tuned or
-    // stored by the user, including the validated 10/1.5 pair.
-    if (std::abs(config_.vel_gain - (1.0f / 6.0f)) < 1.0e-6f &&
-        std::abs(config_.vel_integrator_gain - (2.0f / 6.0f)) < 1.0e-6f) {
-        config_.vel_gain = 10.0f;
-        config_.vel_integrator_gain = 1.5f;
+    // Undo the exact unsupported gain pair written by the previous migration.
+    // It was copied without preserving the controller's Nm/(turn/s) contract
+    // and produces a zero-speed limit cycle on the current drivetrain.
+    if (std::abs(config_.vel_gain - 10.0f) < 1.0e-6f &&
+        std::abs(config_.vel_integrator_gain - 1.5f) < 1.0e-6f) {
+        config_.vel_gain = 1.0f / 6.0f;
+        config_.vel_integrator_gain = 2.0f / 6.0f;
     }
     update_filter_gains();
     return true;
@@ -122,7 +122,7 @@ void Controller::capture_overspeed_snapshot(float vel_estimate,
     overspeed_snapshot_.encoder_pos_estimate_rad =
         vernier.encoder_pos_estimate;
     overspeed_snapshot_.encoder_vel_estimate_rpm =
-        vernier.encoder_vel_estimate;
+        vernier.encoder_vel_estimate * 60.0f;
     overspeed_snapshot_.encoder_pos_circular_rad =
         vernier.encoder_pos_circular;
     overspeed_snapshot_.pair_sequence = vernier.pair_count;
@@ -172,7 +172,7 @@ void Controller::set_input_pos_and_steps(float const pos) {
     if (!std::isfinite(pos)) {
         return;
     }
-    input_pos_ = std::clamp(pos, 0.0f, 1.0f);
+    input_pos_ = pos;
 }
 
 void Controller::set_mit_input(float pos_rad, float vel_rad_per_s, float kp, float kd, float torque_ff) {
@@ -402,8 +402,6 @@ bool Controller::update(float update_period, bool run_position_step,
             *pos_estimate_linear /= 2.0f * M_PI;
         if (pos_estimate_circular)
             *pos_estimate_circular /= 2.0f * M_PI;
-        if (vel_estimate)
-            *vel_estimate /= 60.0f;
     }
 
     // Update inputs

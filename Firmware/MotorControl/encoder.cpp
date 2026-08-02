@@ -1185,7 +1185,9 @@ void Encoder::publish_lz5710_estimate(bool has_new_valid_main_sample,
     const float output_velocity_rpm =
         lz5710_output_pll_.velocity_estimate_rpm();
     pos_estimate_ = output_position_rad;
-    vel_estimate_ = output_velocity_rpm;
+    // Encoder::vel_estimate_ is a public turns/s port for every encoder mode.
+    // Keep rpm confined to the explicitly named Vernier diagnostics fields.
+    vel_estimate_ = output_velocity_rpm / 60.0f;
     pos_circular_ = lz5710::wrap_0_2pi(output_position_rad);
     joint_pos_rad_ = output_position_rad;
     vernier_output_pos_estimate_ =
